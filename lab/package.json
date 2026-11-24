@@ -1,0 +1,17 @@
+{
+	"name": "sentinel-lab-tests",
+	"private": true,
+	"description": "Testes de integração do Sentinel Lab com os SDKs oficiais do Sentry",
+	"type": "module",
+	"scripts": {
+		"test:node": "node node-test.mjs",
+		"test:native": "node native-test.mjs",
+		"build:web": "esbuild web/src/app.js --bundle --minify --sourcemap --outfile=web/public/app.min.js",
+		"serve:web": "python3 -m http.server 8788 --bind 127.0.0.1 --directory web/public"
+	},
+	"dependencies": {
+		"@sentry/browser": "^10.78.0",
+		"@sentry/node": "^10.78.0",
+		"esbuild": "^0.28.2"
+	}
+}

@@ -1,5 +1,6 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import { extractEvents } from './lib/envelope-parser';
+import { isProjectIdForProject } from './lib/project-access';
 import type { Env, EnvelopeItem, Project } from './types';
 
 // Sentry envelope format: [header, ...items] where each item is [itemHeader, payload]
@@ -97,7 +98,7 @@ export class SentinelRpc extends WorkerEntrypoint<Env> {
 		const project = projectData.project;
 
 		// Verify project ID matches
-		if (projectId !== project.id) {
+		if (!isProjectIdForProject(projectId, project)) {
 			return { status: 400 };
 		}
 

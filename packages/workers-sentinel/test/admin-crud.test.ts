@@ -749,13 +749,15 @@ describe('admin user administration', () => {
 			});
 			expect(response.status).toBe(201);
 			const data = (await response.json()) as {
-				project: { id: string; name: string; slug: string; publicKey: string };
+				project: { id: string; name: string; slug: string; publicKey: string; ingestId: number };
 				dsn: string;
 			};
 			expect(data.project.slug).toBeTruthy();
 			expect(data.project.publicKey).toBeTruthy();
 			expect(data.dsn).toContain(data.project.publicKey);
-			expect(data.dsn).toContain(data.project.id);
+			// DSN path carries the numeric ingest id (Sentry SDKs need numeric ids)
+			expect(data.project.ingestId).toBeGreaterThan(0);
+			expect(data.dsn.endsWith(`/${data.project.ingestId}`)).toBe(true);
 
 			// The assigned owner holds the owner role…
 			const roster = await authFetch(

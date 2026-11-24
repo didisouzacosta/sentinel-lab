@@ -40,3 +40,9 @@ coverage/
 
 # Local supervisor state (ownership records, Durable Object persistence)
 _devenv/cloudflare/.state/
+
+# Lab
+.wrangler-state/
+lab/node_modules/
+lab/web/public/app.min.js*
+lab/php/vendor/

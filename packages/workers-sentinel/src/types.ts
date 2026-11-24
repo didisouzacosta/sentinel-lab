@@ -1,7 +1,7 @@
 export interface Env {
 	AUTH_STATE: DurableObjectNamespace;
 	PROJECT_STATE: DurableObjectNamespace;
-	/** R2 bucket holding attachment payloads (`sentinel-attachments`). */
+	/** R2 bucket holding attachment payloads (`sentinel-lab-attachments`). */
 	ATTACHMENTS: R2Bucket;
 	/**
 	 * Test-only: when bound to `'enabled'` (vitest miniflare config), the
@@ -60,6 +60,8 @@ export interface Project {
 	slug: string;
 	platform: string;
 	publicKey: string;
+	/** Numeric id used in the DSN path (Sentry SDKs require numeric project ids). */
+	ingestId?: number | null;
 	webhookUrl?: string | null;
 	createdAt: string;
 	createdBy: string;

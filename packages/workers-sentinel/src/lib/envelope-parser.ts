@@ -171,8 +171,9 @@ export function extractEvents(envelope: ParsedEnvelope): SentryEvent[] {
 	const events: SentryEvent[] = [];
 
 	for (const item of envelope.items) {
-		if (item.type === 'event' || item.type === 'transaction') {
+		if (item.type === 'event') {
 			const event = item.payload as SentryEvent;
+			if (isTransactionEvent(event)) continue;
 
 			// Ensure event_id. A payload without one falls back to the
 			// envelope-level id (allowed by the envelope spec) before a
@@ -308,7 +309,7 @@ export function sanitizeEvent(event: SentryEvent): SentryEvent {
 			}
 			const frames = exception.stacktrace?.frames;
 			if (Array.isArray(frames) && frames.length > MAX_FRAMES) {
-				exception.stacktrace!.frames = frames.slice(0, MAX_FRAMES);
+				exception.stacktrace!.frames = trimFrames(frames);
 			}
 		}
 	}
@@ -330,4 +331,28 @@ export function sanitizeEvent(event: SentryEvent): SentryEvent {
 	}
 
 	return event;
+}
+
+/**
+ * Performance transactions are not supported (error tracking only). They are
+ * dropped at ingestion rather than stored as error issues.
+ */
+export function isTransactionEvent(event: SentryEvent): boolean {
+	return (event as { type?: unknown }).type === 'transaction';
+}
+
+/** Outermost frames kept when trimming (entry point context). */
+const KEPT_OUTER_FRAMES = 10;
+
+/**
+ * Trim an over-long stack from the middle. Sentry orders frames oldest-first,
+ * so the crash site is at the END of the array: keeping the head (the old
+ * behaviour) threw away exactly the frames that matter, which deep mobile and
+ * React Native stacks hit routinely. Keep a little entry-point context plus
+ * the innermost frames, like Sentry's own server-side trimming.
+ */
+export function trimFrames<T>(frames: T[], max = MAX_FRAMES): T[] {
+	if (frames.length <= max) return frames;
+	const outer = Math.min(KEPT_OUTER_FRAMES, Math.floor(max / 2));
+	return [...frames.slice(0, outer), ...frames.slice(frames.length - (max - outer))];
 }

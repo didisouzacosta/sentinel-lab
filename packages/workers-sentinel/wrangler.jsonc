@@ -1,19 +1,24 @@
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
-	"name": "workers-sentinel",
+	// SENTINEL LAB — todo recurso Cloudflare deste projeto usa o prefixo
+	// "sentinel-lab" e está listado em lab/cloudflare-resources.md. Para apagar
+	// tudo: lab/teardown.sh (Worker + domínio + Durable Objects + R2 + Access).
+	"name": "sentinel-lab",
 	"main": "src/index.ts",
 	"compatibility_date": "2026-01-18",
 	"compatibility_flags": ["nodejs_compat"],
 	"observability": {
 		"enabled": true
 	},
-	// Production: custom domain only; the workers.dev subdomain stays off.
-	// Custom-domain routes are deploy-time declarations — inert under
-	// `wrangler dev --local`.
+	// Produção: só o domínio próprio, protegido pelo Cloudflare Access
+	// (painel restrito; ingestão /api/*/envelope e /store liberada — ver
+	// lab/access.mjs). O workers.dev fica desligado para não existir uma porta
+	// sem Access. O Custom Domain é removido junto com o Worker.
 	"workers_dev": false,
+	"preview_urls": false,
 	"routes": [
 		{
-			"pattern": "aw-heck.ed3d.net",
+			"pattern": "sentinel.adrianosouzacosta.com.br",
 			"custom_domain": true
 		}
 	],
@@ -22,13 +27,13 @@
 	},
 	// Attachment blob storage (metadata rows stay in ProjectState). Miniflare
 	// (`wrangler dev`, vitest-pool-workers, the integration runner) simulates
-	// this bucket from the binding; the production bucket is created at deploy
-	// time with `wrangler r2 bucket create sentinel-attachments`.
+	// this bucket from the binding; the production bucket is created by
+	// lab/setup.sh (`wrangler r2 bucket create sentinel-lab-attachments`).
 	"r2_buckets": [
 		{
 			"binding": "ATTACHMENTS",
-			"bucket_name": "sentinel-attachments",
-			"preview_bucket_name": "sentinel-attachments"
+			"bucket_name": "sentinel-lab-attachments",
+			"preview_bucket_name": "sentinel-lab-attachments"
 		}
 	],
 	// Durable Object bindings

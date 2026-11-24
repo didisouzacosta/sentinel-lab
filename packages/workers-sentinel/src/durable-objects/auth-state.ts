@@ -237,7 +237,40 @@ export class AuthState extends DurableObject<Env> {
 		} catch {
 			// Column already exists
 		}
+		// Migration: numeric ingest id used in the DSN path. Sentry SDKs keep
+		// only the leading digits of the DSN project id (and debug builds
+		// reject non-numeric ids outright), so UUID-only DSNs silently break
+		// the official JS/React Native SDKs. Backfill existing projects in
+		// creation order, then enforce uniqueness.
+		try {
+			this.sql.exec('ALTER TABLE projects ADD COLUMN ingest_id INTEGER');
+		} catch {
+			// Column already exists
+		}
+		this.ctx.storage.transactionSync(() => {
+			const missing = this.sql
+				.exec('SELECT id FROM projects WHERE ingest_id IS NULL ORDER BY created_at, id')
+				.toArray();
+			for (const row of missing) {
+				this.sql.exec(
+					'UPDATE projects SET ingest_id = ? WHERE id = ?',
+					this.nextIngestId(),
+					row.id,
+				);
+			}
+		});
+		this.sql.exec(
+			'CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_ingest_id ON projects(ingest_id)',
+		);
 		this.initialized = true;
+	}
+
+	/** Next free numeric ingest id (call inside the write that uses it). */
+	private nextIngestId(): number {
+		const row = this.sql
+			.exec('SELECT COALESCE(MAX(ingest_id), 0) + 1 AS next FROM projects')
+			.toArray()[0];
+		return Number(row.next);
 	}
 
 	/** Seconds remaining on a throttle lock, or 0 when not locked. */
@@ -1479,7 +1512,7 @@ export class AuthState extends DurableObject<Env> {
 
 		const rows = this.sql
 			.exec(
-				`SELECT p.id, p.name, p.slug, p.platform, p.public_key, p.webhook_url, p.created_at, p.created_by, pm.role as member_role
+				`SELECT p.id, p.name, p.slug, p.platform, p.public_key, p.ingest_id, p.webhook_url, p.created_at, p.created_by, pm.role as member_role
        FROM projects p
        JOIN project_members pm ON p.id = pm.project_id
        WHERE pm.user_id = ?
@@ -1494,6 +1527,7 @@ export class AuthState extends DurableObject<Env> {
 			slug: row.slug as string,
 			platform: row.platform as string,
 			publicKey: row.public_key as string,
+			ingestId: (row.ingest_id as number | null) ?? null,
 			// Webhook URLs embed provider auth tokens: hide them from members
 			webhookUrl: row.member_role === 'member' ? null : (row.webhook_url as string) || null,
 			createdAt: row.created_at as string,
@@ -1519,7 +1553,7 @@ export class AuthState extends DurableObject<Env> {
 			return this.jsonResponse({ error: 'missing_user' }, 400);
 		}
 
-		const select = `SELECT p.id, p.name, p.slug, p.platform, p.public_key, p.webhook_url, p.created_at, p.created_by, pm.role as member_role
+		const select = `SELECT p.id, p.name, p.slug, p.platform, p.public_key, p.ingest_id, p.webhook_url, p.created_at, p.created_by, pm.role as member_role
        FROM projects p
        JOIN project_members pm ON p.id = pm.project_id AND pm.user_id = ?`;
 
@@ -1548,6 +1582,7 @@ export class AuthState extends DurableObject<Env> {
 			slug: row.slug as string,
 			platform: row.platform as string,
 			publicKey: row.public_key as string,
+			ingestId: (row.ingest_id as number | null) ?? null,
 			// Webhook URLs embed provider auth tokens: hide them from members
 			webhookUrl: memberRole === 'member' ? null : (row.webhook_url as string) || null,
 			createdAt: row.created_at as string,
@@ -1566,7 +1601,7 @@ export class AuthState extends DurableObject<Env> {
 
 		const rows = this.sql
 			.exec(
-				'SELECT id, name, slug, platform, public_key, webhook_url, created_at, created_by FROM projects WHERE public_key = ?',
+				'SELECT id, name, slug, platform, public_key, ingest_id, webhook_url, created_at, created_by FROM projects WHERE public_key = ?',
 				publicKey,
 			)
 			.toArray();
@@ -1583,6 +1618,7 @@ export class AuthState extends DurableObject<Env> {
 			slug: row.slug as string,
 			platform: row.platform as string,
 			publicKey: row.public_key as string,
+			ingestId: (row.ingest_id as number | null) ?? null,
 			webhookUrl: (row.webhook_url as string) || null,
 			createdAt: row.created_at as string,
 			createdBy: row.created_by as string,
@@ -1960,7 +1996,7 @@ export class AuthState extends DurableObject<Env> {
 
 		const rows = this.sql
 			.exec(
-				`SELECT p.id, p.name, p.slug, p.platform, p.public_key, p.created_at, p.created_by,
+				`SELECT p.id, p.name, p.slug, p.platform, p.public_key, p.ingest_id, p.created_at, p.created_by,
 					ou.id AS owner_id, ou.email AS owner_email, ou.name AS owner_name,
 					(SELECT COUNT(*) FROM project_members pm WHERE pm.project_id = p.id) AS member_count
 				 FROM projects p
@@ -1976,6 +2012,7 @@ export class AuthState extends DurableObject<Env> {
 			slug: row.slug as string,
 			platform: row.platform as string,
 			publicKey: row.public_key as string,
+			ingestId: (row.ingest_id as number | null) ?? null,
 			createdAt: row.created_at as string,
 			owner: row.owner_id
 				? {
@@ -2051,13 +2088,17 @@ export class AuthState extends DurableObject<Env> {
 		const now = new Date().toISOString();
 
 		const project = this.ctx.storage.transactionSync(() => {
+			// Numeric id for the DSN path: Sentry SDKs only accept numeric
+			// project ids (see nextIngestId).
+			const ingestId = this.nextIngestId();
 			this.sql.exec(
-				'INSERT INTO projects (id, name, slug, platform, public_key, created_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)',
+				'INSERT INTO projects (id, name, slug, platform, public_key, ingest_id, created_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
 				projectId,
 				name,
 				slug,
 				platform || 'javascript',
 				publicKey,
+				ingestId,
 				now,
 				// The acting admin is the creator of record; ownership is the
 				// assigned owner's (membership below), and the audit row keeps
@@ -2081,6 +2122,7 @@ export class AuthState extends DurableObject<Env> {
 				slug,
 				platform: platform || 'javascript',
 				publicKey,
+				ingestId,
 				createdAt: now,
 				createdBy: requestingUserId ?? ownerId,
 			} satisfies Project;
@@ -2116,7 +2158,7 @@ export class AuthState extends DurableObject<Env> {
 
 		const rows = this.sql
 			.exec(
-				'SELECT id, name, slug, platform, public_key, created_at, created_by FROM projects WHERE id = ?',
+				'SELECT id, name, slug, platform, public_key, ingest_id, created_at, created_by FROM projects WHERE id = ?',
 				projectId,
 			)
 			.toArray();
@@ -2143,6 +2185,7 @@ export class AuthState extends DurableObject<Env> {
 				slug: current.slug as string,
 				platform: current.platform as string,
 				publicKey: current.public_key as string,
+				ingestId: (current.ingest_id as number | null) ?? null,
 				createdAt: current.created_at as string,
 				createdBy: current.created_by as string,
 			} satisfies Project,

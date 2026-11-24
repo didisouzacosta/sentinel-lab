@@ -40,3 +40,16 @@ export async function getProjectWithAccess(
 
 	return response.json();
 }
+
+/**
+ * Whether a DSN/URL project id refers to `project`. Accepts the numeric
+ * ingest id (what current DSNs carry, since Sentry SDKs require numeric
+ * project ids) and the legacy UUID (DSNs issued before ingest ids existed).
+ */
+export function isProjectIdForProject(
+	projectId: string,
+	project: { id: string; ingestId?: number | null },
+): boolean {
+	if (projectId === project.id) return true;
+	return project.ingestId != null && projectId === String(project.ingestId);
+}

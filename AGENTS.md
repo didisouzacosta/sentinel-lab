@@ -344,16 +344,16 @@ just test               # worker test suite (vitest-pool-workers; no supervisor 
 
 ## Wrangler R2 CLI trap: `r2 object` defaults to LOCAL storage
 
-`wrangler r2 object put/get/delete` operate on the **local miniflare store** (`.wrangler/state/v3/r2/…`) when run from a directory whose wrangler config declares an `r2_buckets` binding — `packages/workers-sentinel/` does (`ATTACHMENTS`). To touch the production `sentinel-attachments` bucket you must pass **`--remote`**:
+`wrangler r2 object put/get/delete` operate on the **local miniflare store** (`.wrangler/state/v3/r2/…`) when run from a directory whose wrangler config declares an `r2_buckets` binding — `packages/workers-sentinel/` does (`ATTACHMENTS`). To touch the production `sentinel-lab-attachments` bucket you must pass **`--remote`**:
 
 ```bash
 # Production bucket (what the worker's binding actually reads/writes):
-npx wrangler r2 object get sentinel-attachments/p/<projectId>/... --remote --pipe
+npx wrangler r2 object get sentinel-lab-attachments/p/<projectId>/... --remote --pipe
 
 # Without --remote you silently read/write a throwaway local copy —
 # symptoms: your own CLI-written keys round-trip fine while every
 # production key "does not exist", even though
-# `wrangler r2 bucket info sentinel-attachments` (control plane, no local
+# `wrangler r2 bucket info sentinel-lab-attachments` (control plane, no local
 # mode) shows the real object count/size. This wastes hours if mistaken
 # for a consistency or auth problem. (Also: `r2 object delete` takes no
 # `--force` flag — passing one just prints usage.)

@@ -61,11 +61,13 @@ projectRoutes.get('/:slug', async (c) => {
 		return c.json(error, response.status as ContentfulStatusCode);
 	}
 
-	const data = (await response.json()) as { project: { id: string; publicKey: string } };
+	const data = (await response.json()) as {
+		project: { id: string; publicKey: string; ingestId?: number | null };
+	};
 
 	// Generate DSN
 	const host = new URL(c.req.url).host;
-	const dsn = `https://${data.project.publicKey}@${host}/${data.project.id}`;
+	const dsn = `https://${data.project.publicKey}@${host}/${data.project.ingestId ?? data.project.id}`;
 
 	return c.json({ ...data, dsn });
 });

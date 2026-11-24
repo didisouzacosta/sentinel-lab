@@ -21,7 +21,12 @@ import {
 	type EnvelopeFramerEvent,
 	type ItemHeader,
 } from '../lib/envelope-framer';
-import { extractKeyFromAuthHeader, truncateFilenameSafe } from '../lib/envelope-parser';
+import {
+	extractKeyFromAuthHeader,
+	isTransactionEvent,
+	truncateFilenameSafe,
+} from '../lib/envelope-parser';
+import { isProjectIdForProject } from '../lib/project-access';
 import { buildWebhookPayload, sendWebhook } from '../lib/webhook';
 import type { DroppedAttachment, Env, Project, SentryEvent } from '../types';
 
@@ -95,7 +100,7 @@ interface UploadedAttachment {
 
 type ItemSink =
 	| { kind: 'drain' }
-	| { kind: 'event-buffer'; itemType: 'event' | 'transaction'; chunks: Uint8Array[]; bytes: number }
+	| { kind: 'event-buffer'; itemType: 'event'; chunks: Uint8Array[]; bytes: number }
 	| {
 			kind: 'attachment-stream';
 			writer: WritableStreamDefaultWriter<Uint8Array>;
@@ -306,10 +311,13 @@ class StreamingIngest {
 
 	private onItemHeader(header: ItemHeader): Promise<void> | void {
 		const type = header.type;
-		if (type === 'event' || type === 'transaction') {
+		if (type === 'event') {
 			this.sink = { kind: 'event-buffer', itemType: type, chunks: [], bytes: 0 };
 			return;
 		}
+		// Transactions (performance data) are not supported: drain them instead
+		// of storing them as error issues (they used to surface as bogus
+		// "Unknown Error" issues whenever tracesSampleRate > 0).
 		if (type !== 'attachment') {
 			// client_report etc.: framed, drained, counted only toward the
 			// decompressed ceiling by the read loop
@@ -585,7 +593,7 @@ async function handleIngestion(c: Context<{ Bindings: Env }>): Promise<Response>
 	const project = projectData.project;
 
 	// Verify project ID matches (if provided in URL)
-	if (projectId && projectId !== project.id) {
+	if (projectId && !isProjectIdForProject(projectId, project)) {
 		return c.json({ error: 'project_mismatch', message: 'Project ID does not match DSN' }, 400);
 	}
 
@@ -712,7 +720,9 @@ async function handleIngestion(c: Context<{ Bindings: Env }>): Promise<Response>
 
 	// Envelope cardinality is decided in the worker — the DO never sees
 	// event counts.
-	const events: SentryEvent[] = rawEvent ? [rawEvent] : ingest.events;
+	const events: SentryEvent[] = (rawEvent ? [rawEvent] : ingest.events).filter(
+		(event) => !isTransactionEvent(event),
+	);
 
 	if (events.length === 0) {
 		await bestEffortDelete(store, ingest.uploadedKeys);

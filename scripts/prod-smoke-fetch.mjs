@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 // Production fetch-side smoke test. Run after `wrangler deploy` against the
-// live worker (defaults to https://aw-heck.ed3d.net):
+// live worker (defaults to http://127.0.0.1:8787; pass --base https://sentinel-lab.<conta>.workers.dev):
 //
 //   node scripts/prod-smoke-fetch.mjs \
-//     --dsn https://<publicKey>@aw-heck.ed3d.net/<projectId> \
+//     --dsn https://<publicKey>@sentinel-lab.<conta>.workers.dev/<projectId> \
 //     --slug polytoken-feedback
 //
 // Authed checks additionally need a throwaway API token in the environment:
@@ -29,7 +29,7 @@ import { parseArgs } from 'node:util';
 
 const { values } = parseArgs({
 	options: {
-		base: { type: 'string', default: 'https://aw-heck.ed3d.net' },
+		base: { type: 'string', default: 'http://127.0.0.1:8787' },
 		dsn: { type: 'string', default: process.env.SENTINEL_SMOKE_DSN },
 		slug: { type: 'string', default: process.env.SENTINEL_SMOKE_SLUG ?? 'polytoken-feedback' },
 		help: { type: 'boolean', default: false },

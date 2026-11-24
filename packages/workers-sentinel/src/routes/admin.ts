@@ -225,14 +225,14 @@ adminRoutes.post('/projects', async (c) => {
 		ownerId: body.ownerId,
 	});
 	const data = (await response.json()) as {
-		project?: { id: string; publicKey: string };
+		project?: { id: string; publicKey: string; ingestId?: number | null };
 	} & Record<string, unknown>;
 	if (!response.ok || !data.project) {
 		return c.json(data, response.status as ContentfulStatusCode);
 	}
 	// DSN built from the request host, mirroring the project read routes
 	const host = new URL(c.req.url).host;
-	const dsn = `https://${data.project.publicKey}@${host}/${data.project.id}`;
+	const dsn = `https://${data.project.publicKey}@${host}/${data.project.ingestId ?? data.project.id}`;
 	return c.json({ ...data, dsn }, response.status as ContentfulStatusCode);
 });
 
