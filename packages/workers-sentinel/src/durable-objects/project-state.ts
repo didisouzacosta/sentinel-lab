@@ -7,6 +7,15 @@ import {
 	extractTitle,
 	generateFingerprint,
 } from '../lib/fingerprint';
+import {
+	createKaneoClient,
+	type KaneoCredentials,
+	KaneoError,
+	kaneoTaskUrl,
+	kaneoTicketKey,
+} from '../lib/kaneo';
+import { buildKaneoTask } from '../lib/kaneo-task';
+import { openSecret, SecretBoxError } from '../lib/secret-box';
 import type {
 	DroppedAttachment,
 	Env,
@@ -30,6 +39,82 @@ const GC_TIME_BUDGET_MS = 30_000;
 const MIGRATION_BATCH = 100;
 /** Purge sweep retry delay when the sweep cannot complete in one run. */
 const PURGE_RETRY_MS = 60 * 1000;
+
+/** Issue levels in increasing severity (Kaneo `minLevel` filter). */
+const ISSUE_LEVEL_RANK: Record<string, number> = {
+	debug: 0,
+	info: 1,
+	warning: 2,
+	error: 3,
+	fatal: 4,
+};
+/** Delay before each retry of a failed integration delivery; one more failure gives up. */
+const OUTBOX_BACKOFF_MS = [60_000, 5 * 60_000, 30 * 60_000];
+/** Outbox rows delivered per alarm run. */
+const OUTBOX_BATCH = 20;
+/** Color of the `sentinel` label Sentinel puts on the tasks it creates. */
+const KANEO_LABEL_COLOR = '#e5484d';
+
+type IntegrationAction = 'create' | 'resolve' | 'reopen';
+const OUTBOX_ACTION_LABEL: Record<IntegrationAction, string> = {
+	create: 'create',
+	resolve: 'close',
+	reopen: 'reopen',
+};
+
+/** Where the project lives, so alarm deliveries can link back to the dashboard. */
+interface IntegrationContext {
+	projectId: string;
+	slug: string;
+	origin: string;
+}
+
+/** The parts of the Kaneo config (routes/integrations.ts KaneoConfig) used here. */
+interface KaneoRuntimeConfig {
+	baseUrl: string;
+	workspaceId: string;
+	kaneoProjectId: string;
+	kaneoProjectSlug: string;
+	createColumn: string;
+	doneColumn: string;
+	reopenColumn: string;
+	autoCreate: boolean;
+	minLevel: string;
+	environments: string[];
+	sentinelProjectId?: string;
+	sentinelProjectSlug?: string;
+	sentinelOrigin?: string;
+}
+
+interface ActiveKaneo {
+	id: string;
+	config: KaneoRuntimeConfig;
+	secretCipher: string;
+}
+
+export interface IssueLink {
+	integrationId: string;
+	type: string;
+	externalId: string;
+	externalUrl: string;
+	externalKey: string | null;
+	createdAt: string;
+}
+
+class IntegrationError extends Error {
+	constructor(
+		readonly code: string,
+		message: string,
+	) {
+		super(message);
+	}
+}
+
+function integrationErrorMessage(error: unknown): string {
+	if (error instanceof KaneoError || error instanceof IntegrationError) return error.message;
+	if (error instanceof SecretBoxError) return 'the stored credentials could not be decrypted';
+	return 'unexpected error';
+}
 
 /** Per-project attachment payload budget across all stored rows (R2 bytes). */
 export const MAX_PROJECT_ATTACHMENT_BYTES = 10 * 1024 * 1024 * 1024;
@@ -318,6 +403,8 @@ type IngestOutcome =
 			title?: string;
 			level: string;
 			culprit: string | null;
+			/** An integration delivery was queued (the alarm must run soon). */
+			queuedIntegration: boolean;
 	  };
 
 export class ProjectState extends DurableObject<Env> {
@@ -458,6 +545,10 @@ export class ProjectState extends DurableObject<Env> {
 					return this.handleSaveIntegration(request);
 				case '/integrations/delete':
 					return this.handleDeleteIntegration(request);
+				case '/integrations/context':
+					return this.handleSaveIntegrationContext(request);
+				case '/integrations/create-task':
+					return this.handleCreateIntegrationTask(request);
 				case '/attachment/r2-probe':
 					// Test-only DO↔R2 binding probe (inert without the test
 					// fault-injection binding)
@@ -780,6 +871,9 @@ export class ProjectState extends DurableObject<Env> {
 		// only after the transaction commits.
 		if (outcome.kind === 'stored') {
 			this.refreshRateLimitCount();
+			if (outcome.queuedIntegration) {
+				await this.scheduleNextAlarm();
+			}
 		}
 
 		if (outcome.kind === 'duplicate') {
@@ -1082,15 +1176,33 @@ export class ProjectState extends DurableObject<Env> {
 						);
 					}
 				}
-
-				// Regression detection: reopen resolved issues
-				if (existingIssue && existingIssue.status === 'resolved') {
-					this.sql.exec("UPDATE issues SET status = 'unresolved' WHERE id = ?", issueId);
-				}
 			} catch (e) {
 				console.error('Release tracking failed:', e);
 			}
 		}
+
+		// Regression detection: a resolved issue that receives an event
+		// reopens, with or without a release (it used to run only for events
+		// carrying a release) and with an activity row saying why.
+		const regressed = Boolean(existingIssue && existingIssue.status === 'resolved');
+		if (regressed) {
+			this.sql.exec("UPDATE issues SET status = 'unresolved' WHERE id = ?", issueId);
+			this.sql.exec(
+				`INSERT INTO issue_activity (id, issue_id, user_id, user_name, type, data, created_at)
+				 VALUES (?, ?, 'system', 'System', 'status_change', ?, ?)`,
+				crypto.randomUUID(),
+				issueId,
+				JSON.stringify({ from: 'resolved', to: 'unresolved', reason: 'regression' }),
+				now,
+			);
+		}
+		const queuedIntegration = this.queueKaneoForIngest(
+			issueId,
+			!existingIssue,
+			regressed,
+			event.level || 'error',
+			environment,
+		);
 
 		// Track unique users
 		if (event.user && userHash) {
@@ -1160,6 +1272,7 @@ export class ProjectState extends DurableObject<Env> {
 			title: newIssueTitle,
 			level: event.level || 'error',
 			culprit: newIssueCulprit ?? null,
+			queuedIntegration,
 		};
 	}
 
@@ -1334,6 +1447,9 @@ export class ProjectState extends DurableObject<Env> {
 		return this.jsonResponse({
 			issue: this.rowToIssue(row),
 			stats,
+			links: this.issueLinks(issueId),
+			/** Integrations that can create a task for this issue right now. */
+			availableIntegrations: this.activeKaneo() ? ['kaneo'] : [],
 		});
 	}
 
@@ -1348,44 +1464,39 @@ export class ProjectState extends DurableObject<Env> {
 		if (!issueId) {
 			return this.jsonResponse({ error: 'missing_issue_id' }, 400);
 		}
-
-		const updates: string[] = [];
-		const params: (string | null)[] = [];
-
-		// Get previous status before updating
-		let previousStatus: string | undefined;
-		if (status) {
-			const current = this.sql.exec('SELECT status FROM issues WHERE id = ?', issueId).toArray();
-			previousStatus = current.length > 0 ? (current[0].status as string) : 'unknown';
-			updates.push('status = ?');
-			params.push(status);
-		}
-
-		if (updates.length === 0) {
+		if (!status) {
 			return this.jsonResponse({ error: 'no_updates' }, 400);
 		}
 
-		params.push(issueId);
-		this.sql.exec(`UPDATE issues SET ${updates.join(', ')} WHERE id = ?`, ...params);
+		const current = this.sql.exec('SELECT status FROM issues WHERE id = ?', issueId).toArray();
+		const previousStatus = current.length > 0 ? (current[0].status as string) : null;
 
-		// Record status change activity
-		if (status && previousStatus) {
-			const activityId = crypto.randomUUID();
-			const now = new Date().toISOString();
-			this.sql.exec(
-				`INSERT INTO issue_activity (id, issue_id, user_id, user_name, type, data, created_at)
-				 VALUES (?, ?, ?, ?, 'status_change', ?, ?)`,
-				activityId,
-				issueId,
-				userId || 'system',
-				userName || 'System',
-				JSON.stringify({ from: previousStatus, to: status }),
-				now,
-			);
+		// Asking for the status the issue already has changes nothing: no
+		// activity row and no integration delivery (this also ends any
+		// Sentinel ↔ Kaneo ping-pong).
+		let queued = false;
+		if (previousStatus !== null && previousStatus !== status) {
+			this.ctx.storage.transactionSync(() => {
+				this.sql.exec('UPDATE issues SET status = ? WHERE id = ?', status, issueId);
+				this.sql.exec(
+					`INSERT INTO issue_activity (id, issue_id, user_id, user_name, type, data, created_at)
+					 VALUES (?, ?, ?, ?, 'status_change', ?, ?)`,
+					crypto.randomUUID(),
+					issueId,
+					userId || 'system',
+					userName || 'System',
+					JSON.stringify({ from: previousStatus, to: status }),
+					new Date().toISOString(),
+				);
+				queued = this.queueKaneoForStatus(issueId, previousStatus, status);
+			});
+		}
+		if (queued) {
+			await this.scheduleNextAlarm();
 		}
 
-		const row = this.sql.exec('SELECT * FROM issues WHERE id = ?', issueId).one();
-		return this.jsonResponse({ issue: row ? this.rowToIssue(row) : null });
+		const rows = this.sql.exec('SELECT * FROM issues WHERE id = ?', issueId).toArray();
+		return this.jsonResponse({ issue: rows.length > 0 ? this.rowToIssue(rows[0]) : null });
 	}
 
 	private async handleDeleteIssue(request: Request): Promise<Response> {
@@ -1440,10 +1551,12 @@ export class ProjectState extends DurableObject<Env> {
 	}
 
 	private async handleBulkUpdateIssues(request: Request): Promise<Response> {
-		const { issueIds, status, action } = (await request.json()) as {
+		const { issueIds, status, action, userId, userName } = (await request.json()) as {
 			issueIds: string[];
 			status?: string;
 			action?: 'delete';
+			userId?: string;
+			userName?: string;
 		};
 
 		if (!issueIds || !Array.isArray(issueIds) || issueIds.length === 0) {
@@ -1503,13 +1616,41 @@ export class ProjectState extends DurableObject<Env> {
 		}
 
 		if (status) {
-			this.sql.exec(
-				`UPDATE issues SET status = ? WHERE id IN (${placeholders})`,
-				status,
-				...issueIds,
-			);
-			const changedRow = this.sql.exec('SELECT changes() as n').one();
-			const affected = changedRow ? (changedRow.n as number) : 0;
+			// Same rules as a single update: one activity row per issue whose
+			// status really changes, and the integration follows.
+			const previous = this.sql
+				.exec(`SELECT id, status FROM issues WHERE id IN (${placeholders})`, ...issueIds)
+				.toArray();
+			let affected = 0;
+			let queued = false;
+			this.ctx.storage.transactionSync(() => {
+				this.sql.exec(
+					`UPDATE issues SET status = ? WHERE id IN (${placeholders})`,
+					status,
+					...issueIds,
+				);
+				const changedRow = this.sql.exec('SELECT changes() as n').one();
+				affected = changedRow ? (changedRow.n as number) : 0;
+				const now = new Date().toISOString();
+				for (const row of previous) {
+					const from = row.status as string;
+					if (from === status) continue;
+					this.sql.exec(
+						`INSERT INTO issue_activity (id, issue_id, user_id, user_name, type, data, created_at)
+						 VALUES (?, ?, ?, ?, 'status_change', ?, ?)`,
+						crypto.randomUUID(),
+						row.id as string,
+						userId || 'system',
+						userName || 'System',
+						JSON.stringify({ from, to: status }),
+						now,
+					);
+					if (this.queueKaneoForStatus(row.id as string, from, status)) queued = true;
+				}
+			});
+			if (queued) {
+				await this.scheduleNextAlarm();
+			}
 			return this.jsonResponse({ success: true, affected });
 		}
 
@@ -2202,6 +2343,15 @@ export class ProjectState extends DurableObject<Env> {
 			candidates.push(now + PURGE_RETRY_MS);
 		}
 
+		// Integration deliveries waiting in the outbox
+		const outbox = this.sql
+			.exec('SELECT MIN(next_attempt_at) as next FROM integration_outbox')
+			.toArray();
+		const nextDelivery = outbox[0]?.next as string | null;
+		if (nextDelivery) {
+			candidates.push(new Date(nextDelivery).getTime());
+		}
+
 		// Never delay an earlier already-scheduled alarm
 		const current = await this.ctx.storage.getAlarm();
 		if (current !== null && current > now) {
@@ -2666,6 +2816,17 @@ export class ProjectState extends DurableObject<Env> {
 			await this.ctx.storage.deleteAll();
 			this.initialized = false;
 			return true; // wiped: do not reschedule
+		}
+
+		// Integration deliveries (Kaneo) first: they are what usually brought
+		// the alarm forward. A failure here never blocks maintenance.
+		try {
+			await this.processIntegrationOutbox();
+		} catch (error) {
+			console.error(
+				'Integration outbox failed:',
+				error instanceof Error ? error.message.slice(0, 200) : 'unknown',
+			);
 		}
 
 		const now = new Date().toISOString();
@@ -3527,6 +3688,426 @@ export class ProjectState extends DurableObject<Env> {
 			this.sql.exec('DELETE FROM integrations WHERE id = ?', row.id);
 		});
 		return this.jsonResponse({ deleted: true, integration: this.rowToIntegration(row) });
+	}
+
+	// ============================================
+	// Kaneo delivery (issue → task, status sync)
+	// ============================================
+	// Triggers run inside the caller's transaction and only queue rows in
+	// integration_outbox; the alarm delivers them (retries 1/5/30 min, then
+	// gives up and records integrations.last_error). Manual creation runs the
+	// same code synchronously. One task per issue: issue_links is the source
+	// of truth, and an in-memory map dedupes concurrent creations (this DO is
+	// the only writer for its project).
+
+	private kaneoCreates = new Map<string, Promise<IssueLink>>();
+
+	private activeKaneo(): ActiveKaneo | null {
+		const row = this.integrationRow('kaneo');
+		if (!row || (row.enabled as number) !== 1) return null;
+		return {
+			id: row.id as string,
+			config: JSON.parse(row.config as string) as KaneoRuntimeConfig,
+			secretCipher: row.secret_cipher as string,
+		};
+	}
+
+	private issueLinks(issueId: string): IssueLink[] {
+		return this.sql
+			.exec(
+				`SELECT l.*, i.type AS integration_type FROM issue_links l
+				 JOIN integrations i ON i.id = l.integration_id
+				 WHERE l.issue_id = ? ORDER BY l.created_at`,
+				issueId,
+			)
+			.toArray()
+			.map((row) => ({
+				integrationId: row.integration_id as string,
+				type: row.integration_type as string,
+				externalId: row.external_id as string,
+				externalUrl: row.external_url as string,
+				externalKey: (row.external_key as string | null) ?? null,
+				createdAt: row.created_at as string,
+			}));
+	}
+
+	private kaneoLink(integrationId: string, issueId: string): IssueLink | null {
+		return this.issueLinks(issueId).find((link) => link.integrationId === integrationId) ?? null;
+	}
+
+	private hasPendingCreate(integrationId: string, issueId: string): boolean {
+		return (
+			this.sql
+				.exec(
+					"SELECT 1 FROM integration_outbox WHERE integration_id = ? AND issue_id = ? AND action = 'create'",
+					integrationId,
+					issueId,
+				)
+				.toArray().length > 0
+		);
+	}
+
+	private enqueueIntegration(
+		integrationId: string,
+		issueId: string,
+		action: IntegrationAction,
+		payload?: Record<string, unknown>,
+	): void {
+		const now = new Date().toISOString();
+		this.sql.exec(
+			`INSERT INTO integration_outbox
+			 (id, integration_id, issue_id, action, payload, attempts, next_attempt_at, created_at)
+			 VALUES (?, ?, ?, ?, ?, 0, ?, ?)`,
+			crypto.randomUUID(),
+			integrationId,
+			issueId,
+			action,
+			payload ? JSON.stringify(payload) : null,
+			now,
+			now,
+		);
+	}
+
+	/**
+	 * Ingest trigger (inside the ingest transaction): a regression of a
+	 * linked issue reopens its task; a new issue — or a regression without a
+	 * task — gets one when automatic creation is on and the filters match.
+	 */
+	private queueKaneoForIngest(
+		issueId: string,
+		isNewIssue: boolean,
+		regressed: boolean,
+		level: string,
+		environment: string | null,
+	): boolean {
+		if (!isNewIssue && !regressed) return false;
+		const kaneo = this.activeKaneo();
+		if (!kaneo) return false;
+		if (this.kaneoLink(kaneo.id, issueId)) {
+			if (!regressed) return false;
+			this.enqueueIntegration(kaneo.id, issueId, 'reopen', { reason: 'regression' });
+			return true;
+		}
+		if (this.hasPendingCreate(kaneo.id, issueId)) return false;
+		const config = kaneo.config;
+		if (!config.autoCreate) return false;
+		const rank = (value: string) => ISSUE_LEVEL_RANK[value] ?? ISSUE_LEVEL_RANK.error;
+		if (rank(level) < rank(config.minLevel)) return false;
+		if (config.environments.length > 0) {
+			if (!environment || !config.environments.includes(environment)) return false;
+		}
+		this.enqueueIntegration(kaneo.id, issueId, 'create');
+		return true;
+	}
+
+	/** Status trigger: resolving closes the task, leaving `resolved` reopens it. */
+	private queueKaneoForStatus(issueId: string, from: string, to: string): boolean {
+		if (from === to) return false;
+		const kaneo = this.activeKaneo();
+		if (!kaneo) return false;
+		if (!this.kaneoLink(kaneo.id, issueId) && !this.hasPendingCreate(kaneo.id, issueId)) {
+			return false;
+		}
+		if (to === 'resolved') {
+			this.enqueueIntegration(kaneo.id, issueId, 'resolve');
+			return true;
+		}
+		if (from === 'resolved') {
+			this.enqueueIntegration(kaneo.id, issueId, 'reopen', { reason: 'manual' });
+			return true;
+		}
+		return false;
+	}
+
+	/** Remember where this project lives so alarm deliveries can build permalinks. */
+	private saveIntegrationContext(type: string, context: IntegrationContext | undefined): void {
+		if (!context?.projectId || !context.slug || !context.origin) return;
+		const row = this.integrationRow(type);
+		if (!row) return;
+		const config = JSON.parse(row.config as string) as KaneoRuntimeConfig;
+		if (
+			config.sentinelProjectId === context.projectId &&
+			config.sentinelProjectSlug === context.slug &&
+			config.sentinelOrigin === context.origin
+		) {
+			return;
+		}
+		config.sentinelProjectId = context.projectId;
+		config.sentinelProjectSlug = context.slug;
+		config.sentinelOrigin = context.origin;
+		this.sql.exec(
+			'UPDATE integrations SET config = ? WHERE id = ?',
+			JSON.stringify(config),
+			row.id as string,
+		);
+	}
+
+	private async kaneoClientFor(kaneo: ActiveKaneo) {
+		const key = this.env.INTEGRATIONS_KEY;
+		if (!key) {
+			throw new IntegrationError(
+				'integrations_unconfigured',
+				'INTEGRATIONS_KEY is not set on this Sentinel instance',
+			);
+		}
+		const config = kaneo.config;
+		if (!config.sentinelProjectId || !config.sentinelOrigin || !config.sentinelProjectSlug) {
+			throw new IntegrationError(
+				'integration_context_missing',
+				'Open the Kaneo settings of this project and save them again',
+			);
+		}
+		const credentials = JSON.parse(
+			await openSecret(key, config.sentinelProjectId, kaneo.secretCipher),
+		) as KaneoCredentials;
+		return createKaneoClient(config.baseUrl, credentials);
+	}
+
+	private issuePermalink(config: KaneoRuntimeConfig, issueId: string): string {
+		return `${config.sentinelOrigin}/projects/${encodeURIComponent(config.sentinelProjectSlug ?? '')}/issues/${encodeURIComponent(issueId)}`;
+	}
+
+	/** Create the issue's Kaneo task, or return the one it already has. */
+	private async createKaneoTaskFor(
+		issueId: string,
+	): Promise<{ link: IssueLink; created: boolean }> {
+		const kaneo = this.activeKaneo();
+		if (!kaneo) throw new IntegrationError('no_integration', 'Kaneo is not connected');
+		const existing = this.kaneoLink(kaneo.id, issueId);
+		if (existing) return { link: existing, created: false };
+		const inFlight = this.kaneoCreates.get(issueId);
+		if (inFlight) return { link: await inFlight, created: false };
+
+		const creation = (async (): Promise<IssueLink> => {
+			const rows = this.sql.exec('SELECT * FROM issues WHERE id = ?', issueId).toArray();
+			if (rows.length === 0) throw new IntegrationError('issue_not_found', 'Issue not found');
+			const issue = this.rowToIssue(rows[0]);
+			const eventRow = this.sql
+				.exec(
+					'SELECT data FROM events WHERE issue_id = ? ORDER BY received_at DESC, id DESC LIMIT 1',
+					issueId,
+				)
+				.toArray()[0];
+			const latestEvent = eventRow
+				? (JSON.parse(eventRow.data as string) as Record<string, unknown>)
+				: null;
+
+			const client = await this.kaneoClientFor(kaneo);
+			const config = kaneo.config;
+			const permalink = this.issuePermalink(config, issueId);
+			const body = buildKaneoTask(issue, latestEvent, {
+				permalink,
+				projectSlug: config.sentinelProjectSlug ?? '',
+			});
+			const task = await client.createTask(config.kaneoProjectId, {
+				...body,
+				status: issue.status === 'resolved' ? config.doneColumn : config.createColumn,
+			});
+
+			const link: IssueLink = {
+				integrationId: kaneo.id,
+				type: 'kaneo',
+				externalId: task.id,
+				externalUrl: kaneoTaskUrl(
+					client.origin,
+					config.workspaceId,
+					config.kaneoProjectId,
+					task.id,
+				),
+				externalKey: kaneoTicketKey(config.kaneoProjectSlug, task.number),
+				createdAt: new Date().toISOString(),
+			};
+			// Store the link before the best-effort extras, so a failure there
+			// can never lead to a second task. An issue deleted meanwhile fails
+			// the foreign key; the task then simply stays unlinked.
+			try {
+				this.sql.exec(
+					`INSERT INTO issue_links (issue_id, integration_id, external_id, external_url, external_key, created_at)
+					 VALUES (?, ?, ?, ?, ?, ?)`,
+					issueId,
+					link.integrationId,
+					link.externalId,
+					link.externalUrl,
+					link.externalKey,
+					link.createdAt,
+				);
+			} catch {
+				console.error('Kaneo task created for an issue that no longer exists');
+			}
+			await Promise.allSettled([
+				client.addExternalLink(task.id, { url: permalink, title: 'Sentinel issue' }),
+				client.createLabel({
+					name: 'sentinel',
+					color: KANEO_LABEL_COLOR,
+					workspaceId: config.workspaceId,
+					taskId: task.id,
+				}),
+			]);
+			return link;
+		})();
+
+		this.kaneoCreates.set(issueId, creation);
+		try {
+			return { link: await creation, created: true };
+		} finally {
+			this.kaneoCreates.delete(issueId);
+		}
+	}
+
+	/** Deliver one outbox row. Returns false to retry later without counting an attempt. */
+	private async deliverKaneo(kaneo: ActiveKaneo, row: Record<string, SqlStorageValue>) {
+		const issueId = row.issue_id as string;
+		const action = row.action as IntegrationAction;
+		if (action === 'create') {
+			await this.createKaneoTaskFor(issueId);
+			return true;
+		}
+		const link = this.kaneoLink(kaneo.id, issueId);
+		if (!link) {
+			// Wait for a pending creation; without one there is nothing to update.
+			return !this.hasPendingCreate(kaneo.id, issueId);
+		}
+		const client = await this.kaneoClientFor(kaneo);
+		if (action === 'resolve') {
+			await client.setStatus(link.externalId, kaneo.config.doneColumn);
+			return true;
+		}
+		await client.setStatus(link.externalId, kaneo.config.reopenColumn);
+		const payload = row.payload ? (JSON.parse(row.payload as string) as { reason?: string }) : {};
+		if (payload.reason === 'regression') {
+			const issueRow = this.sql
+				.exec('SELECT count, last_seen FROM issues WHERE id = ?', issueId)
+				.toArray()[0];
+			const count = issueRow ? (issueRow.count as number) : '?';
+			await client
+				.addComment(
+					link.externalId,
+					`Sentinel: this error came back after being resolved (${count} events so far, last seen ${issueRow?.last_seen ?? 'now'}). ${this.issuePermalink(kaneo.config, issueId)}`,
+				)
+				.catch(() => undefined);
+		}
+		return true;
+	}
+
+	/** Alarm step: deliver due outbox rows in order. Never throws. */
+	private async processIntegrationOutbox(): Promise<void> {
+		const due = this.sql
+			.exec(
+				'SELECT * FROM integration_outbox WHERE next_attempt_at <= ? ORDER BY created_at, id LIMIT ?',
+				new Date().toISOString(),
+				OUTBOX_BATCH,
+			)
+			.toArray();
+		for (const row of due) {
+			const id = row.id as string;
+			// The row may be gone (integration removed, issue deleted) by now.
+			if (
+				this.sql.exec('SELECT 1 FROM integration_outbox WHERE id = ?', id).toArray().length === 0
+			) {
+				continue;
+			}
+			const kaneo = this.activeKaneo();
+			if (!kaneo || kaneo.id !== row.integration_id) {
+				this.sql.exec('DELETE FROM integration_outbox WHERE id = ?', id);
+				continue;
+			}
+			try {
+				const done = await this.deliverKaneo(kaneo, row);
+				if (done) {
+					this.sql.exec('DELETE FROM integration_outbox WHERE id = ?', id);
+				} else {
+					this.sql.exec(
+						'UPDATE integration_outbox SET next_attempt_at = ? WHERE id = ?',
+						new Date(Date.now() + OUTBOX_BACKOFF_MS[0]).toISOString(),
+						id,
+					);
+				}
+			} catch (error) {
+				if (error instanceof IntegrationError && error.code === 'issue_not_found') {
+					this.sql.exec('DELETE FROM integration_outbox WHERE id = ?', id);
+					continue;
+				}
+				const message = integrationErrorMessage(error);
+				const attempts = (row.attempts as number) + 1;
+				if (attempts > OUTBOX_BACKOFF_MS.length) {
+					const verb = OUTBOX_ACTION_LABEL[row.action as IntegrationAction] ?? 'update';
+					this.ctx.storage.transactionSync(() => {
+						this.sql.exec('DELETE FROM integration_outbox WHERE id = ?', id);
+						this.sql.exec(
+							'UPDATE integrations SET last_error = ?, last_error_at = ? WHERE id = ?',
+							`Could not ${verb} the Kaneo task of issue ${row.issue_id as string}: ${message}`,
+							new Date().toISOString(),
+							kaneo.id,
+						);
+					});
+				} else {
+					this.sql.exec(
+						'UPDATE integration_outbox SET attempts = ?, next_attempt_at = ?, last_error = ? WHERE id = ?',
+						attempts,
+						new Date(Date.now() + OUTBOX_BACKOFF_MS[attempts - 1]).toISOString(),
+						message,
+						id,
+					);
+				}
+			}
+		}
+	}
+
+	private async handleCreateIntegrationTask(request: Request): Promise<Response> {
+		const { issueId, context } = (await request.json()) as {
+			issueId?: string;
+			context?: IntegrationContext;
+		};
+		if (!issueId) return this.jsonResponse({ error: 'missing_issue_id' }, 400);
+		this.saveIntegrationContext('kaneo', context);
+		try {
+			const result = await this.createKaneoTaskFor(issueId);
+			return this.jsonResponse(
+				{ link: result.link, created: result.created },
+				result.created ? 201 : 200,
+			);
+		} catch (error) {
+			return this.integrationErrorResponse(error);
+		}
+	}
+
+	private async handleSaveIntegrationContext(request: Request): Promise<Response> {
+		const { type, context } = (await request.json()) as {
+			type?: string;
+			context?: IntegrationContext;
+		};
+		if (!type) return this.jsonResponse({ error: 'missing_type' }, 400);
+		this.saveIntegrationContext(type, context);
+		return this.jsonResponse({ ok: true });
+	}
+
+	private integrationErrorResponse(error: unknown): Response {
+		if (error instanceof IntegrationError) {
+			const status =
+				error.code === 'no_integration' || error.code === 'issue_not_found'
+					? 404
+					: error.code === 'integrations_unconfigured'
+						? 503
+						: 409;
+			return this.jsonResponse({ error: error.code, message: error.message }, status);
+		}
+		if (error instanceof KaneoError) {
+			return this.jsonResponse(
+				{ error: 'kaneo_failed', code: error.code, message: error.message },
+				error.code === 'invalid_url' ? 400 : 502,
+			);
+		}
+		if (error instanceof SecretBoxError) {
+			return this.jsonResponse(
+				{
+					error: 'integration_secret_unreadable',
+					message:
+						'The stored Kaneo credentials could not be decrypted. Enter them again in the project settings.',
+				},
+				409,
+			);
+		}
+		throw error;
 	}
 
 	private jsonResponse(data: unknown, status = 200): Response {

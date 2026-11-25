@@ -9,6 +9,7 @@
  *   PUT    /api/projects/:slug/integrations/kaneo           create or update
  *   POST   /api/projects/:slug/integrations/kaneo/test      check the stored connection
  *   DELETE /api/projects/:slug/integrations/kaneo           disconnect
+ *   POST   /api/projects/:slug/issues/:issueId/links/kaneo  create the issue's task (any member)
  */
 
 import { Hono } from 'hono';
@@ -58,6 +59,10 @@ export interface KaneoConfig {
 	autoCreate: boolean;
 	minLevel: IssueLevel;
 	environments: string[];
+	/** Where this project lives (dashboard links from alarm deliveries). */
+	sentinelProjectId?: string;
+	sentinelProjectSlug?: string;
+	sentinelOrigin?: string;
 }
 
 /** Stored integration row as ProjectState returns it (ciphertexts sealed). */
@@ -109,6 +114,11 @@ export async function openKaneoCredentials(
 		integration.secretCipher,
 	);
 	return JSON.parse(plaintext) as KaneoCredentials;
+}
+
+/** The project's identity and dashboard origin, as seen from this request. */
+export function integrationContext(c: Ctx, project: Project) {
+	return { projectId: project.id, slug: project.slug, origin: new URL(c.req.url).origin };
 }
 
 /** Map a Kaneo failure to the response the caller sees. */
@@ -319,6 +329,17 @@ integrationRoutes.get('/:slug/integrations/kaneo', async (c) => {
 	const configured = !integrationsUnconfigured(c);
 	const integration = await loadIntegration(c.env, ctx.project.id, 'kaneo');
 	if (!integration) return c.json({ configured, integration: null });
+	const stored = integration.config as unknown as KaneoConfig;
+	if (!stored.sentinelOrigin || !stored.sentinelProjectId) {
+		// Settings saved before the project context existed: fill it in.
+		await projectState(c.env, ctx.project.id).fetch(
+			new Request('http://internal/integrations/context', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ type: 'kaneo', context: integrationContext(c, ctx.project) }),
+			}),
+		);
+	}
 	let credentials: KaneoCredentials | null = null;
 	if (configured) {
 		try {
@@ -490,6 +511,9 @@ integrationRoutes.put('/:slug/integrations/kaneo', async (c) => {
 		autoCreate: (body.autoCreate as boolean | undefined) ?? storedConfig?.autoCreate ?? false,
 		minLevel: minLevel as IssueLevel,
 		environments,
+		sentinelProjectId: ctx.project.id,
+		sentinelProjectSlug: ctx.project.slug,
+		sentinelOrigin: new URL(c.req.url).origin,
 	};
 
 	const credentialsChanged =
@@ -609,4 +633,28 @@ integrationRoutes.delete('/:slug/integrations/kaneo', async (c) => {
 		kaneoProjectId: (data.integration?.config as KaneoConfig | undefined)?.kaneoProjectId,
 	});
 	return c.json({ deleted: true });
+});
+
+/**
+ * Create the Kaneo task of an issue now (the "Create task in Kaneo" button).
+ * Any project member may do it, like other triage; the `write` scope is
+ * enforced by authMiddleware. Idempotent: an issue that already has a task
+ * answers 200 with it.
+ */
+integrationRoutes.post('/:slug/issues/:issueId/links/kaneo', async (c) => {
+	const unconfigured = integrationsUnconfigured(c);
+	if (unconfigured) return unconfigured;
+	const access = await getProjectWithAccess(c, c.req.param('slug'));
+	if (access instanceof Response) return access;
+	const response = await projectState(c.env, access.project.id).fetch(
+		new Request('http://internal/integrations/create-task', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				issueId: c.req.param('issueId').toLowerCase(),
+				context: integrationContext(c, access.project),
+			}),
+		}),
+	);
+	return c.json(await response.json(), response.status as ContentfulStatusCode);
 });
