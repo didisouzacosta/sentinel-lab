@@ -12,7 +12,6 @@ import { describe, expect, it } from 'vitest';
  * fails the test, so the list can only shrink.
  */
 const LEGACY = new Set([
-	'views/ApiTokens.vue',
 	'views/admin/AdminAudit.vue',
 	'views/admin/AdminProjects.vue',
 	'views/admin/AdminSettings.vue',
