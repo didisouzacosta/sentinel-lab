@@ -1,6 +1,11 @@
 import { env } from 'cloudflare:test';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createKaneoClient, KaneoError, normalizeKaneoBaseUrl } from '../src/lib/kaneo';
+import {
+	createKaneoClient,
+	KaneoError,
+	kaneoFetcher,
+	normalizeKaneoBaseUrl,
+} from '../src/lib/kaneo';
 import { maskSecret, openSecret, SecretBoxError, sealSecret } from '../src/lib/secret-box';
 import {
 	adminFetch,
@@ -131,23 +136,52 @@ describe('Kaneo client', () => {
 		expect(normalizeKaneoBaseUrl('https://10.0.0.1').ok).toBe(false);
 	});
 
-	it('sends the API key and the Access service token', async () => {
-		requireAccess = true;
-		const client = createKaneoClient(KANEO, {
-			apiKey: validKey,
-			accessClientId: 'access-id',
-			accessClientSecret: 'access-secret',
-		});
+	it('sends only the API key', async () => {
+		const client = createKaneoClient(KANEO, { apiKey: validKey });
 		const columns = await client.listColumns('kp1');
 		expect(columns.map((col) => col.slug)).toContain('done');
 		const sent = requests.at(-1)!;
-		expect(sent.headers.get('CF-Access-Client-Secret')).toBe('access-secret');
+		expect(sent.headers.get('Authorization')).toBe(`Bearer ${validKey}`);
+		expect(sent.headers.get('CF-Access-Client-Id')).toBeNull();
+		expect(sent.headers.get('CF-Access-Client-Secret')).toBeNull();
 	});
 
-	it('reports an Access redirect as access_denied', async () => {
+	it('reports a Kaneo behind Access as access_denied, pointing at the binding', async () => {
 		requireAccess = true;
 		const client = createKaneoClient(KANEO, { apiKey: validKey });
-		await expect(client.listWorkspaces()).rejects.toMatchObject({ code: 'access_denied' });
+		const error = await client.listWorkspaces().catch((e) => e);
+		expect(error).toMatchObject({ code: 'access_denied' });
+		expect(error.message).toContain('KANEO service binding');
+	});
+
+	it('goes through the KANEO binding for the bound origin only', async () => {
+		const seen: string[] = [];
+		const binding = {
+			fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
+				const request = new Request(input, init);
+				seen.push(
+					`${request.method} ${new URL(request.url).pathname} ${request.headers.get('Authorization')}`,
+				);
+				return Response.json([{ id: 'ws9', name: 'Bound', slug: 'bound' }]);
+			},
+		} as unknown as Fetcher;
+		const bound = { KANEO: binding, KANEO_BINDING_ORIGIN: 'https://kaneo.bound.example' };
+
+		const fetcher = kaneoFetcher(bound, 'https://kaneo.bound.example/api/');
+		expect(fetcher).toBeDefined();
+		const workspaces = await createKaneoClient(
+			'https://kaneo.bound.example',
+			{ apiKey: 'k1' },
+			fetcher,
+		).listWorkspaces();
+		expect(workspaces[0].id).toBe('ws9');
+		expect(seen).toEqual(['GET /api/workspace Bearer k1']);
+		// The bound host never went over the network
+		expect(requests).toEqual([]);
+
+		expect(kaneoFetcher(bound, KANEO)).toBeUndefined();
+		expect(kaneoFetcher({ KANEO: binding }, 'https://kaneo.bound.example')).toBeUndefined();
+		expect(kaneoFetcher({}, 'https://kaneo.bound.example')).toBeUndefined();
 	});
 
 	it('reports a bad key as unauthorized with Kaneo’s message', async () => {
@@ -243,8 +277,9 @@ describe('Kaneo integration config routes', () => {
 			minLevel: 'error',
 			environments: [],
 			apiKey: 'kane…6789',
-			hasAccessToken: false,
 		});
+		expect(integration).not.toHaveProperty('hasAccessToken');
+		expect(integration).not.toHaveProperty('accessClientId');
 
 		const read = await authFetch(owner.token!, url());
 		const readText = await read.text();
@@ -289,10 +324,58 @@ describe('Kaneo integration config routes', () => {
 		expect(same.status).toBe(400);
 	});
 
-	it('rejects half an Access service token', async () => {
-		const response = await connect({ accessClientId: 'access-id' });
-		expect(response.status).toBe(400);
-		expect(((await response.json()) as { message: string }).message).toContain('both');
+	async function storedCredentials() {
+		const stub = env.PROJECT_STATE.get(env.PROJECT_STATE.idFromName(project.id));
+		const stored = (await (
+			await stub.fetch('http://internal/integrations/get', {
+				method: 'POST',
+				body: JSON.stringify({ type: 'kaneo' }),
+			})
+		).json()) as { integration: { secretCipher: string; config: Record<string, unknown> } };
+		return {
+			config: stored.integration.config,
+			credentials: JSON.parse(await openSecret(KEY, project.id, stored.integration.secretCipher)),
+		};
+	}
+
+	it('ignores Access service token fields and never stores them', async () => {
+		const response = await connect({
+			accessClientId: 'access-id',
+			accessClientSecret: 'access-secret',
+		});
+		expect(response.status).toBe(201);
+		expect((await storedCredentials()).credentials).toEqual({ apiKey: validKey });
+		const sent = requests.filter((r) => r.headers.get('CF-Access-Client-Id'));
+		expect(sent).toEqual([]);
+	});
+
+	it('drops the Access token of rows saved before it was removed', async () => {
+		await connect();
+		const { config } = await storedCredentials();
+		const legacy = await sealSecret(
+			KEY,
+			project.id,
+			JSON.stringify({
+				apiKey: validKey,
+				accessClientId: 'old-id',
+				accessClientSecret: 'old-secret',
+			}),
+		);
+		const stub = env.PROJECT_STATE.get(env.PROJECT_STATE.idFromName(project.id));
+		await stub.fetch('http://internal/integrations/save', {
+			method: 'POST',
+			body: JSON.stringify({ type: 'kaneo', config, secretCipher: legacy }),
+		});
+
+		// Still works, and sends only the key
+		requests = [];
+		const test = await authFetch(owner.token!, `${url()}/test`, { method: 'POST', body: '{}' });
+		expect(test.status).toBe(200);
+		expect(requests.every((r) => r.headers.get('CF-Access-Client-Id') === null)).toBe(true);
+
+		// Saving the key again re-seals it without the token
+		await connect();
+		expect((await storedCredentials()).credentials).toEqual({ apiKey: validKey });
 	});
 
 	it('reports Kaneo failures as 502 without storing anything', async () => {

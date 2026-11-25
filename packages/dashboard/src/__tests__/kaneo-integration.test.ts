@@ -35,8 +35,6 @@ const SAVED: KaneoIntegration = {
 	minLevel: 'error',
 	environments: [],
 	apiKey: 'kane…6789',
-	accessClientId: null,
-	hasAccessToken: false,
 	credentialsReadable: true,
 	lastError: null,
 	lastErrorAt: null,
@@ -80,6 +78,8 @@ describe('Kaneo integration card', () => {
 		const wrapper = await mountCard();
 
 		expect(wrapper.get('#kaneo').text()).toContain('Not connected');
+		// Only the API key: no Cloudflare Access service token fields
+		expect(wrapper.text()).not.toContain('Access client');
 		const connect = wrapper.get('button[type="submit"]');
 		expect(connect.text()).toBe('Connect');
 		expect(connect.attributes('disabled')).toBeDefined();

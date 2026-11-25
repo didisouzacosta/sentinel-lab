@@ -1,6 +1,6 @@
 /**
- * Encryption at rest for integration credentials (Kaneo API key, Access
- * service token, webhook signing secret).
+ * Encryption at rest for integration credentials (Kaneo API key, webhook
+ * signing secret).
  *
  * AES-256-GCM with a key derived by HKDF-SHA256 from the Worker secret
  * `INTEGRATIONS_KEY`. The project id is bound twice: as the HKDF `info`

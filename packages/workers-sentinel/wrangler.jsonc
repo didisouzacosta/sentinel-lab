@@ -25,6 +25,15 @@
 	"build": {
 		"command": "cd ../dashboard && npm run build"
 	},
+	// Kaneo (kaneo.adrianosouzacosta.com.br) is a Worker in the same account,
+	// behind Cloudflare Access. The integration reaches it through its
+	// KaneoApi entrypoint instead of the internet, so it only needs the
+	// Kaneo API key (src/lib/kaneo.ts kaneoFetcher). Other Kaneo URLs still go
+	// over HTTPS. Under wrangler dev / vitest the binding is not connected.
+	"services": [{ "binding": "KANEO", "service": "kaneo", "entrypoint": "KaneoApi" }],
+	"vars": {
+		"KANEO_BINDING_ORIGIN": "https://kaneo.adrianosouzacosta.com.br"
+	},
 	// Attachment blob storage (metadata rows stay in ProjectState). Miniflare
 	// (`wrangler dev`, vitest-pool-workers, the integration runner) simulates
 	// this bucket from the binding; the production bucket is created by
