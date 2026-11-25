@@ -170,6 +170,8 @@ issueRoutes.patch('/:slug/issues/bulk', async (c) => {
 				issueIds: body.issueIds,
 				status: body.status,
 				action: body.action,
+				userId: c.get('auth')?.user.id,
+				userName: c.get('auth')?.user.name,
 			}),
 		}),
 	);

@@ -1,5 +1,16 @@
 <script setup lang="ts">
-import { Check, Clock, Copy, Download, Eye, EyeOff, FileJson, Trash2 } from 'lucide-vue-next';
+import {
+	Check,
+	Clock,
+	Copy,
+	Download,
+	ExternalLink,
+	Eye,
+	EyeOff,
+	FileJson,
+	SquareKanban,
+	Trash2,
+} from 'lucide-vue-next';
 import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import { api } from '../api/client';
@@ -91,6 +102,16 @@ interface Event {
 	}>;
 }
 
+/** A task in another tool (Kaneo) linked to this issue. */
+interface IssueLink {
+	integrationId: string;
+	type: string;
+	externalId: string;
+	externalUrl: string;
+	externalKey: string | null;
+	createdAt: string;
+}
+
 interface Activity {
 	id: string;
 	issueId: string;
@@ -109,6 +130,10 @@ const slug = computed(() => route.params.slug as string);
 const issueId = computed(() => route.params.issueId as string);
 
 const issue = ref<Issue | null>(null);
+const links = ref<IssueLink[]>([]);
+const kaneoAvailable = ref(false);
+const creatingTask = ref(false);
+const kaneoLink = computed(() => links.value.find((link) => link.type === 'kaneo') ?? null);
 const events = ref<Event[]>([]);
 const selectedEvent = ref<Event | null>(null);
 const loading = ref(true);
@@ -286,7 +311,9 @@ async function loadIssue() {
 
 	try {
 		const [issueResponse, eventsResponse, activityResponse] = await Promise.all([
-			api.get<{ issue: Issue }>(`/api/projects/${slug.value}/issues/${issueId.value}`),
+			api.get<{ issue: Issue; links?: IssueLink[]; availableIntegrations?: string[] }>(
+				`/api/projects/${slug.value}/issues/${issueId.value}`,
+			),
 			api.get<{ events: Event[] }>(
 				`/api/projects/${slug.value}/issues/${issueId.value}/events?limit=10`,
 			),
@@ -296,6 +323,8 @@ async function loadIssue() {
 		]);
 
 		issue.value = issueResponse.issue;
+		links.value = issueResponse.links ?? [];
+		kaneoAvailable.value = (issueResponse.availableIntegrations ?? []).includes('kaneo');
 		events.value = eventsResponse.events;
 		selectedEvent.value = eventsResponse.events[0] || null;
 		activity.value = activityResponse.activity;
@@ -304,6 +333,23 @@ async function loadIssue() {
 		error.value = err instanceof Error ? err.message : 'Failed to load issue';
 	} finally {
 		loading.value = false;
+	}
+}
+
+async function createKaneoTask() {
+	creatingTask.value = true;
+	try {
+		const result = await api.post<{ link: IssueLink }>(
+			`/api/projects/${slug.value}/issues/${issueId.value}/links/kaneo`,
+			{},
+		);
+		links.value = [...links.value.filter((link) => link.type !== 'kaneo'), result.link];
+		const key = result.link.externalKey;
+		toast.success(key ? `Task ${key} created in Kaneo` : 'Task created in Kaneo');
+	} catch (err) {
+		toast.error(err instanceof Error ? err.message : 'Failed to create the Kaneo task');
+	} finally {
+		creatingTask.value = false;
 	}
 }
 
@@ -604,7 +650,13 @@ onMounted(() => loadIssue());
 								<UiAvatar :name="entry.userName" size="sm" />
 								<div class="min-w-0 flex-1">
 									<!-- Status change -->
-									<p v-if="entry.type === 'status_change'" class="text-fg-muted">
+									<p v-if="entry.type === 'status_change' && entry.data.reason === 'regression'" class="text-fg-muted">
+										<span class="font-medium text-fg">Regression:</span>
+										a new event arrived after it was resolved, so it went back to
+										<span class="font-medium text-fg">{{ entry.data.to }}</span>
+										<span class="ml-1 text-caption text-fg-subtle">{{ formatTime(entry.createdAt) }}</span>
+									</p>
+									<p v-else-if="entry.type === 'status_change'" class="text-fg-muted">
 										<span class="font-medium text-fg">{{ entry.userName }}</span>
 										changed status from
 										<span class="font-medium text-fg">{{ entry.data.from }}</span>
@@ -637,6 +689,28 @@ onMounted(() => loadIssue());
 
 				<!-- Side column -->
 				<aside class="flex min-w-0 flex-col gap-5" aria-label="Event context">
+					<UiCard v-if="kaneoLink || kaneoAvailable" title="Kaneo" :heading-level="3" data-testid="issue-kaneo">
+						<div class="flex items-center justify-between gap-3 px-4 py-3.5">
+							<template v-if="kaneoLink">
+								<span class="text-body-s text-fg-muted">Task</span>
+								<a
+									:href="kaneoLink.externalUrl"
+									target="_blank"
+									rel="noopener noreferrer"
+									class="inline-flex items-center gap-1.5 text-body-s font-medium text-accent-text hover:underline"
+								>
+									{{ kaneoLink.externalKey ?? 'Open task' }}
+									<ExternalLink :size="14" aria-hidden="true" />
+								</a>
+							</template>
+							<template v-else>
+								<span class="text-body-s text-fg-muted">No task yet</span>
+								<UiButton size="sm" :icon="SquareKanban" :loading="creatingTask" @click="createKaneoTask">
+									Create task
+								</UiButton>
+							</template>
+						</div>
+					</UiCard>
 					<UiCard title="Event Info" :heading-level="3">
 						<UiDescriptionList :items="eventInfo" />
 					</UiCard>
