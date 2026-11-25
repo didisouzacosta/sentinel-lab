@@ -387,6 +387,8 @@ export class AuthState extends DurableObject<Env> {
 					return this.handleAdminListAudit(request);
 				case '/audit/append':
 					return this.handleAuditAppend(request);
+				case '/project-exists':
+					return this.handleProjectExists(request);
 				case '/validate-session':
 					return this.handleValidateSession(request);
 				case '/me':
@@ -3275,6 +3277,14 @@ export class AuthState extends DurableObject<Env> {
 	 * has already authorized the change; only the `integration.*` action
 	 * family is accepted, so this cannot forge admin history.
 	 */
+	/** Whether a project id exists (public webhooks check it before ProjectState). */
+	private async handleProjectExists(request: Request): Promise<Response> {
+		const { projectId } = (await request.json()) as { projectId?: string };
+		if (!projectId) return this.jsonResponse({ exists: false });
+		const rows = this.sql.exec('SELECT 1 FROM projects WHERE id = ?', projectId).toArray();
+		return this.jsonResponse({ exists: rows.length > 0 });
+	}
+
 	private async handleAuditAppend(request: Request): Promise<Response> {
 		const body = (await request.json()) as {
 			userId?: string;

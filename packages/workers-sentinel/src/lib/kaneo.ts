@@ -101,6 +101,30 @@ export interface KaneoWebhookConfig {
 	events: Record<string, boolean>;
 }
 
+/** Kaneo's generic-webhook event switches (apps/api plugins/generic-webhook). */
+const KANEO_WEBHOOK_EVENTS = [
+	'taskCreated',
+	'taskStatusChanged',
+	'taskPriorityChanged',
+	'taskTitleChanged',
+	'taskDescriptionChanged',
+	'taskCommentCreated',
+	'taskDeleted',
+	'taskMoved',
+	'taskDueDateChanged',
+	'taskAssigneeChanged',
+	'taskUnassigned',
+	'dueDateReminder',
+] as const;
+
+/** The webhook Sentinel installs: only status changes and deletions. */
+export function sentinelWebhookConfig(webhookUrl: string, secret: string): KaneoWebhookConfig {
+	const events = Object.fromEntries(
+		KANEO_WEBHOOK_EVENTS.map((key) => [key, key === 'taskStatusChanged' || key === 'taskDeleted']),
+	);
+	return { webhookUrl, secret, events };
+}
+
 /**
  * Normalize what the user typed into the Kaneo origin (scheme + host, no
  * path): `https://kaneo.example.com/api/` → `https://kaneo.example.com`.

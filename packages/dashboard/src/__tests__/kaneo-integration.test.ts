@@ -38,6 +38,8 @@ const SAVED: KaneoIntegration = {
 	credentialsReadable: true,
 	lastError: null,
 	lastErrorAt: null,
+	webhookStatus: 'installed',
+	webhookError: null,
 };
 
 function discoverHandler(body?: unknown) {
@@ -220,5 +222,29 @@ describe('Kaneo integration card', () => {
 		await flushPromises();
 		expect(wrapper.get('[role="alert"]').text()).toContain('Kaneo answered 401');
 		wrapper.unmount();
+	});
+
+	it('says whether closing a task in Kaneo resolves the issue', async () => {
+		onGet(URL, () => ({ configured: true, integration: SAVED }));
+		onPost(`${URL}/discover`, discoverHandler);
+		const on = await mountCard();
+		expect(on.get('[data-testid="kaneo-webhook"]').text()).toContain('Two-way sync is on');
+		on.unmount();
+
+		resetMocks();
+		onGet(URL, () => ({
+			configured: true,
+			integration: {
+				...SAVED,
+				webhookStatus: 'in_use',
+				webhookError: 'This Kaneo project already has a webhook.',
+			},
+		}));
+		onPost(`${URL}/discover`, discoverHandler);
+		const taken = await mountCard();
+		const alert = taken.get('[data-testid="kaneo-webhook"]');
+		expect(alert.text()).toContain('Only Sentinel → Kaneo is synced.');
+		expect(alert.text()).toContain('already has a webhook');
+		taken.unmount();
 	});
 });
