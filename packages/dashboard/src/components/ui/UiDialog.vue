@@ -38,10 +38,10 @@ const { onCancel, onBackdropClick, requestClose } = useModalDialog(dialog, toRef
 });
 
 const WIDTH = { sm: 'sm:max-w-[400px]', md: 'sm:max-w-[480px]', lg: 'sm:max-w-[640px]' };
+// Template note: Centered on desktop; bottom sheet below 640px. (no root comment, so attrs reach <dialog>)
 </script>
 
 <template>
-	<!-- Centered on desktop; bottom sheet below 640px. -->
 	<dialog
 		ref="dialog"
 		:aria-labelledby="titleId"

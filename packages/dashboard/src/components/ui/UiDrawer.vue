@@ -11,10 +11,10 @@ const { onCancel, onBackdropClick } = useModalDialog(dialog, toRef(open), {
 		open.value = false;
 	},
 });
+// Template note: Side panel for the mobile navigation: Esc, backdrop tap or navigating closes it. (no root comment, so attrs reach <dialog>)
 </script>
 
 <template>
-	<!-- Side panel for the mobile navigation: Esc, backdrop tap or navigating closes it. -->
 	<dialog
 		ref="dialog"
 		:aria-label="label"

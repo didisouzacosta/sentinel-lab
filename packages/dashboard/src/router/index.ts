@@ -8,13 +8,13 @@ const router = createRouter({
 			path: '/login',
 			name: 'login',
 			component: () => import('../views/Login.vue'),
-			meta: { guest: true },
+			meta: { guest: true, title: 'Sign in · Sentinel' },
 		},
 		{
 			path: '/register',
 			name: 'register',
 			component: () => import('../views/Register.vue'),
-			meta: { guest: true },
+			meta: { guest: true, title: 'Create account · Sentinel' },
 		},
 		{
 			path: '/',
@@ -160,6 +160,11 @@ router.beforeEach(async (to, _from, next) => {
 	}
 
 	next();
+});
+
+// Pages outside the app shell set their own tab title (the shell titles the rest)
+router.afterEach((to) => {
+	if (typeof to.meta.title === 'string') document.title = to.meta.title;
 });
 
 export default router;

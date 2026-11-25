@@ -1,6 +1,9 @@
 <script setup lang="ts">
+import { Fingerprint } from 'lucide-vue-next';
 import { ref } from 'vue';
 import { RouterLink, useRouter } from 'vue-router';
+import AuthShell from '../components/app/AuthShell.vue';
+import { UiAlert, UiButton, UiFormField, UiInput } from '../components/ui';
 import { useAuthStore } from '../stores/auth';
 
 const router = useRouter();
@@ -41,98 +44,76 @@ async function handlePasskey() {
 </script>
 
 <template>
-	<div class="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900 py-12 px-4 sm:px-6 lg:px-8">
-		<div class="max-w-md w-full space-y-8">
-			<div>
-				<div class="mx-auto w-12 h-12 bg-primary-500 rounded-xl flex items-center justify-center">
-					<span class="text-2xl font-bold text-white">S</span>
-				</div>
-				<h2 class="mt-6 text-center text-3xl font-extrabold text-gray-900 dark:text-white">
-					Sign in to Sentinel
-				</h2>
-				<p class="mt-2 text-center text-sm text-gray-600 dark:text-gray-400">
-					Or
-					<RouterLink to="/register" class="font-medium text-primary-600 hover:text-primary-500">
-						create a new account
-					</RouterLink>
-				</p>
-			</div>
+	<AuthShell>
+		<header class="flex flex-col gap-1.5">
+			<h1 class="text-heading-l text-fg">Sign in to Sentinel</h1>
+			<p class="text-body-s text-fg-muted">
+				Or
+				<RouterLink to="/register" class="font-medium text-accent-text hover:underline">
+					create a new account
+				</RouterLink>
+			</p>
+		</header>
 
-			<form class="mt-8 space-y-6" @submit.prevent="handleSubmit">
-				<button
-					type="button"
-					class="btn btn-primary w-full"
-					:disabled="passkeyBusy"
+		<form class="flex flex-col gap-5" @submit.prevent="handleSubmit">
+			<div class="flex flex-col gap-2.5">
+				<UiButton
+					variant="primary"
+					class="h-11 w-full"
+					:icon="Fingerprint"
+					:loading="passkeyBusy"
 					data-testid="passkey-login-button"
 					@click="handlePasskey"
 				>
 					{{ passkeyBusy ? 'Waiting for passkey…' : 'Sign in with a passkey' }}
-				</button>
-				<p class="text-center text-xs text-gray-500 dark:text-gray-400">
+				</UiButton>
+				<p class="text-center text-caption text-fg-subtle">
 					No email needed — use your fingerprint, face, or security key
 				</p>
-				<div
-					v-if="passkeyError"
-					class="bg-error-50 dark:bg-error-900/20 text-error-700 dark:text-error-400 px-4 py-3 rounded-lg text-sm"
-					data-testid="passkey-login-error"
-				>
+				<UiAlert v-if="passkeyError" tone="error" data-testid="passkey-login-error">
 					{{ passkeyError }}
-				</div>
+				</UiAlert>
+			</div>
 
-				<div class="relative">
-					<div class="absolute inset-0 flex items-center">
-						<span class="w-full border-t border-gray-300 dark:border-gray-600" />
-					</div>
-					<div class="relative flex justify-center text-sm">
-						<span class="bg-gray-50 dark:bg-gray-900 px-2 text-gray-500 dark:text-gray-400">
-							or sign in with email
-						</span>
-					</div>
-				</div>
+			<div class="flex items-center gap-3 text-caption text-fg-subtle" role="separator">
+				<span class="h-px flex-1 bg-border" />
+				or sign in with email
+				<span class="h-px flex-1 bg-border" />
+			</div>
 
-				<div v-if="authStore.error" class="bg-error-50 dark:bg-error-900/20 text-error-700 dark:text-error-400 px-4 py-3 rounded-lg text-sm">
-					{{ authStore.error }}
-				</div>
+			<UiAlert v-if="authStore.error" tone="error">{{ authStore.error }}</UiAlert>
 
-				<div class="space-y-4">
-					<div>
-						<label for="email" class="label">Email address</label>
-						<!-- type="text" on purpose: profile edits deliberately accept
-							format-free identifiers (the profile endpoint applies no
-							email-format validation), and a type="email" input would let
-							the browser block signing in with one. The server only
-							trims/lowercases. -->
-						<input
-							id="email"
-							v-model="email"
-							type="text"
-							autocomplete="username"
-							inputmode="email"
-							required
-							class="input"
-							placeholder="you@example.com"
-						/>
-					</div>
+			<UiFormField v-slot="f" label="Email address" id="email">
+				<!-- type="text" on purpose: profile edits deliberately accept
+					format-free identifiers (the profile endpoint applies no
+					email-format validation), and a type="email" input would let
+					the browser block signing in with one. The server only
+					trims/lowercases. -->
+				<UiInput
+					:id="f.id"
+					v-model="email"
+					type="text"
+					autocomplete="username"
+					inputmode="email"
+					required
+					placeholder="you@example.com"
+				/>
+			</UiFormField>
 
-					<div>
-						<label for="password" class="label">Password</label>
-						<input
-							id="password"
-							v-model="password"
-							type="password"
-							autocomplete="current-password"
-							required
-							class="input"
-							placeholder="••••••••"
-						/>
-					</div>
-				</div>
+			<UiFormField v-slot="f" label="Password" id="password">
+				<UiInput
+					:id="f.id"
+					v-model="password"
+					type="password"
+					autocomplete="current-password"
+					required
+					placeholder="••••••••"
+				/>
+			</UiFormField>
 
-				<button type="submit" :disabled="authStore.loading" class="btn btn-primary w-full">
-					<span v-if="authStore.loading">Signing in...</span>
-					<span v-else>Sign in</span>
-				</button>
-			</form>
-		</div>
-	</div>
+			<UiButton type="submit" class="h-11 w-full" :loading="authStore.loading">
+				{{ authStore.loading ? 'Signing in...' : 'Sign in' }}
+			</UiButton>
+		</form>
+	</AuthShell>
 </template>

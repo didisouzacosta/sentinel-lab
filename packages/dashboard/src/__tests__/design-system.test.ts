@@ -13,18 +13,14 @@ import { describe, expect, it } from 'vitest';
  */
 const LEGACY = new Set([
 	'components/AttachmentList.vue',
-	'components/ForcePasswordChange.vue',
-	'components/PasskeyNag.vue',
 	'views/ApiTokens.vue',
 	'views/EventDetail.vue',
 	'views/IssueDetail.vue',
 	'views/Issues.vue',
-	'views/Login.vue',
 	'views/ProjectFilters.vue',
 	'views/ProjectOverview.vue',
 	'views/ProjectSettings.vue',
 	'views/Projects.vue',
-	'views/Register.vue',
 	'views/ReleaseDetail.vue',
 	'views/Releases.vue',
 	'views/admin/AdminAudit.vue',

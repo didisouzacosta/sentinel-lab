@@ -115,7 +115,10 @@ watch(
 		<div class="flex min-w-0 flex-1 flex-col">
 			<AppTopBar :crumbs="crumbs" @open-menu="navOpen = true" />
 			<main id="main" tabindex="-1" class="min-w-0 flex-1 p-4 outline-none sm:p-6">
-				<RouterView />
+				<!-- Centered content column (Figma: 1152px at 1440); narrower pages center inside it -->
+				<div class="mx-auto w-full max-w-6xl">
+					<RouterView />
+				</div>
 			</main>
 		</div>
 	</div>

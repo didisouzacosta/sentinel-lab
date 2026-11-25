@@ -134,7 +134,7 @@ onMounted(() => loadFilters());
 </script>
 
 <template>
-	<div class="max-w-3xl">
+	<div class="mx-auto max-w-3xl">
 		<!-- Header -->
 		<div class="flex items-center justify-between mb-6">
 			<div>

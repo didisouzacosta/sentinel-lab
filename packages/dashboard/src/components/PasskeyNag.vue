@@ -1,6 +1,8 @@
 <script setup lang="ts">
+import { Fingerprint } from 'lucide-vue-next';
 import { computed, ref } from 'vue';
 import { useAuthStore } from '../stores/auth';
+import { UiAlert, UiButton, UiDialog, UiFormField, UiInput } from './ui';
 
 const authStore = useAuthStore();
 
@@ -33,62 +35,62 @@ async function createPasskey() {
 function notNow() {
 	authStore.dismissPasskeyNag();
 }
+
+// Esc, backdrop and × mean "not now" (in-memory, per visit)
+const open = computed({
+	get: () => visible.value,
+	set: (v: boolean) => {
+		if (!v) notNow();
+	},
+});
 </script>
 
 <template>
-	<div
+	<UiDialog
 		v-if="visible"
-		class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4"
+		v-model:open="open"
+		title="Secure your account with a passkey"
+		description="Recommended for every account; required to use administration tools."
+		form
 		data-testid="passkey-nag"
-		role="dialog"
-		aria-modal="true"
-		aria-label="Create a passkey"
+		@submit="createPasskey"
 	>
-		<div class="bg-white dark:bg-gray-800 rounded-xl shadow-xl max-w-md w-full p-6 space-y-4">
-			<div class="flex items-start justify-between">
-				<h2 class="text-lg font-semibold text-gray-900 dark:text-white">Secure your account</h2>
+		<div class="flex flex-col gap-4">
+			<div class="flex items-start gap-3">
+				<span class="flex size-9 shrink-0 items-center justify-center rounded-lg bg-accent-subtle text-accent-text">
+					<Fingerprint :size="18" aria-hidden="true" />
+				</span>
+				<p class="text-body-s text-fg-muted">
+					A passkey lets you sign in with a fingerprint, face, or security key — no password needed.
+					It stays on your device and is phishing-resistant. You'll be asked again on your next visit
+					if you skip this now.
+				</p>
 			</div>
-			<p class="text-sm text-gray-600 dark:text-gray-400">
-				A passkey lets you sign in with a fingerprint, face, or security key — no password
-				needed. It stays on your device and is phishing-resistant. You'll be asked again on
-				your next visit if you skip this now.
-			</p>
-
-			<form class="space-y-3" @submit.prevent="createPasskey">
-				<div v-if="error" class="text-sm text-error-700 dark:text-error-400">{{ error }}</div>
-
-				<div>
-					<label for="passkey-name" class="label">Name this passkey</label>
-					<input
-						id="passkey-name"
-						v-model="name"
-						type="text"
-						class="input"
-						placeholder="e.g. YubiKey 5C, iPhone"
-						data-testid="passkey-name-input"
-					/>
-				</div>
-
-				<div class="flex justify-end gap-3 pt-2">
-					<button
-						type="button"
-						class="btn btn-secondary"
-						data-testid="passkey-nag-dismiss"
-						:disabled="creating"
-						@click="notNow"
-					>
-						Not now
-					</button>
-					<button
-						type="submit"
-						class="btn btn-primary"
-						data-testid="passkey-nag-create"
-						:disabled="creating"
-					>
-						{{ creating ? 'Creating…' : 'Create passkey' }}
-					</button>
-				</div>
-			</form>
+			<UiAlert v-if="error" tone="error">{{ error }}</UiAlert>
+			<UiFormField v-slot="f" label="Name this passkey" id="passkey-name">
+				<UiInput
+					:id="f.id"
+					v-model="name"
+					type="text"
+					autofocus
+					placeholder="e.g. YubiKey 5C, iPhone"
+					data-testid="passkey-name-input"
+				/>
+			</UiFormField>
 		</div>
-	</div>
+		<template #footer>
+			<UiButton variant="ghost" data-testid="passkey-nag-dismiss" :disabled="creating" @click="notNow">
+				Not now
+			</UiButton>
+			<UiButton
+				type="submit"
+				variant="primary"
+				:icon="Fingerprint"
+				:loading="creating"
+				data-testid="passkey-nag-create"
+			>
+				{{ creating ? 'Creating…' : 'Create passkey' }}
+			</UiButton>
+		</template>
+	</UiDialog>
 </template>

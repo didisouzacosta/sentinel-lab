@@ -124,7 +124,7 @@ onMounted(() => loadTokens());
 </script>
 
 <template>
-	<div class="max-w-2xl">
+	<div class="mx-auto max-w-2xl">
 		<h1 class="text-2xl font-bold text-gray-900 dark:text-white mb-2">API Tokens</h1>
 		<p class="text-sm text-gray-500 mb-6">
 			Create personal API tokens for programmatic access to the API. Tokens are shown only
