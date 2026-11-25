@@ -12,6 +12,13 @@
  *   POST   /api/projects/:slug/integrations/kaneo/test      check the stored connection
  *   DELETE /api/projects/:slug/integrations/kaneo           disconnect
  *   POST   /api/projects/:slug/issues/:issueId/links/kaneo  create the issue's task (any member)
+ *
+ * Saving also installs Kaneo's webhook back to Sentinel
+ * (POST /api/hooks/kaneo/:projectId, routes/hooks.ts) with a per-project
+ * signing secret, so closing a task in Kaneo resolves its issue. Kaneo allows
+ * one webhook per project: one that Sentinel did not install is left alone
+ * and reported as `webhookStatus: "in_use"`. Webhook problems never block
+ * saving — Sentinel → Kaneo keeps working either way.
  */
 
 import { Hono } from 'hono';
@@ -25,13 +32,20 @@ import {
 	KaneoError,
 	kaneoFetcher,
 	normalizeKaneoBaseUrl,
+	sentinelWebhookConfig,
 } from '../lib/kaneo';
 import {
 	type AppContext,
 	getProjectWithAccess,
 	requireProjectManager,
 } from '../lib/project-access';
-import { maskSecret, openSecret, SecretBoxError, sealSecret } from '../lib/secret-box';
+import {
+	maskSecret,
+	openSecret,
+	randomSecret,
+	SecretBoxError,
+	sealSecret,
+} from '../lib/secret-box';
 import { auditVia } from '../lib/token-scopes';
 import type { AuthContext, Env, Project } from '../types';
 
@@ -66,7 +80,14 @@ export interface KaneoConfig {
 	sentinelProjectId?: string;
 	sentinelProjectSlug?: string;
 	sentinelOrigin?: string;
+	/** Kaneo project whose webhook Sentinel installed (null: none). */
+	webhookKaneoProjectId?: string | null;
+	/** installed | in_use (another webhook owns the slot) | failed. */
+	webhookStatus?: KaneoWebhookStatus;
+	webhookError?: string | null;
 }
+
+export type KaneoWebhookStatus = 'installed' | 'in_use' | 'failed';
 
 /** Stored integration row as ProjectState returns it (ciphertexts sealed). */
 export interface StoredIntegration {
@@ -193,6 +214,46 @@ async function writeAudit(
 	);
 }
 
+/**
+ * Make sure the Kaneo project's webhook points at Sentinel with `secret`.
+ * Never throws: the outcome is stored and shown in the settings.
+ */
+async function installKaneoWebhook(
+	client: KaneoClient,
+	kaneoProjectId: string,
+	webhookUrl: string,
+	secret: string,
+	previous: KaneoConfig | null,
+): Promise<{ status: KaneoWebhookStatus; message?: string }> {
+	const ours = previous?.webhookKaneoProjectId === kaneoProjectId;
+	try {
+		// Moving to another Kaneo project: release the webhook we left behind.
+		if (previous?.webhookKaneoProjectId && previous.webhookKaneoProjectId !== kaneoProjectId) {
+			await client.deleteWebhook(previous.webhookKaneoProjectId).catch(() => undefined);
+		}
+		const existing = await client.getWebhook(kaneoProjectId);
+		if (existing && !ours) {
+			return {
+				status: 'in_use',
+				message:
+					'This Kaneo project already has a webhook (Kaneo allows one per project), so closing a task in Kaneo will not resolve its issue.',
+			};
+		}
+		const config = sentinelWebhookConfig(webhookUrl, secret);
+		if (existing) {
+			await client.updateWebhook(kaneoProjectId, config);
+		} else {
+			await client.createWebhook(kaneoProjectId, config);
+		}
+		return { status: 'installed' };
+	} catch (error) {
+		return {
+			status: 'failed',
+			message: error instanceof KaneoError ? error.message : 'Kaneo webhook could not be installed',
+		};
+	}
+}
+
 /** The integration as the dashboard and API see it: secrets masked. */
 export function kaneoView(integration: StoredIntegration, credentials: KaneoCredentials | null) {
 	const config = integration.config as unknown as KaneoConfig;
@@ -211,6 +272,8 @@ export function kaneoView(integration: StoredIntegration, credentials: KaneoCred
 		autoCreate: config.autoCreate,
 		minLevel: config.minLevel,
 		environments: config.environments,
+		webhookStatus: config.webhookStatus ?? null,
+		webhookError: config.webhookError ?? null,
 		apiKey: maskSecret(credentials?.apiKey),
 		credentialsReadable: credentials !== null,
 		lastError: integration.lastError,
@@ -493,6 +556,37 @@ integrationRoutes.put('/:slug/integrations/kaneo', async (c) => {
 		sentinelOrigin: new URL(c.req.url).origin,
 	};
 
+	// Kaneo → Sentinel: install (or refresh) the webhook with this project's
+	// signing secret, kept across saves so in-flight deliveries stay valid.
+	let webhookSecret: string | null = null;
+	if (stored?.webhookSecretCipher) {
+		try {
+			webhookSecret = await openSecret(
+				c.env.INTEGRATIONS_KEY as string,
+				ctx.project.id,
+				stored.webhookSecretCipher,
+			);
+		} catch {
+			webhookSecret = null;
+		}
+	}
+	const freshSecret = webhookSecret === null;
+	webhookSecret ??= randomSecret();
+	const webhook = await installKaneoWebhook(
+		client,
+		config.kaneoProjectId,
+		`${config.sentinelOrigin}/api/hooks/kaneo/${ctx.project.id}`,
+		webhookSecret,
+		storedConfig,
+	);
+	config.webhookKaneoProjectId = webhook.status === 'installed' ? config.kaneoProjectId : null;
+	config.webhookStatus = webhook.status;
+	config.webhookError = webhook.message ?? null;
+	const webhookSecretCipher =
+		freshSecret && webhook.status === 'installed'
+			? await sealSecret(c.env.INTEGRATIONS_KEY as string, ctx.project.id, webhookSecret)
+			: undefined;
+
 	// Re-seal when the key changed, and once for rows that still carry an
 	// Access service token, so it stops being stored.
 	const credentialsChanged =
@@ -516,6 +610,7 @@ integrationRoutes.put('/:slug/integrations/kaneo', async (c) => {
 				enabled: (body.enabled as boolean | undefined) ?? stored?.enabled ?? true,
 				config,
 				secretCipher,
+				webhookSecretCipher,
 			}),
 		}),
 	);
@@ -599,6 +694,22 @@ integrationRoutes.post('/:slug/integrations/kaneo/test', async (c) => {
 integrationRoutes.delete('/:slug/integrations/kaneo', async (c) => {
 	const ctx = await managedProject(c, 'configure integrations');
 	if (ctx instanceof Response) return ctx;
+	// Remove the webhook Sentinel installed (best effort: the connection is
+	// removed even when Kaneo cannot be reached).
+	const current = await loadIntegration(c.env, ctx.project.id, 'kaneo');
+	const currentConfig = current?.config as KaneoConfig | undefined;
+	if (current && currentConfig?.webhookKaneoProjectId && c.env.INTEGRATIONS_KEY) {
+		try {
+			const credentials = await openKaneoCredentials(c.env, ctx.project.id, current);
+			await createKaneoClient(
+				currentConfig.baseUrl,
+				credentials,
+				kaneoFetcher(c.env, currentConfig.baseUrl),
+			).deleteWebhook(currentConfig.webhookKaneoProjectId);
+		} catch {
+			// Already gone, or Kaneo unreachable: nothing else to do here.
+		}
+	}
 	const response = await projectState(c.env, ctx.project.id).fetch(
 		new Request('http://internal/integrations/delete', {
 			method: 'POST',

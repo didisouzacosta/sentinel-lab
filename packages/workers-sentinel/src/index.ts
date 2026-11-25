@@ -9,6 +9,7 @@ import { authRoutes, tokenRoutes } from './routes/auth';
 import { apiRoot, debugFileCompatRoutes, debugFileRoutes } from './routes/debug-files';
 import { eventRoutes } from './routes/events';
 import { filterRoutes } from './routes/filters';
+import { hookRoutes } from './routes/hooks';
 import { ingestionRoutes } from './routes/ingestion';
 import { integrationRoutes } from './routes/integrations';
 import { issueRoutes } from './routes/issues';
@@ -99,6 +100,9 @@ app.use('/api/auth/webauthn/verify/register', authMiddleware);
 app.use('/api/auth/webauthn/credentials/*', authMiddleware);
 app.use('/api/auth/webauthn/credentials', authMiddleware);
 app.route('/api/auth/webauthn', webauthnRoutes);
+
+// Integration webhooks (public; each delivery is verified by its signature)
+app.route('/api/hooks', hookRoutes);
 
 // Ingestion routes (DSN auth, not session auth)
 app.route('/api', ingestionRoutes);

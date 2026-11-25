@@ -19,6 +19,9 @@
 //   sessão; sem credencial responde 401). As ferramentas chamam as rotas do
 //   painel por dentro do Worker, então o Access do painel continua valendo
 //   para quem acessa de fora.
+// - /api/hooks/*, webhooks de integrações (o Kaneo avisa quando uma tarefa
+//   muda): cada entrega é conferida pela assinatura HMAC do segredo do
+//   projeto; sem assinatura válida responde 401.
 
 const HOST = 'sentinel.adrianosouzacosta.com.br';
 const APP_NAME = 'Sentinel Lab · painel';
@@ -31,6 +34,7 @@ export const PUBLIC_PATHS = [
 	'/api/health',
 	'/api/0/*',
 	'/mcp',
+	'/api/hooks/*',
 ];
 
 const token = process.env.CLOUDFLARE_API_TOKEN;

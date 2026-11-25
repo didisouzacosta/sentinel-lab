@@ -42,6 +42,10 @@ export const fakeKaneo = {
 	/** Make every task-writing call answer 500 (outage simulation). */
 	failWrites: false,
 	nextNumber: 1,
+	/** The project's generic webhook (Kaneo allows one per project). */
+	webhook: null as null | { webhookUrl: string; secret: string; events: Record<string, boolean> },
+	/** Make the webhook endpoints answer 403 (API key without that permission). */
+	denyWebhooks: false,
 
 	reset() {
 		this.requests = [];
@@ -50,6 +54,8 @@ export const fakeKaneo = {
 		this.requireAccess = false;
 		this.failWrites = false;
 		this.nextNumber = 1;
+		this.webhook = null;
+		this.denyWebhooks = false;
 	},
 
 	calls(method: string, prefix: string) {
@@ -135,6 +141,28 @@ async function handle(url: URL, init: RequestInit = {}): Promise<Response> {
 		if (!task) return json({ message: 'Task not found' }, 404);
 		task.links.push(body as { url: string; title: string });
 		return json({ id: 'link-1' });
+	}
+	if (path === '/generic-webhook-integration/project/kp1') {
+		if (fakeKaneo.denyWebhooks) return json({ message: 'Forbidden' }, 403);
+		if (method === 'GET') {
+			return json(
+				fakeKaneo.webhook ? { id: 'wh1', projectId: 'kp1', webhookConfigured: true } : null,
+			);
+		}
+		if (method === 'POST') {
+			if (fakeKaneo.webhook) return json({ message: 'Webhook already exists' }, 409);
+			fakeKaneo.webhook = body as typeof fakeKaneo.webhook;
+			return json({ id: 'wh1' });
+		}
+		if (method === 'PATCH') {
+			if (!fakeKaneo.webhook) return json({ message: 'Not found' }, 404);
+			fakeKaneo.webhook = { ...fakeKaneo.webhook, ...(body as object) } as typeof fakeKaneo.webhook;
+			return json({ id: 'wh1' });
+		}
+		if (method === 'DELETE') {
+			fakeKaneo.webhook = null;
+			return json({ success: true });
+		}
 	}
 	if (method === 'POST' && path === '/label') {
 		const input = body as { name: string; taskId: string };
