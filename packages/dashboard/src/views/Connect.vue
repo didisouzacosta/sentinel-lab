@@ -233,15 +233,16 @@ const mcpCode = computed(() =>
 			),
 );
 const supported = [
-	'List organizations and projects',
-	'Search issues (is:unresolved, is:resolved, is:ignored)',
+	'Find organizations and projects, and search issues (is:unresolved, is:resolved, is:ignored)',
+	'Read an issue with its exception stack trace and breadcrumbs',
 	'Resolve, ignore or reopen an issue',
+	'Add notes and read the issue activity',
 	'List the events and attachments of an issue',
 ];
 const prompts = [
 	'List the unresolved issues in my Sentinel projects',
-	'Show the latest events of <issue link>',
-	'Resolve <issue link> once the fix is deployed',
+	'Show the stack trace of the latest TypeError and suggest a fix',
+	'Resolve that issue and leave a note about the fix',
 ];
 </script>
 
@@ -311,14 +312,14 @@ const prompts = [
 				Sentinel speaks the Sentry API at <code class="font-mono">/api/0</code>. Point the Sentry MCP server
 				at this instance and your agent can triage issues from the chat.
 			</UiAlert>
-			<UiAlert tone="warning" data-testid="mcp-compat-note">
-				<p>Not every Sentry MCP tool works with Sentinel yet. Verified with version 0.51.0:</p>
+			<UiAlert tone="info" data-testid="mcp-compat-note">
+				<p>What your agent can do with Sentinel (verified with version 0.51.0):</p>
 				<ul class="mt-1.5 list-disc pl-5">
 					<li v-for="item in supported" :key="item">{{ item }}</li>
 				</ul>
 				<p class="mt-1.5">
-					Give the agent the issue <strong>link</strong> rather than its id. Issue details, stack traces and
-					notes are not available through the MCP yet.
+					Not available yet: searching across all events, releases, teams and DSN keys. Stack traces show
+					the frames the SDK sent; source maps are not applied through the MCP.
 				</p>
 			</UiAlert>
 

@@ -176,7 +176,9 @@ describe('Connect page', () => {
 		expect(wrapper.text()).toContain('SENTRY_AUTH_TOKEN=wst_');
 		expect(wrapper.text()).toContain('@sentry/mcp-server@0.51.0 mcp');
 		expect(wrapper.text()).not.toContain('--access-token');
-		expect(wrapper.find('[data-testid="mcp-compat-note"]').exists()).toBe(true);
+		const note = wrapper.get('[data-testid="mcp-compat-note"]');
+		expect(note.text()).toContain('stack trace');
+		expect(note.text()).toContain('Add notes');
 	});
 
 	it('has iOS and Android steps and picks them from the project platform', async () => {
