@@ -20,7 +20,6 @@ const LEGACY = new Set([
 	'views/ProjectFilters.vue',
 	'views/ProjectOverview.vue',
 	'views/ProjectSettings.vue',
-	'views/Projects.vue',
 	'views/ReleaseDetail.vue',
 	'views/Releases.vue',
 	'views/admin/AdminAudit.vue',
