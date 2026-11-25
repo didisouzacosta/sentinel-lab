@@ -57,7 +57,13 @@ describe('Ingestion Routes', () => {
 		});
 
 		it('should reject envelope without authentication', async () => {
-			const envelope = createTestEnvelope(testProject.id, testProject.publicKey);
+			// No credential anywhere: the envelope header's `dsn` is itself a
+			// credential (see ingestion-envelope-dsn.test.ts), so drop it too.
+			const [header, ...rest] = createTestEnvelope(testProject.id, testProject.publicKey).split(
+				'\n',
+			);
+			const { dsn: _dsn, ...headerWithoutDsn } = JSON.parse(header) as Record<string, unknown>;
+			const envelope = [JSON.stringify(headerWithoutDsn), ...rest].join('\n');
 
 			const response = await SELF.fetch(`http://localhost/api/${testProject.id}/envelope/`, {
 				method: 'POST',

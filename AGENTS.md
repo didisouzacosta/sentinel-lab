@@ -78,7 +78,7 @@ Dashboard  → /api/auth/* (public) → AuthState
 - `lib/envelope-parser.ts` - `parseEnvelope` (collector over the framer), DSN/auth-header parsing, event sanitization
 - `lib/attachment-store.ts` - R2 storage contract: key layout (`p/{projectId}/u/{nonce}/{index}` uploads, `p/{projectId}/m/{attachmentId}` migrated rows), all ingestion caps, the per-request store factory, and the test-only fault-injection vocabulary
 - `lib/fingerprint.ts` - Groups events into issues using exception type + message + stack frames
-- `routes/ingestion.ts` - SDK endpoint, supports `?sentry_key=` and `X-Sentry-Auth` header; streams the request body end-to-end (never buffers whole envelopes), uploads attachment payloads to R2 as they arrive, decides envelope attachment cardinality in the worker, and forwards event + attachment metadata atomically to ProjectState
+- `routes/ingestion.ts` - SDK endpoint, takes the DSN key from `?sentry_key=`, `X-Sentry-Auth`, basic auth, or (only when none of those is sent) the envelope header's `dsn` — the first line is peeked (≤64 KiB) and replayed into the framer, and that DSN's project must match the URL's; streams the request body end-to-end (never buffers whole envelopes), uploads attachment payloads to R2 as they arrive, decides envelope attachment cardinality in the worker, and forwards event + attachment metadata atomically to ProjectState
 - `routes/attachments.ts` - Fetch-side attachment list + download endpoints (session/API-token auth; downloads stream from R2 with `Range` support)
 
 ### DSN Format
@@ -104,7 +104,7 @@ The contract for API consumers (dashboard, CLI tooling, agent skills). Two surfa
 | Session token (`Authorization: Bearer <token>`) | `/api/projects/*`, `/api/auth/*`, `/api/admin/*` | From `POST /api/auth/login`; what the dashboard uses. Sessions record how they were minted: `authMethod` is `password` (login/register) or `passkey` (WebAuthn login) |
 | API token (`Authorization: Bearer wst_…`) | Same protected surface as sessions | Mint via `POST /api/auth/tokens` (session auth required); stored hashed; revocable. **Rejected (403 `session_required`) on passkey register/manage endpoints and on the whole `/api/admin/*` surface** — an API token must not mint credentials that survive token revocation, and admin actions require a dashboard session |
 | Passkey (WebAuthn credential) | Login only, via `POST /api/auth/webauthn/login/*` | Register/manage require a session; see Passkeys below. A passkey login mints a `passkey`-method session — the only kind that passes the admin gate |
-| DSN public key (`?sentry_key=`, `X-Sentry-Auth`, or basic auth) | **Ingestion only** (`POST /api/{projectId}/envelope|store`) | Cannot read anything; never valid on `/api/projects/*` |
+| DSN public key (`?sentry_key=`, `X-Sentry-Auth`, basic auth, or the envelope header's `dsn` when none of those is sent) | **Ingestion only** (`POST /api/{projectId}/envelope|store`) | Cannot read anything; never valid on `/api/projects/*` |
 
 401 vs 404 precedence: auth middleware runs before route matching on protected namespaces, so an **anonymous** request to an unknown `/api/projects/…` path gets `401`, and an **authenticated** one gets a JSON `404`. Unknown `/api/*` paths (any method) return `404 {"error":"not_found"}` JSON — never the SPA HTML. One exception: `OPTIONS /api/*` is answered by the CORS preflight handler with a bare `204` before auth or 404 logic runs.
 

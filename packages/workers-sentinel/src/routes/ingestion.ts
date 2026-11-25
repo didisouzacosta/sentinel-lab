@@ -536,6 +536,68 @@ function concatChunks(chunks: Uint8Array[]): Uint8Array {
 	return out;
 }
 
+/**
+ * Most bytes read while looking for the envelope header line. Real headers
+ * are a few hundred bytes (event_id, dsn, sdk, sent_at, trace); anything
+ * without a newline by this point carries no usable DSN.
+ */
+const MAX_ENVELOPE_HEADER_PEEK_BYTES = 64 * 1024;
+
+/**
+ * Reads (decompressed) chunks until the envelope's first line is complete,
+ * keeping every chunk read in `replay` so the caller can feed them to the
+ * framer unchanged. Returns the header's `dsn` string, or null when there
+ * is none, the line is not a JSON object, the peek bound is hit, or the
+ * stream fails (the caller then answers 401 for lack of credentials).
+ */
+async function peekEnvelopeHeaderDsn(
+	reader: ReadableStreamDefaultReader<Uint8Array>,
+	replay: Uint8Array[],
+): Promise<string | null> {
+	let bytes = 0;
+	let lineEnd = -1;
+	try {
+		while (lineEnd < 0 && bytes <= MAX_ENVELOPE_HEADER_PEEK_BYTES) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			const newline = value.indexOf(0x0a);
+			if (newline >= 0) lineEnd = bytes + newline;
+			replay.push(value);
+			bytes += value.byteLength;
+		}
+	} catch {
+		return null;
+	}
+	// The bound applies to the line itself, however the body was chunked.
+	if (
+		lineEnd < 0 ? bytes > MAX_ENVELOPE_HEADER_PEEK_BYTES : lineEnd > MAX_ENVELOPE_HEADER_PEEK_BYTES
+	) {
+		return null;
+	}
+	const line = concatChunks(replay).subarray(0, lineEnd < 0 ? bytes : lineEnd);
+	try {
+		const header = JSON.parse(strictJsonDecoder.decode(line)) as unknown;
+		if (header === null || typeof header !== 'object' || Array.isArray(header)) return null;
+		const dsn = (header as { dsn?: unknown }).dsn;
+		return typeof dsn === 'string' && dsn.length > 0 ? dsn : null;
+	} catch {
+		return null;
+	}
+}
+
+/** `https://{publicKey}@{host}/{projectId}` → its key and project id. */
+function parseDsn(dsn: string | null): { publicKey: string; projectId: string } | null {
+	if (!dsn) return null;
+	try {
+		const url = new URL(dsn);
+		const publicKey = decodeURIComponent(url.username);
+		const projectId = url.pathname.split('/').filter(Boolean).pop() ?? '';
+		return publicKey && projectId ? { publicKey, projectId } : null;
+	} catch {
+		return null;
+	}
+}
+
 async function handleIngestion(c: Context<{ Bindings: Env }>): Promise<Response> {
 	const projectId = c.req.param('projectId');
 
@@ -569,6 +631,50 @@ async function handleIngestion(c: Context<{ Bindings: Env }>): Promise<Response>
 		}
 	}
 
+	// Body plumbing is set up before auth so the envelope header can be
+	// peeked for a DSN (source 4). Nothing is pulled from the wire until a
+	// reader reads.
+	const contentEncoding = c.req.header('Content-Encoding') ?? null;
+	const contentType = c.req.header('Content-Type') || '';
+	const rawBody = c.req.raw.body;
+
+	// Count wire bytes as they arrive; decompress when gzip-encoded. The
+	// worker never buffers the whole envelope: chunks flow through the wire
+	// counter and decompressor into the framer as they are read.
+	let wireBytes = 0;
+	let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+	if (rawBody) {
+		let stream: ReadableStream<Uint8Array> = rawBody.pipeThrough(
+			new TransformStream<Uint8Array, Uint8Array>({
+				transform(chunk, controller) {
+					wireBytes += chunk.byteLength;
+					if (wireBytes > MAX_COMPRESSED_BODY_BYTES) {
+						throw new Error('Envelope exceeds size limit');
+					}
+					controller.enqueue(chunk);
+				},
+			}),
+		);
+		if (contentEncoding === 'gzip') {
+			stream = stream.pipeThrough(new DecompressionStream('gzip'));
+		}
+		reader = stream.getReader();
+	}
+
+	// 4. Envelope header `dsn`: Sentry accepts it as the credential when no
+	// other is sent (SDK tunnels and SDK-less senders put the DSN only
+	// there). The first line is peeked, bounded, and the peeked chunks are
+	// replayed into the framer below, so the body is still read only once.
+	const replay: Uint8Array[] = [];
+	let headerDsnProjectId: string | null = null;
+	if (!publicKey && reader) {
+		const dsn = parseDsn(await peekEnvelopeHeaderDsn(reader, replay));
+		if (dsn) {
+			publicKey = dsn.publicKey;
+			headerDsnProjectId = dsn.projectId;
+		}
+	}
+
 	if (!publicKey) {
 		return c.json({ error: 'missing_auth', message: 'No authentication provided' }, 401);
 	}
@@ -596,6 +702,10 @@ async function handleIngestion(c: Context<{ Bindings: Env }>): Promise<Response>
 	if (projectId && !isProjectIdForProject(projectId, project)) {
 		return c.json({ error: 'project_mismatch', message: 'Project ID does not match DSN' }, 400);
 	}
+	// A DSN taken from the envelope header must name this project too.
+	if (headerDsnProjectId !== null && !isProjectIdForProject(headerDsnProjectId, project)) {
+		return c.json({ error: 'project_mismatch', message: 'Project ID does not match DSN' }, 400);
+	}
 
 	const projectStateId = c.env.PROJECT_STATE.idFromName(project.id);
 	const projectState = c.env.PROJECT_STATE.get(projectStateId);
@@ -609,37 +719,20 @@ async function handleIngestion(c: Context<{ Bindings: Env }>): Promise<Response>
 	const ingest = new StreamingIngest(project.id, store, projectState);
 
 	// Wire cap precheck (streamed counter below catches lying/chunked bodies)
-	const contentEncoding = c.req.header('Content-Encoding') ?? null;
-	const contentType = c.req.header('Content-Type') || '';
 	const declaredLength = Number(c.req.header('Content-Length') ?? '0');
 	if (Number.isFinite(declaredLength) && declaredLength > MAX_COMPRESSED_BODY_BYTES) {
 		return c.json({ error: 'payload_too_large', message: 'Envelope exceeds size limit' }, 413);
 	}
 
-	const rawBody = c.req.raw.body;
-	if (!rawBody) {
+	if (!reader) {
 		return c.json({ error: 'parse_failed', message: 'Failed to parse envelope' }, 400);
 	}
-
-	// Count wire bytes as they arrive; decompress when gzip-encoded. The
-	// worker never buffers the whole envelope: chunks flow through the wire
-	// counter and decompressor into the framer as they are read.
-	let wireBytes = 0;
-	let stream: ReadableStream<Uint8Array> = rawBody.pipeThrough(
-		new TransformStream<Uint8Array, Uint8Array>({
-			transform(chunk, controller) {
-				wireBytes += chunk.byteLength;
-				if (wireBytes > MAX_COMPRESSED_BODY_BYTES) {
-					throw new Error('Envelope exceeds size limit');
-				}
-				controller.enqueue(chunk);
-			},
-		}),
-	);
-	if (contentEncoding === 'gzip') {
-		stream = stream.pipeThrough(new DecompressionStream('gzip'));
-	}
-	const reader = stream.getReader();
+	const bodyReader = reader;
+	// Chunks consumed by the DSN peek come first, then the live stream.
+	const nextChunk = (): Promise<ReadableStreamReadResult<Uint8Array>> => {
+		const peeked = replay.shift();
+		return peeked ? Promise.resolve({ done: false, value: peeked }) : bodyReader.read();
+	};
 
 	// Legacy raw-JSON dispatch (store endpoint): an envelope always contains
 	// a newline followed by an item header object; a bare JSON event does
@@ -659,7 +752,7 @@ async function handleIngestion(c: Context<{ Bindings: Env }>): Promise<Response>
 	let rawEvent: SentryEvent | null = null;
 	try {
 		for (;;) {
-			const { done, value } = await reader.read();
+			const { done, value } = await nextChunk();
 			if (done) break;
 			decompressedBytes += value.byteLength;
 			if (decompressedBytes > MAX_DECOMPRESSED_BODY_BYTES) {
@@ -711,7 +804,7 @@ async function handleIngestion(c: Context<{ Bindings: Env }>): Promise<Response>
 		}
 	} catch (error) {
 		ingest.abort();
-		await reader.cancel().catch(() => {});
+		await bodyReader.cancel().catch(() => {});
 		// Blobs uploaded for earlier items are GC fodder within the reclaim
 		// window; deleting them outright when possible just speeds that up.
 		await bestEffortDelete(store, ingest.uploadedKeys);
