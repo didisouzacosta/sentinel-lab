@@ -4,6 +4,18 @@ export interface Env {
 	/** R2 bucket holding attachment payloads (`sentinel-lab-attachments`). */
 	ATTACHMENTS: R2Bucket;
 	/**
+	 * R2 bucket for debug files: dSYM objects, ProGuard mappings, upload
+	 * chunks (`sentinel-lab-debug-files`, lib/debug-files.ts). Optional: the
+	 * debug-file routes answer 503 `debug_files_unconfigured` without it.
+	 */
+	DEBUG_FILES?: R2Bucket;
+	/**
+	 * Background jobs (`sentinel-lab-process`): large sentry-cli chunk
+	 * assemblies today (src/queue.ts). Without it every assembly runs inside
+	 * the request.
+	 */
+	PROCESS_QUEUE?: Queue<ProcessJob>;
+	/**
 	 * Test-only: when bound to `'enabled'` (vitest miniflare config), the
 	 * `X-Sentinel-Test-Fault` request header and the internal fault marker
 	 * plumbing become active. Never set in production — the mechanism is
@@ -43,6 +55,16 @@ export interface Env {
 	KANEO_BINDING_ORIGIN?: string;
 	ASSETS?: Fetcher;
 }
+
+/** Messages on PROCESS_QUEUE (src/queue.ts). */
+export type ProcessJob = {
+	type: 'dif.assemble';
+	projectId: string;
+	checksum: string;
+	name: string;
+	debugId: string | null;
+	chunks: string[];
+};
 
 // User types
 export interface User {

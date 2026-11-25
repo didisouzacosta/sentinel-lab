@@ -14,8 +14,8 @@ Todo recurso criado por este projeto começa com **`sentinel-lab`** / **`Sentine
 | Política do Access | `Sentinel Lab · administradores` (allow por e-mail) | Zero Trust Access (reutilizável) | criado | `lab/access.mjs apply` |
 | Token de API do deploy | `GitHub Actions · Tenho Horário + Sentinel` (compartilhado com o Tenho Horário; conta: Workers Scripts, R2 e mais as do Tenho Horário; zonas `adrianosouzacosta.com.br` e `tenhohorario.com.br`: Workers Routes Edit, DNS Edit, Zone Read; sem expiração) | API Token | criado pelo dono em 25/11/2026 | painel da Cloudflare; no Sentinel fica só no environment `production` do GitHub (`CLOUDFLARE_API_TOKEN`). Por ser compartilhado, revogar este token para também o deploy do Tenho Horário |
 | Secret do Worker | `INTEGRATIONS_KEY` (cifra as credenciais das integrações, como a chave do Kaneo; ≥32 caracteres aleatórios) | Workers Secret | a criar pelo dono antes de ligar o Kaneo | `cd packages/workers-sentinel && npx wrangler secret put INTEGRATIONS_KEY` (gere com `openssl rand -hex 32`). Agentes não criam nem colam o valor. Trocar o valor torna ilegíveis as credenciais salvas: cada projeto precisa colar a chave do Kaneo de novo; sai junto com o Worker |
-| Fila de processamento | `sentinel-lab-process` | Queues | futuro (simbolização) | — |
-| Bucket de debug files (dSYM, mapping, source maps) | `sentinel-lab-debug-files` | R2 | futuro (simbolização) | — |
+| Fila de processamento | `sentinel-lab-process` (montagem de uploads grandes do sentry-cli; simbolização depois) | Queues | a criar antes do deploy dos debug files | `lab/setup.sh` (`wrangler queues create`) |
+| Bucket de debug files (dSYM, mapping; chunks do sentry-cli) | `sentinel-lab-debug-files` (regras de ciclo de vida: `chunks/` e `staging/` expiram em 1 dia) | R2 | a criar antes do deploy dos debug files | `lab/setup.sh` |
 | Simbolizador | `sentinel-lab-symbolicator` | Containers | futuro (simbolização) | — |
 
 ## Deploy automático (desde 25/11/2026)
@@ -31,7 +31,7 @@ Todo recurso criado por este projeto começa com **`sentinel-lab`** / **`Sentine
   - `/api/0/*` (desde 25/11/2026), a API no formato do Sentry usada pelo MCP do Sentry e por agentes: exige token `wst_` ou sessão, e sem credencial responde 401.
   - `/mcp` (aplicado em 25/11/2026), o MCP do próprio Sentinel: mesma autenticação, 401 sem credencial. As ferramentas chamam as rotas do painel por dentro do Worker, sem passar de novo pelo Access.
 - `workers.dev` e preview URLs desligados: não existe caminho até o Worker sem passar pelo Access.
-- Ferramentas de CI que usarem a API do painel (ex.: upload de source maps/dSYM no futuro) vão precisar de um **Service Token** do Access.
+- Upload de dSYM/mapping no CI não precisa de Service Token: o sentry-cli e a API de debug files usam `/api/0/*` (público, exige token `wst_`). Só ferramentas que chamarem `/api/projects/*` direto precisariam de um **Service Token** do Access.
 
 ## Validação feita em 24/11/2026
 

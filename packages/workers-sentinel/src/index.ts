@@ -1,10 +1,12 @@
 import { Hono } from 'hono';
 import { handleMcpPost } from './mcp/server';
 import { authMiddleware, mcpAuthMiddleware } from './middleware/auth';
+import { handleQueue } from './queue';
 import { adminRoutes } from './routes/admin';
 import { api0ErrorTranslator, api0Routes } from './routes/api0';
 import { attachmentRoutes } from './routes/attachments';
 import { authRoutes, tokenRoutes } from './routes/auth';
+import { apiRoot, debugFileCompatRoutes, debugFileRoutes } from './routes/debug-files';
 import { eventRoutes } from './routes/events';
 import { filterRoutes } from './routes/filters';
 import { ingestionRoutes } from './routes/ingestion';
@@ -15,7 +17,7 @@ import { projectRoutes } from './routes/projects';
 import { releaseRoutes } from './routes/releases';
 import { sourcemapRoutes } from './routes/sourcemaps';
 import { webauthnRoutes } from './routes/webauthn';
-import type { AuthContext, Env } from './types';
+import type { AuthContext, Env, ProcessJob } from './types';
 
 // Re-export Durable Objects
 export { AuthState } from './durable-objects/auth-state';
@@ -110,6 +112,7 @@ app.route('/api/projects', eventRoutes);
 app.route('/api/projects', attachmentRoutes);
 app.route('/api/projects', releaseRoutes);
 app.route('/api/projects', sourcemapRoutes);
+app.route('/api/projects', debugFileRoutes);
 app.route('/api/projects', filterRoutes);
 app.route('/api/projects', integrationRoutes);
 
@@ -125,7 +128,24 @@ app.route('/api/admin', adminRoutes);
 // (anonymous probes of unknown /api/0 paths answer 401, not 404).
 app.use('/api/0/*', api0ErrorTranslator);
 app.use('/api/0/*', authMiddleware);
+// Debug files (CI mirror + sentry-cli protocol) before api0Routes, whose
+// GET catch-all would otherwise answer their paths with 404.
+app.route('/api/0', debugFileCompatRoutes);
+// API root (`sentry-cli info`).
+app.get('/api/0/', apiRoot);
 app.route('/api/0', api0Routes);
+
+/** JSON body of an internal API answer, for MCP tools. */
+async function parseApi(response: Response): Promise<{ status: number; data: unknown }> {
+	const text = await response.text();
+	let data: unknown = null;
+	try {
+		data = text ? JSON.parse(text) : null;
+	} catch {
+		data = { error: 'non_json_response', message: text.slice(0, 200) };
+	}
+	return { status: response.status, data };
+}
 
 // Sentinel MCP server (Streamable HTTP, stateless, JSON responses). Bearer
 // auth like the API (`wst_` token or session); the write-scope rule is not
@@ -143,21 +163,26 @@ app.post('/mcp', (c) => {
 		auth,
 		origin,
 		async callApi(method, path, body) {
-			const response = await dispatch(
-				new Request(`${origin}${path}`, {
-					method,
-					headers: { Authorization: authorization, 'Content-Type': 'application/json' },
-					body: body === undefined ? undefined : JSON.stringify(body),
-				}),
+			return parseApi(
+				await dispatch(
+					new Request(`${origin}${path}`, {
+						method,
+						headers: { Authorization: authorization, 'Content-Type': 'application/json' },
+						body: body === undefined ? undefined : JSON.stringify(body),
+					}),
+				),
 			);
-			const text = await response.text();
-			let data: unknown = null;
-			try {
-				data = text ? JSON.parse(text) : null;
-			} catch {
-				data = { error: 'non_json_response', message: text.slice(0, 200) };
-			}
-			return { status: response.status, data };
+		},
+		async callApiRaw(method, path, body, headers = {}) {
+			return parseApi(
+				await dispatch(
+					new Request(`${origin}${path}`, {
+						method,
+						headers: { ...headers, Authorization: authorization },
+						body,
+					}),
+				),
+			);
 		},
 		fetchInternal: (path, init) => dispatch(new Request(`${origin}${path}`, init)),
 	});
@@ -193,8 +218,14 @@ app.notFound((c) => {
 	return c.text('Not Found', 404);
 });
 
-export default app;
+export default {
+	fetch: app.fetch,
+	queue: handleQueue,
+} satisfies ExportedHandler<Env, ProcessJob>;
 
+/** The Hono app, for embedding (template/). Re-export `handleQueue` as `queue` to enable background jobs. */
 export function workersSentinel() {
 	return app;
 }
+
+export { handleQueue };

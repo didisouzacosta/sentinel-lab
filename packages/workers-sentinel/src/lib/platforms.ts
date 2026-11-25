@@ -35,6 +35,8 @@ export interface SetupStep {
 export interface SetupContext {
 	/** The project's DSN; a placeholder is used when missing. */
 	dsn?: string;
+	/** The project's slug (debug-file upload steps); a placeholder is used when missing. */
+	project?: string;
 }
 
 export interface PlatformGuide {
@@ -61,6 +63,18 @@ export interface PlatformGuide {
 }
 
 const DSN_PLACEHOLDER = '<your DSN>';
+const PROJECT_PLACEHOLDER = '<project-slug>';
+
+/** sentry-cli environment for one project plus a command (debug-file uploads). */
+function debugFileCommand(origin: string, project: string, command: string): string {
+	return [
+		`export SENTRY_URL=${origin}`,
+		'export SENTRY_ORG=sentinel',
+		`export SENTRY_PROJECT=${project}`,
+		'export SENTRY_AUTH_TOKEN=$SENTINEL_AUTH_TOKEN',
+		command,
+	].join('\n');
+}
 
 /** Origin errors are POSTed to (what a CSP `connect-src` must allow). */
 export function ingestOrigin(dsn?: string): string {
@@ -322,9 +336,10 @@ export const PLATFORMS: readonly PlatformGuide[] = [
 		notes: [
 			'Requires iOS 15+ and Swift 6.0+ (Xcode 16+). The app itself may stay in the Swift 5 language mode.',
 			'Nothing is sent until Sentinel.grantConsent() (GDPR default). Use options.consent = .notRequired if your app relies on another legal basis.',
-			'Native crashes arrive through MetricKit on a later launch, on real devices only. Sentinel does not symbolicate dSYMs yet, so those frames show binary and address.',
+			'Native crashes arrive through MetricKit on a later launch, on real devices only.',
+			'Sentinel stores your dSYMs (sentry-cli, API or MCP) and shows which ones a crash needs. Applying them to the frames is the next step; until then native frames show binary and address.',
 		],
-		steps: ({ dsn = DSN_PLACEHOLDER }) => [
+		steps: ({ dsn = DSN_PLACEHOLDER, project = PROJECT_PLACEHOLDER }) => [
 			{
 				title: 'Add SentinelKit with Swift Package Manager',
 				description:
@@ -352,6 +367,17 @@ export const PLATFORMS: readonly PlatformGuide[] = [
 				language: 'Swift',
 				code: 'Sentinel.capture(message: "Hello from SentinelKit", level: .info)\n\n// In your catch blocks:\nSentinel.capture(error)',
 			},
+			{
+				title: 'Upload dSYMs for release builds',
+				description:
+					'With sentry-cli and an API token with the "write" scope. The README ("Debug files") and the MCP tool get_debug_file_upload have an Xcode build phase and a GitHub Actions step.',
+				language: 'Terminal',
+				code: debugFileCommand(
+					ingestOrigin(dsn),
+					project,
+					'sentry-cli debug-files upload --wait MyApp.xcarchive/dSYMs',
+				),
+			},
 		],
 	},
 	{
@@ -363,9 +389,9 @@ export const PLATFORMS: readonly PlatformGuide[] = [
 		verifiedBy: 'lab/native-test.mjs (simulated crashes)',
 		browser: false,
 		notes: [
-			'Sentinel does not apply R8/ProGuard mapping files yet, so obfuscated release builds show obfuscated names.',
+			'Sentinel stores R8/ProGuard mappings (Gradle plugin, sentry-cli, API or MCP) and shows which one a crash needs. Applying them to the frames is the next step; until then obfuscated builds show obfuscated names.',
 		],
-		steps: ({ dsn = DSN_PLACEHOLDER }) => [
+		steps: ({ dsn = DSN_PLACEHOLDER, project = PROJECT_PLACEHOLDER }) => [
 			{
 				title: 'Add the SDK to your app module',
 				language: 'app/build.gradle.kts',
@@ -373,10 +399,16 @@ export const PLATFORMS: readonly PlatformGuide[] = [
 			},
 			{
 				title: 'Set the DSN in the manifest',
-				description:
-					'The SDK starts on its own when the app launches. Sentinel does not apply R8/ProGuard mapping files yet, so obfuscated release builds show obfuscated names.',
+				description: 'The SDK starts on its own when the app launches.',
 				language: 'AndroidManifest.xml',
 				code: `<application>\n  <meta-data\n    android:name="io.sentry.dsn"\n    android:value="${dsn}" />\n</application>`,
+			},
+			{
+				title: 'Upload the R8 mapping with each release build',
+				description:
+					'The Sentry Gradle plugin embeds the mapping UUID in the app and uploads mapping.txt over the sentry-cli protocol Sentinel speaks (the plugin itself has not been run against Sentinel yet). SENTINEL_AUTH_TOKEN is an API token with the "write" scope.',
+				language: 'app/build.gradle.kts',
+				code: `plugins {\n  id("io.sentry.android.gradle") version "<latest>"\n}\n\nsentry {\n  url.set("${ingestOrigin(dsn)}")\n  org.set("sentinel")\n  projectName.set("${project}")\n  authToken.set(System.getenv("SENTINEL_AUTH_TOKEN"))\n  autoUploadProguardMapping.set(true)\n  telemetry.set(false)\n}`,
 			},
 		],
 	},

@@ -80,7 +80,9 @@ watch(
 	{ immediate: true },
 );
 const guide = computed(() => getPlatform(platform.value));
-const steps = computed(() => guide.value.steps({ dsn: dsn.value || undefined }));
+const steps = computed(() =>
+	guide.value.steps({ dsn: dsn.value || undefined, project: projectSlug.value || undefined }),
+);
 
 // --- MCP ---
 const origin = window.location.origin;

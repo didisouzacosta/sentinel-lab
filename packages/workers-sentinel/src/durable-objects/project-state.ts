@@ -27,6 +27,7 @@ import type {
 	ProjectSettings,
 	SentryEvent,
 } from '../types';
+import { DEBUG_FILES_MIGRATIONS, handleDebugFilesRequest } from './debug-files-state';
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 /** GC alarm cadence floor: an alarm is always scheduled within an hour. */
@@ -389,6 +390,9 @@ const MIGRATIONS = [
   FOREIGN KEY (integration_id) REFERENCES integrations(id) ON DELETE CASCADE
 );`,
 	'CREATE INDEX IF NOT EXISTS idx_integration_outbox_due ON integration_outbox(next_attempt_at);',
+	// Debug files (dSYM, ProGuard): metadata only, bytes in the DEBUG_FILES
+	// bucket (durable-objects/debug-files-state.ts).
+	...DEBUG_FILES_MIGRATIONS,
 ];
 
 /** Terminal states of the transactional ingest sequence. */
@@ -457,6 +461,12 @@ export class ProjectState extends DurableObject<Env> {
 		const path = url.pathname;
 
 		try {
+			if (path.startsWith('/debug-files/') || path.startsWith('/dif-assembly/')) {
+				const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+				if (body.projectId) this.persistProjectId(body.projectId);
+				const handled = handleDebugFilesRequest(this.sql, path, body);
+				if (handled) return handled;
+			}
 			switch (path) {
 				case '/ingest':
 					return this.handleIngest(request);
@@ -762,8 +772,9 @@ export class ProjectState extends DurableObject<Env> {
 				}
 				cursor = page.cursor;
 				this.setConfigValue('purge_cursor', cursor ?? '');
-				if (!cursor) return true;
+				if (!cursor) break;
 			}
+			return await this.sweepDebugFiles(projectId);
 		} catch (error) {
 			console.error(
 				'Purge sweep incomplete; will retry on next alarm:',
@@ -771,6 +782,25 @@ export class ProjectState extends DurableObject<Env> {
 			);
 			return false;
 		}
+	}
+
+	/**
+	 * Purge step for the DEBUG_FILES bucket (dSYM/ProGuard objects and
+	 * staged uploads). Same resumable shape as the attachment sweep; a
+	 * deployment without the bucket has nothing to sweep.
+	 */
+	private async sweepDebugFiles(projectId: string): Promise<boolean> {
+		const bucket = this.env.DEBUG_FILES;
+		if (!bucket) return true;
+		for (const prefix of [`p/${projectId}/`, `staging/${projectId}/`]) {
+			let cursor: string | undefined;
+			do {
+				const page = await bucket.list({ prefix, cursor, limit: 1000 });
+				if (page.objects.length > 0) await bucket.delete(page.objects.map((o) => o.key));
+				cursor = page.truncated ? page.cursor : undefined;
+			} while (cursor);
+		}
+		return true;
 	}
 
 	private async handleIngest(request: Request): Promise<Response> {

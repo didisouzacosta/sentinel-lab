@@ -26,6 +26,21 @@ else
 	npx wrangler r2 bucket create sentinel-lab-attachments
 fi
 
+# 2b. Bucket de debug files (dSYM, mapping) e fila de processamento.
+#     Chunks do sentry-cli e uploads em espera expiram em 1 dia.
+if npx wrangler r2 bucket info sentinel-lab-debug-files >/dev/null 2>&1; then
+	echo "R2 sentinel-lab-debug-files já existe."
+else
+	npx wrangler r2 bucket create sentinel-lab-debug-files
+fi
+npx wrangler r2 bucket lifecycle add sentinel-lab-debug-files expire-chunks chunks/ --expire-days 1 --force 2>/dev/null || true
+npx wrangler r2 bucket lifecycle add sentinel-lab-debug-files expire-staging staging/ --expire-days 1 --force 2>/dev/null || true
+if npx wrangler queues info sentinel-lab-process >/dev/null 2>&1; then
+	echo "Fila sentinel-lab-process já existe."
+else
+	npx wrangler queues create sentinel-lab-process
+fi
+
 # 3. Worker + domínio sentinel.adrianosouzacosta.com.br.
 npx wrangler deploy
 

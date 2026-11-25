@@ -37,6 +37,7 @@ Workers Sentinel is a lightweight, self-hosted error tracking and monitoring sol
 - [Prerequisites](#prerequisites)
 - [Getting Started](#getting-started)
 - [SDK Configuration](#sdk-configuration)
+- [Debug files (dSYM and ProGuard/R8)](#debug-files-dsym-and-proguardr8)
 - [Webhook Notifications](#webhook-notifications)
 - [API Tokens](#api-tokens)
 - [Architecture](#architecture)
@@ -175,7 +176,7 @@ The supervisor (in `_devenv/cloudflare/`) is loopback-only, persists Durable Obj
 
 ## SDK Configuration
 
-Workers Sentinel speaks the Sentry **ingestion** protocol (envelope and legacy store endpoints, DSN auth) — use your Sentinel DSN wherever a Sentry DSN works. Like Sentry, the DSN may travel only in the envelope header (`{"dsn": "…"}` on the first line), so SDK tunnels and SDK-less senders (a plain `fetch` or `navigator.sendBeacon` of a hand-built envelope, handy on Workers and Deno) need no other credential. The fetch side has two surfaces: a native JSON API (`/api/projects/…`) for the dashboard, and a Sentry-shaped `/api/0` API for agents and Sentry-speaking clients — project/issue discovery, issue triage (`PUT {"status":"resolved"}` marks complete), events, event-id lookup, comments, and event attachments (list/metadata/`?download` byte stream) with Sentry's serializers, `Link` pagination, and `{"detail": …}` errors. `sentry-cli` is not supported. See AGENTS.md ("The `/api/0` API") for the exact contract and deviations.
+Workers Sentinel speaks the Sentry **ingestion** protocol (envelope and legacy store endpoints, DSN auth) — use your Sentinel DSN wherever a Sentry DSN works. Like Sentry, the DSN may travel only in the envelope header (`{"dsn": "…"}` on the first line), so SDK tunnels and SDK-less senders (a plain `fetch` or `navigator.sendBeacon` of a hand-built envelope, handy on Workers and Deno) need no other credential. The fetch side has two surfaces: a native JSON API (`/api/projects/…`) for the dashboard, and a Sentry-shaped `/api/0` API for agents and Sentry-speaking clients — project/issue discovery, issue triage (`PUT {"status":"resolved"}` marks complete), events, event-id lookup, comments, and event attachments (list/metadata/`?download` byte stream) with Sentry's serializers, `Link` pagination, and `{"detail": …}` errors. `sentry-cli` works for debug files (`debug-files upload`, `upload-proguard`; see [Debug files](#debug-files-dsym-and-proguardr8)); its other commands (releases, source maps) are not supported. See AGENTS.md ("The `/api/0` API") for the exact contract and deviations.
 
 ### Platforms
 
@@ -191,8 +192,8 @@ Step-by-step guides with your DSN filled in live in the dashboard (**Connect →
 | Bun | `bun` | `@sentry/bun` | Sentry protocol, not run here yet |
 | Python | `python` | `sentry-sdk` | Sentry protocol, not run here yet |
 | PHP | `php` | `sentry/sentry` | ✅ tested (`lab/php`, `^4`) |
-| iOS | `cocoa` | [SentinelKit](https://github.com/didisouzacosta/sentinel-ios) (SPM, iOS 15+, Swift 6+) | ✅ tested (SentinelKit contract envelope accepted by the worker) — consent required by default; no dSYM symbolication yet |
-| Android | `android` | `io.sentry:sentry-android` | ✅ tested (`lab/native-test.mjs`) — no R8/ProGuard mapping yet |
+| iOS | `cocoa` | [SentinelKit](https://github.com/didisouzacosta/sentinel-ios) (SPM, iOS 15+, Swift 6+) | ✅ tested (SentinelKit contract envelope accepted by the worker) — consent required by default; dSYM upload ✅, symbolication next |
+| Android | `android` | `io.sentry:sentry-android` | ✅ tested (`lab/native-test.mjs`) — mapping upload ✅, deobfuscation next |
 | No SDK (envelope) | `envelope` | — (one `fetch`) | ✅ tested (`test/ingestion-envelope-dsn.test.ts`) |
 | Other (Go, Ruby, .NET, Rust…) | `other` | that language's Sentry SDK | Sentry protocol, not run here yet |
 
@@ -306,6 +307,151 @@ claude mcp add --transport http sentinel https://your-sentinel.example.com/mcp \
 Other clients: `{"mcpServers": {"sentinel": {"type": "http", "url": "https://your-sentinel.example.com/mcp", "headers": {"Authorization": "Bearer wst_…"}}}}`.
 
 The agent acts **as the token's owner**: with their role in each project (owner, admin, member) and only within the token's access (Read only, Read & write, Projects — see [API Tokens](#api-tokens)). Tools the token can never use are not even listed; destructive ones (`rotate_dsn`, `delete_project`) need the project slug repeated, and MCP clients ask before running anything that changes data. Users, membership and instance settings are never reachable through it. The dashboard's **Connect → MCP** tab has the exact command for your instance. (The official Sentry MCP server also works against the `/api/0` API, for reading and triage only.)
+
+## Debug files (dSYM and ProGuard/R8)
+
+Release builds of native apps report crashes as addresses (iOS) or obfuscated names (Android). The files that turn them back into code — **dSYMs** and **R8/ProGuard `mapping.txt`** — can be sent to Sentinel from the command line, CI, Xcode or an agent. Each crash's `debug_meta` names the files it needs; Sentinel tells you which are stored and which are missing.
+
+> **Status:** upload, storage and the missing-file check are live. Applying the files to stack frames (symbolication and deobfuscation) is the next step ([plan](docs/plano-debug-files.md)); until it lands, frames still show addresses and obfuscated names.
+
+### Server setup (once, by the operator)
+
+Debug files live in their own R2 bucket and large sentry-cli uploads are assembled by a queue consumer. Both are declared in `wrangler.jsonc` (`DEBUG_FILES`, `PROCESS_QUEUE`) and must exist before deploying:
+
+```bash
+npx wrangler r2 bucket create sentinel-lab-debug-files
+npx wrangler r2 bucket lifecycle add sentinel-lab-debug-files expire-chunks chunks/ --expire-days 1
+npx wrangler r2 bucket lifecycle add sentinel-lab-debug-files expire-staging staging/ --expire-days 1
+npx wrangler queues create sentinel-lab-process
+```
+
+Without the bucket binding the debug-file routes answer `503 debug_files_unconfigured`; without the queue every assembly runs inside the request.
+
+### What you need
+
+1. **An API token with the `write` scope**: dashboard → **Settings → API tokens**. Store it as a secret named `SENTINEL_AUTH_TOKEN` (GitHub: *Settings → Secrets and variables → Actions*). Never commit it or ship it in an app.
+2. **Your project slug** (the URL segment in the dashboard, e.g. `my-app`) and your Sentinel URL.
+3. **[sentry-cli](https://docs.sentry.io/cli/installation/)** for folders and big files (`brew install getsentry/tools/sentry-cli`, or `npx @sentry/cli` anywhere Node runs). Tested with **3.8.2**. `curl` is enough for single files up to 95 MB.
+
+sentry-cli only needs four variables — Sentinel accepts any organization slug, `sentinel` by convention:
+
+```bash
+export SENTRY_URL=https://your-sentinel.example.com
+export SENTRY_ORG=sentinel
+export SENTRY_PROJECT=my-app
+export SENTRY_AUTH_TOKEN=$SENTINEL_AUTH_TOKEN
+sentry-cli info   # shows your user and the token's scopes
+```
+
+On a build machine you can keep the token in `~/.sentryclirc` (`[auth]` → `token=wst_…`) and the rest in a `.sentryclirc` committed with the project (`[defaults]` → `url=`, `org=`, `project=`); sentry-cli merges both.
+
+Behind Cloudflare Access (like the lab instance), CI and agents only use `/api/0/*` and `/mcp`, which are reachable without an Access login and authenticate with the token.
+
+### iOS: dSYMs
+
+```bash
+# A whole archive (each architecture is stored under its own UUID):
+sentry-cli debug-files upload --wait MyApp.xcarchive/dSYMs
+
+# One file with curl (gzip is optional):
+gzip -c MyApp.app.dSYM/Contents/Resources/DWARF/MyApp | curl --fail-with-body -X POST \
+  "$SENTRY_URL/api/0/projects/sentinel/my-app/debug-files/?name=MyApp" \
+  -H "Authorization: Bearer $SENTINEL_AUTH_TOKEN" -H "Content-Encoding: gzip" --data-binary @-
+```
+
+`dwarfdump --uuid MyApp.app.dSYM` prints the UUIDs a crash's `debug_meta` must match. Uploading the app binary instead of the dSYM is refused with a message saying so. The build needs `DEBUG_INFORMATION_FORMAT = dwarf-with-dsym` (the Release default).
+
+**GitHub Actions** (macOS runner):
+
+```yaml
+- name: Archive
+  run: |
+    xcodebuild archive -scheme MyApp -configuration Release \
+      -destination "generic/platform=iOS" -archivePath "$RUNNER_TEMP/MyApp.xcarchive" \
+      DEBUG_INFORMATION_FORMAT=dwarf-with-dsym
+- name: Upload dSYMs to Sentinel
+  env:
+    SENTRY_URL: https://your-sentinel.example.com
+    SENTRY_ORG: sentinel
+    SENTRY_PROJECT: my-app
+    SENTRY_AUTH_TOKEN: ${{ secrets.SENTINEL_AUTH_TOKEN }}
+  run: npx --yes @sentry/cli debug-files upload --wait "$RUNNER_TEMP/MyApp.xcarchive/dSYMs"
+```
+
+**Xcode build phase** (uploads on every Release build; not yet run in Xcode against Sentinel): *Build Phases → + → New Run Script Phase*, after *Embed Frameworks*, with Input File `${DWARF_DSYM_FOLDER_PATH}/${DWARF_DSYM_FILE_NAME}` and `ENABLE_USER_SCRIPT_SANDBOXING = NO`. The token comes from `~/.sentryclirc`.
+
+```bash
+if [ "$CONFIGURATION" != "Release" ]; then exit 0; fi
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+if ! command -v sentry-cli >/dev/null; then
+  echo "warning: sentry-cli not installed (brew install getsentry/tools/sentry-cli)"; exit 0
+fi
+export SENTRY_URL="https://your-sentinel.example.com" SENTRY_ORG="sentinel" SENTRY_PROJECT="my-app"
+sentry-cli debug-files upload "$DWARF_DSYM_FOLDER_PATH" || echo "warning: dSYM upload to Sentinel failed"
+```
+
+### Android: R8/ProGuard mapping
+
+A mapping is matched by a UUID the app itself reports. The [Sentry Android Gradle plugin](https://docs.sentry.io/platforms/android/configuration/gradle/) generates it, embeds it in the APK/AAB and uploads `mapping.txt` with it over the sentry-cli protocol Sentinel speaks (the plugin itself has not been run against Sentinel yet; the protocol has, with sentry-cli):
+
+```kotlin
+// app/build.gradle.kts
+plugins {
+  id("io.sentry.android.gradle") version "<latest>"
+}
+
+sentry {
+  url.set("https://your-sentinel.example.com")
+  org.set("sentinel")
+  projectName.set("my-app")
+  authToken.set(System.getenv("SENTINEL_AUTH_TOKEN"))
+  includeProguardMapping.set(true)
+  autoUploadProguardMapping.set(true)
+  includeSourceContext.set(false)
+  telemetry.set(false) // otherwise the plugin reports build telemetry to sentry.io
+}
+```
+
+```yaml
+# GitHub Actions
+- name: Build release (uploads the R8 mapping)
+  env:
+    SENTINEL_AUTH_TOKEN: ${{ secrets.SENTINEL_AUTH_TOKEN }}
+  run: ./gradlew assembleRelease
+```
+
+Without the plugin: `sentry-cli upload-proguard --uuid <uuid> app/build/outputs/mapping/release/mapping.txt`, or `curl … "$SENTRY_URL/api/0/projects/sentinel/my-app/debug-files/?kind=proguard&debugId=<uuid>" --data-binary @mapping.txt`. Without a UUID, Sentinel derives the same content-based UUID sentry-cli does; the app must report that UUID for the match.
+
+### Agents: MCP and Claude in Xcode
+
+The [Sentinel MCP](#mcp-ai-agents) has the whole flow:
+
+| Tool / prompt | What it does |
+|---|---|
+| `get_debug_file_upload` | sentry-cli variables, Xcode build phase, GitHub Actions steps, Gradle config and curl commands for a project, filled in (token always `$SENTINEL_AUTH_TOKEN`) |
+| `check_debug_files` | For an issue (its latest event), an event or a list of UUIDs: which debug files are `found`, `missing` or `processing` |
+| `list_debug_files` | What is stored, with storage used |
+| `upload_debug_file` | Uploads one small file (≤ 8 MB) given as base64 |
+| `delete_debug_file` | Deletes one (owners/admins; repeat the id to confirm) |
+| prompt `upload_debug_files` | Walks the agent through finding the dSYMs/mapping in the workspace, uploading, confirming and (if you want) automating it |
+
+Claude Code: `claude mcp add --transport http sentinel https://your-sentinel.example.com/mcp --header "Authorization: Bearer $SENTINEL_AUTH_TOKEN"`, then ask it to *"upload the dSYMs of this app to Sentinel"* (or run the `upload_debug_files` prompt).
+
+Claude in Xcode: Xcode keeps the agent's MCP servers in `~/Library/Developer/Xcode/CodingAssistant/mcp-servers.json`, in the usual `mcpServers` format — add the same entry as for other clients (`"sentinel": {"type": "http", "url": "https://your-sentinel.example.com/mcp", "headers": {"Authorization": "Bearer wst_…"}}`) and restart Xcode. (The file location comes from Xcode itself; the connection has not been tested from Xcode yet.)
+
+### API
+
+The same operations at two paths with the same token: `/api/0/projects/{org}/{project}/debug-files/…` for CI (works behind Cloudflare Access) and `/api/projects/{slug}/debug-files…` for the dashboard.
+
+| Method and path | Purpose |
+|---|---|
+| `POST …/debug-files/?name=&kind=dsym\|proguard&debugId=` | Upload one file as the raw body (≤ 95 MB, `Content-Encoding: gzip` allowed) → `201 {debugFiles: […]}` |
+| `GET …/debug-files/?kind=&debugId=&cursor=` | List (newest first, keyset pages) with `usage` |
+| `POST …/debug-files/check/` `{issueId}` \| `{eventId}` \| `{debugIds: […]}` | `images[]` with `found` / `missing` / `processing` and counts |
+| `GET`/`DELETE …/debug-files/{id}/` | One file; delete needs project owner/admin |
+| `GET`/`POST /api/0/organizations/{org}/chunk-upload/`, `POST /api/0/projects/{org}/{project}/files/difs/assemble/`, `GET`/`DELETE …/files/dsyms/` | The sentry-cli protocol (8 MB chunks, up to 2 GB per file) |
+
+Limits: 5 GB of debug files per project; a re-upload of the same UUID replaces it; universal dSYMs are split per architecture; upload chunks expire after a day. Through sentry-cli, an app binary uploaded next to its dSYM (Xcode's products folder) is acknowledged but not stored; the direct API refuses it.
 
 ## Webhook Notifications
 
@@ -473,6 +619,8 @@ Each project has its own isolated Durable Object with SQLite storage, ensuring d
 Planned features for future releases:
 
 - [x] Source map support for JavaScript errors
+- [x] Debug file uploads (dSYM, R8/ProGuard) via sentry-cli, API and MCP
+- [ ] Native symbolication and deobfuscation with those files
 - [ ] Release tracking and deployment correlation
 - [ ] Performance monitoring (transactions, spans)
 - [x] Webhook alerting notifications
