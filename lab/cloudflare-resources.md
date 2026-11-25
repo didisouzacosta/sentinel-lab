@@ -35,6 +35,7 @@ Todo recurso criado por este projeto começa com **`sentinel-lab`** / **`Sentine
 | Deploy das fases 0–3 + Export (25/11/2026, versão `651bc15b`): envelope com o DSN só no cabeçalho e chave falsa | 401 `invalid_auth` (antes: `missing_auth`) — a chave do cabeçalho é lida |
 | `POST /mcp` sem token, antes do `access.mjs apply` (25/11/2026) | 302 → login do Access (esperado até aplicar o override) |
 | `POST /mcp` sem token / com token inválido, depois do `apply` (25/11/2026) | 401 do Sentinel; `/`, `/api/projects` seguem em 302 → Access |
+| Novo deploy em 25/11/2026 (versão `2ac7f7fe`, commit `a176892`, com o guia iOS do SentinelKit) | health 200, `POST /mcp` 401, painel 302, ingestão sem chave 401 |
 | `/api/health` | 200 |
 | `POST /api/1/envelope/` e `/store/` com chave falsa | 401 `invalid_auth` (chega ao Sentinel) |
 | `OPTIONS /api/1/envelope/` (CORS do SDK de navegador) | 204 |
