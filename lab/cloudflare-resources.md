@@ -12,7 +12,7 @@ Todo recurso criado por este projeto começa com **`sentinel-lab`** / **`Sentine
 | Bucket de anexos | `sentinel-lab-attachments` | R2 | criado | `lab/setup.sh` |
 | App do Access | `Sentinel Lab · painel` | Zero Trust Access (self-hosted) | criado | `lab/access.mjs apply` |
 | Política do Access | `Sentinel Lab · administradores` (allow por e-mail) | Zero Trust Access (reutilizável) | criado | `lab/access.mjs apply` |
-| Token de API do deploy | `Sentinel Lab · GitHub Actions deploy` (modelo "Edit Cloudflare Workers", só esta conta e a zona `adrianosouzacosta.com.br`) | API Token | a criar pelo dono | painel da Cloudflare; guardado só no environment `production` do GitHub (`CLOUDFLARE_API_TOKEN`) |
+| Token de API do deploy | `GitHub Actions · Tenho Horário + Sentinel` (compartilhado com o Tenho Horário; conta: Workers Scripts, R2 e mais as do Tenho Horário; zonas `adrianosouzacosta.com.br` e `tenhohorario.com.br`: Workers Routes Edit, DNS Edit, Zone Read; sem expiração) | API Token | criado pelo dono em 25/11/2026 | painel da Cloudflare; no Sentinel fica só no environment `production` do GitHub (`CLOUDFLARE_API_TOKEN`). Por ser compartilhado, revogar este token para também o deploy do Tenho Horário |
 | Fila de processamento | `sentinel-lab-process` | Queues | futuro (simbolização) | — |
 | Bucket de debug files (dSYM, mapping, source maps) | `sentinel-lab-debug-files` | R2 | futuro (simbolização) | — |
 | Simbolizador | `sentinel-lab-symbolicator` | Containers | futuro (simbolização) | — |
@@ -20,7 +20,7 @@ Todo recurso criado por este projeto começa com **`sentinel-lab`** / **`Sentine
 ## Deploy automático (desde 25/11/2026)
 
 - Todo push ou merge em `lab/main` roda `.github/workflows/lab-deploy.yml`: lint → testes → `wrangler deploy` → `lab/smoke-production.sh` → rollback automático se o smoke falhar. Detalhes em `AGENTS.md` ("Continuous deployment").
-- O token fica só no GitHub (environment `production`, liberado só para `lab/main`). O `teardown.sh` não apaga o token: revogue-o no painel da Cloudflare (My Profile → API Tokens) junto com o resto.
+- O token fica só no GitHub (environment `production`, liberado só para `lab/main`). O `teardown.sh` não apaga o token; como ele é compartilhado com o Tenho Horário, ao desmontar o Sentinel tire só o segredo do GitHub (ou troque o token no Tenho Horário antes de revogá-lo).
 
 ## Proteção (Access)
 
