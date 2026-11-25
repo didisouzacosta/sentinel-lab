@@ -103,16 +103,19 @@ entrega DSN**. Criar projeto hoje só pela área de admin, que exige sessão de 
 - Testes em `packages/workers-sentinel/test/ingestion-envelope-dsn.test.ts`, com os envelopes exatamente como o Tem
   Horário monta hoje (API e navegador).
 
-### Fase 1 — Plataformas e documentação, com uma fonte só
-- `lib/platforms.ts`: catálogo de plataformas (id, nome, pacote, passos de instalação, trecho de código com o DSN,
-  variáveis de ambiente, host para CSP, como verificar). Usado pelo MCP (`get_setup_guide`), pela página Connect e pelo
-  README — hoje cada um tem sua cópia.
-- Plataformas: Navegador, Node.js, **Cloudflare Workers (incluindo Hono)**, **Astro no Workers**, **Deno**, Bun,
-  Python, PHP (`lab/php`), iOS/Swift (SentinelIOS), Android, e **"sem SDK"** (envelope por `fetch`, o padrão do Tem
-  Horário — o mais leve para Workers).
-- README: seção "Plataformas" com a tabela do que já foi testado de verdade (o `lab/` tem testes de Node, PHP, nativo e
-  web) e do que é só "deve funcionar pelo protocolo".
-- AGENTS.md: seção do MCP e dos escopos.
+### Fase 1 — Plataformas e documentação, com uma fonte só ✅ (25/11/2026, no código; ainda não publicada)
+- `packages/workers-sentinel/src/lib/platforms.ts`: catálogo (id, nome, resumo, passos com o DSN preenchido, CSP,
+  notas, nível de suporte `verified`/`protocol` com onde foi testado, valor gravado em `projects.platform` e
+  `platformForProject` para os valores antigos). Sem dependências, para o painel importar direto.
+- 12 plataformas: Navegador, Node.js, **Cloudflare Workers (com Hono)**, **Astro**, **Deno**, Bun, Python, PHP, iOS,
+  Android, **"sem SDK"** (envelope por `fetch`, o padrão do Tem Horário) e Outros.
+- Usam o catálogo: página Connect (agora um seletor, com notas e o selo "tested with Sentinel"/"Sentry protocol") e o
+  formulário de criar projeto do admin. O MCP vai usar na fase 3.
+- Corrigido de passagem: projeto com plataforma `javascript-*` abria o guia do Android ("javascript" contém "java").
+- README: seção "Platforms" com a tabela do que foi testado de verdade e do que é só "pelo protocolo". AGENTS.md:
+  módulo `lib/platforms.ts`. (A seção do MCP e dos escopos entra com as fases 2 e 3.)
+- O trecho "sem SDK" foi executado no Node 26 com o `fetch` interceptado: endpoint, DSN no cabeçalho e frames com
+  arquivo/linha/coluna corretos.
 
 ### Fase 2 — Ciclo de vida do projeto pela API com token
 - Rotas nativas aceitando token com escopo `projects`: criar (quem cria vira dono), editar (nome, plataforma, webhook,

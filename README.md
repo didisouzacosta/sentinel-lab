@@ -173,6 +173,32 @@ The supervisor (in `_devenv/cloudflare/`) is loopback-only, persists Durable Obj
 
 Workers Sentinel speaks the Sentry **ingestion** protocol (envelope and legacy store endpoints, DSN auth) — use your Sentinel DSN wherever a Sentry DSN works. Like Sentry, the DSN may travel only in the envelope header (`{"dsn": "…"}` on the first line), so SDK tunnels and SDK-less senders (a plain `fetch` or `navigator.sendBeacon` of a hand-built envelope, handy on Workers and Deno) need no other credential. The fetch side has two surfaces: a native JSON API (`/api/projects/…`) for the dashboard, and a Sentry-shaped `/api/0` API for agents and Sentry-speaking clients — project/issue discovery, issue triage (`PUT {"status":"resolved"}` marks complete), events, event-id lookup, comments, and event attachments (list/metadata/`?download` byte stream) with Sentry's serializers, `Link` pagination, and `{"detail": …}` errors. `sentry-cli` is not supported. See AGENTS.md ("The `/api/0` API") for the exact contract and deviations.
 
+### Platforms
+
+Step-by-step guides with your DSN filled in live in the dashboard (**Connect → SDKs**); they come from one catalog, [`packages/workers-sentinel/src/lib/platforms.ts`](packages/workers-sentinel/src/lib/platforms.ts), which the admin project form also uses (and the planned Sentinel MCP will serve). This table mirrors it.
+
+| Platform | Project `platform` | SDK | Status |
+|---|---|---|---|
+| Browser | `javascript` | `@sentry/browser` | ✅ tested (`lab/web`, official build) |
+| Node.js | `node` | `@sentry/node` | ✅ tested (`lab/node-test.mjs`) |
+| Cloudflare Workers (incl. Hono) | `cloudflare-workers` | `@sentry/cloudflare` | Sentry protocol, not run here yet |
+| Astro | `javascript-astro` | `@sentry/browser` (+ the Workers guide for server routes) | Sentry protocol, not run here yet |
+| Deno | `deno` | `npm:@sentry/deno` | Sentry protocol, not run here yet |
+| Bun | `bun` | `@sentry/bun` | Sentry protocol, not run here yet |
+| Python | `python` | `sentry-sdk` | Sentry protocol, not run here yet |
+| PHP | `php` | `sentry/sentry` | ✅ tested (`lab/php`, `^4`) |
+| iOS | `cocoa` | `sentry-cocoa` (SPM) | ✅ tested (`lab/native-test.mjs`, SentinelIOS) — no dSYM symbolication yet |
+| Android | `android` | `io.sentry:sentry-android` | ✅ tested (`lab/native-test.mjs`) — no R8/ProGuard mapping yet |
+| No SDK (envelope) | `envelope` | — (one `fetch`) | ✅ tested (`test/ingestion-envelope-dsn.test.ts`) |
+| Other (Go, Ruby, .NET, Rust…) | `other` | that language's Sentry SDK | Sentry protocol, not run here yet |
+
+Notes that trip people up:
+
+- **Hono on Workers** handles errors in `app.onError`, so `withSentry` never sees them — call `Sentry.captureException(err)` there.
+- **A Deno codebase deployed to Cloudflare** runs on Workers, not Deno: use the Workers or No SDK guide.
+- **Browser and Astro** need the Sentinel origin in the page's CSP `connect-src`.
+- **The DSN is public by design**: it can only send events, so it may ship in browser bundles. API tokens (`wst_…`) are the secrets.
+
 ### Cloudflare Workers (Service Binding with RPC)
 
 For Cloudflare Workers, you can use [service bindings](https://developers.cloudflare.com/workers/runtime-apis/bindings/service-bindings/) with RPC for optimal performance. This routes requests internally within Cloudflare's network, avoiding external HTTP roundtrips and reducing latency.

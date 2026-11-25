@@ -198,15 +198,50 @@ describe('Connect page', () => {
 		const wrapper = mount(Connect, { global: { plugins: [pinia, router] } });
 		await flushPromises();
 
-		const platforms = wrapper.get('[role="radiogroup"][aria-label="Platform"]');
-		expect(platforms.get('[aria-checked="true"]').text()).toBe('iOS');
+		const platforms = wrapper.get<HTMLSelectElement>(
+			'select[data-testid="connect-platform-select"]',
+		);
+		expect(platforms.element.value).toBe('ios');
 		expect(wrapper.text()).toContain('https://github.com/getsentry/sentry-cocoa.git');
 		expect(wrapper.text()).toContain('options.dsn = "https://key@host/p1"');
 
 		await router.replace({ query: { project: 'android-app' } });
 		await flushPromises();
-		expect(platforms.get('[aria-checked="true"]').text()).toBe('Android');
+		expect(platforms.element.value).toBe('android');
 		expect(wrapper.text()).toMatch(/io\.sentry:sentry-android:\d+\.\d+\.\d+/);
 		expect(wrapper.text()).toContain('android:value="https://key@host/p2"');
+	});
+
+	it('covers Workers (Hono), Deno and the SDK-less envelope from the shared catalog', async () => {
+		onGet('/api/projects', () => ({
+			projects: [{ id: 'p1', name: 'API', slug: 'api', platform: 'cloudflare-workers' }],
+		}));
+		onGet('/api/projects/api', () => ({ dsn: 'https://key@sentinel.example.com/7' }));
+		const { pinia } = seedAuth({});
+		const router = testRouter();
+		await atRoute(router, '/setup');
+		const { useProjectsStore } = await import('../stores/projects');
+		await useProjectsStore(pinia).loadProjects();
+		const wrapper = mount(Connect, { global: { plugins: [pinia, router] } });
+		await flushPromises();
+
+		const platforms = wrapper.get<HTMLSelectElement>(
+			'select[data-testid="connect-platform-select"]',
+		);
+		expect(platforms.element.value).toBe('cloudflare-workers');
+		expect(wrapper.text()).toContain('npm install @sentry/cloudflare');
+		expect(wrapper.text()).toContain('app.onError');
+		expect(wrapper.get('[data-testid="connect-platform-notes"]').text()).toContain('Hono');
+
+		await platforms.setValue('deno');
+		expect(wrapper.text()).toContain('npm:@sentry/deno');
+		expect(wrapper.text()).toContain('--allow-net=sentinel.example.com');
+
+		await platforms.setValue('envelope');
+		expect(wrapper.text()).toContain('const DSN = "https://key@sentinel.example.com/7"');
+		expect(wrapper.text()).toContain("connect-src 'self' https://sentinel.example.com");
+		expect(wrapper.get('[data-testid="connect-platform-summary"]').text()).toContain(
+			'tested with Sentinel',
+		);
 	});
 });

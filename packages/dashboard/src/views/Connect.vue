@@ -2,6 +2,13 @@
 import { KeyRound, Sparkles, TerminalSquare } from 'lucide-vue-next';
 import { computed, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
+// The platform catalog is shared with the worker (MCP setup guides) and the README.
+import {
+	getPlatform,
+	PLATFORMS,
+	type PlatformId,
+	platformForProject,
+} from '../../../workers-sentinel/src/lib/platforms';
 import { api } from '../api/client';
 import {
 	UiAlert,
@@ -15,11 +22,11 @@ import {
 	UiSelect,
 	UiSkeleton,
 	UiTabs,
+	UiTag,
 } from '../components/ui';
 import { useProjectsStore } from '../stores/projects';
 
 type Tab = 'sdks' | 'mcp';
-type Platform = 'browser' | 'node' | 'workers' | 'python' | 'ios' | 'android' | 'other';
 type Client = 'claude-code' | 'json';
 
 const route = useRoute();
@@ -64,146 +71,16 @@ async function loadDsn(slug: string) {
 }
 watch(projectSlug, (slug) => loadDsn(slug), { immediate: true });
 
-function defaultPlatform(platform?: string): Platform {
-	if (!platform) return 'browser';
-	if (platform.includes('cloudflare')) return 'workers';
-	if (platform.includes('node')) return 'node';
-	if (platform.includes('python')) return 'python';
-	if (/cocoa|apple|ios|swift/.test(platform)) return 'ios';
-	if (/android|java|kotlin/.test(platform)) return 'android';
-	return 'browser';
-}
-const platform = ref<Platform>('browser');
+const platform = ref<PlatformId>('browser');
 watch(
 	project,
 	(p) => {
-		platform.value = defaultPlatform(p?.platform);
+		platform.value = platformForProject(p?.platform);
 	},
 	{ immediate: true },
 );
-
-const platformOptions: { value: Platform; label: string }[] = [
-	{ value: 'browser', label: 'Browser' },
-	{ value: 'node', label: 'Node.js' },
-	{ value: 'workers', label: 'Cloudflare Workers' },
-	{ value: 'python', label: 'Python' },
-	{ value: 'ios', label: 'iOS' },
-	{ value: 'android', label: 'Android' },
-	{ value: 'other', label: 'Other' },
-];
-
-// Latest on Maven Central when this page was written; Gradle needs an explicit version.
-const ANDROID_SDK_VERSION = '8.65.1';
-
-interface Step {
-	title: string;
-	description?: string;
-	language: string;
-	code: string;
-}
-
-const steps = computed<Step[]>(() => {
-	const d = dsn.value || '<your DSN>';
-	switch (platform.value) {
-		case 'workers':
-			return [
-				{
-					title: 'Install the SDK',
-					language: 'Terminal',
-					code: 'npm install @sentry/cloudflare --save',
-				},
-				{
-					title: 'Bind Sentinel in wrangler.jsonc',
-					description:
-						'A service binding keeps traffic inside Cloudflare — no public HTTP round trip.',
-					language: 'wrangler.jsonc',
-					code: `{\n  "compatibility_flags": ["nodejs_als"],\n  "services": [\n    { "binding": "SENTINEL", "service": "workers-sentinel", "entrypoint": "SentinelRpc" }\n  ]\n}`,
-				},
-				{
-					title: 'Initialize with the RPC transport',
-					language: 'src/index.ts',
-					code: `import * as Sentry from "@sentry/cloudflare";\nimport { waitUntil } from "cloudflare:workers";\n\nconst DSN = "${d}";\n\nexport default Sentry.withSentry(\n  (env: Env) => ({\n    dsn: DSN,\n    transport: () => ({\n      send: async (envelope) => {\n        const rpc = env.SENTINEL.captureEnvelope(DSN, envelope);\n        waitUntil(rpc);\n        return { statusCode: (await rpc).status };\n      },\n      flush: async () => true,\n    }),\n  }),\n  { async fetch(request, env, ctx) { return new Response("Hello World!"); } },\n);`,
-				},
-			];
-		case 'node':
-			return [
-				{ title: 'Install the SDK', language: 'Terminal', code: 'npm install @sentry/node --save' },
-				{
-					title: 'Initialize it before anything else',
-					language: 'instrument.js',
-					code: `import * as Sentry from "@sentry/node";\n\nSentry.init({ dsn: "${d}" });`,
-				},
-			];
-		case 'python':
-			return [
-				{
-					title: 'Install the SDK',
-					language: 'Terminal',
-					code: 'pip install --upgrade sentry-sdk',
-				},
-				{
-					title: 'Initialize it at startup',
-					language: 'main.py',
-					code: `import sentry_sdk\n\nsentry_sdk.init(dsn="${d}")`,
-				},
-			];
-		case 'ios':
-			return [
-				{
-					title: 'Add the SDK with Swift Package Manager',
-					description:
-						'In Xcode: File → Add Package Dependencies…, paste this URL and pick "Up to Next Major Version".',
-					language: 'Package URL',
-					code: 'https://github.com/getsentry/sentry-cocoa.git',
-				},
-				{
-					title: 'Start it when the app launches',
-					description:
-						'Sentinel does not process dSYM files yet: crashes from release builds may show addresses instead of function names.',
-					language: 'MyApp.swift',
-					code: `import Sentry\nimport SwiftUI\n\n@main\nstruct MyApp: App {\n  init() {\n    SentrySDK.start { options in\n      options.dsn = "${d}"\n    }\n  }\n\n  var body: some Scene {\n    WindowGroup { ContentView() }\n  }\n}`,
-				},
-			];
-		case 'android':
-			return [
-				{
-					title: 'Add the SDK to your app module',
-					language: 'app/build.gradle.kts',
-					code: `dependencies {\n  implementation("io.sentry:sentry-android:${ANDROID_SDK_VERSION}")\n}`,
-				},
-				{
-					title: 'Set the DSN in the manifest',
-					description:
-						'The SDK starts on its own when the app launches. Sentinel does not apply R8/ProGuard mapping files yet, so obfuscated release builds show obfuscated names.',
-					language: 'AndroidManifest.xml',
-					code: `<application>\n  <meta-data\n    android:name="io.sentry.dsn"\n    android:value="${d}" />\n</application>`,
-				},
-			];
-		case 'other':
-			return [
-				{
-					title: 'Use any Sentry SDK',
-					description:
-						'Sentinel speaks the Sentry envelope protocol. Point the SDK of your language at this DSN.',
-					language: 'DSN',
-					code: d,
-				},
-			];
-		default:
-			return [
-				{
-					title: 'Install the SDK',
-					language: 'Terminal',
-					code: 'npm install @sentry/browser --save',
-				},
-				{
-					title: 'Initialize it in your entry file',
-					language: 'main.ts',
-					code: `import * as Sentry from "@sentry/browser";\n\nSentry.init({ dsn: "${d}" });`,
-				},
-			];
-	}
-});
+const guide = computed(() => getPlatform(platform.value));
+const steps = computed(() => guide.value.steps({ dsn: dsn.value || undefined }));
 
 // --- MCP ---
 // Verified against this version (docs/compat-mcp-sentry.md); @latest already
@@ -284,8 +161,24 @@ const prompts = [
 				<section aria-labelledby="connect-platform" class="flex flex-col gap-3">
 					<div class="flex flex-wrap items-center justify-between gap-3">
 						<h2 id="connect-platform" class="text-heading-s text-fg">Platform</h2>
-						<UiSegmented v-model="platform" label="Platform" :options="platformOptions" />
+						<UiSelect
+							v-model="platform"
+							aria-labelledby="connect-platform"
+							class="w-full sm:w-64"
+							data-testid="connect-platform-select"
+						>
+							<option v-for="p in PLATFORMS" :key="p.id" :value="p.id">{{ p.name }}</option>
+						</UiSelect>
 					</div>
+					<p class="flex flex-wrap items-center gap-2 text-body-s text-fg-muted" data-testid="connect-platform-summary">
+						{{ guide.summary }}
+						<UiTag>{{ guide.support === 'verified' ? 'tested with Sentinel' : 'Sentry protocol' }}</UiTag>
+					</p>
+					<UiAlert v-if="guide.notes.length > 0" tone="info" data-testid="connect-platform-notes">
+						<ul class="list-disc pl-5">
+							<li v-for="note in guide.notes" :key="note">{{ note }}</li>
+						</ul>
+					</UiAlert>
 					<UiCard>
 						<ol class="flex flex-col gap-6 p-5">
 							<li v-for="(step, i) in steps" :key="step.title" class="flex gap-3.5">

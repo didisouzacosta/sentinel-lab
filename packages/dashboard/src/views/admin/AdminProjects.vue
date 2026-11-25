@@ -11,6 +11,8 @@ import {
 	X,
 } from 'lucide-vue-next';
 import { computed, onMounted, ref } from 'vue';
+// Shared with the Connect page and the worker (MCP setup guides).
+import { PLATFORMS } from '../../../../workers-sentinel/src/lib/platforms';
 import { api } from '../../api/client';
 import AppPageHeader from '../../components/app/AppPageHeader.vue';
 import {
@@ -67,8 +69,6 @@ type Action = 'members' | 'rename' | 'owner' | 'delete';
 
 const toast = useToast();
 const askConfirm = useConfirm();
-
-const PLATFORMS = ['javascript', 'node', 'python', 'ruby', 'go', 'cocoa', 'android'];
 
 const projects = ref<AdminProject[]>([]);
 const query = ref('');
@@ -476,7 +476,7 @@ function formatDate(value: string): string {
 				</UiFormField>
 				<UiFormField v-slot="f" label="Platform">
 					<UiSelect :id="f.id" v-model="createForm.platform" class="w-full">
-						<option v-for="p in PLATFORMS" :key="p" :value="p">{{ p }}</option>
+						<option v-for="p in PLATFORMS" :key="p.id" :value="p.projectPlatform">{{ p.name }}</option>
 					</UiSelect>
 				</UiFormField>
 				<UiFormField v-slot="f" label="Owner" required>
