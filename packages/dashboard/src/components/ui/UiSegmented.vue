@@ -20,7 +20,7 @@ async function onKeydown(event: KeyboardEvent, index: number) {
 </script>
 
 <template>
-	<div role="radiogroup" :aria-label="label" class="inline-flex gap-0.5 rounded-lg bg-subtle p-0.5">
+	<div role="radiogroup" :aria-label="label" class="inline-flex max-w-full flex-wrap gap-0.5 rounded-lg bg-subtle p-0.5">
 		<button
 			v-for="(option, index) in options"
 			:key="String(option.value)"

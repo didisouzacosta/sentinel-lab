@@ -171,6 +171,40 @@ describe('Connect page', () => {
 		await flushPromises();
 		expect(router.currentRoute.value.query.tab).toBe('mcp');
 		expect(wrapper.text()).toContain('claude mcp add sentinel');
+		// 0.51 reads the instance and token from the environment and runs the `mcp` subcommand
+		expect(wrapper.text()).toContain('SENTRY_URL=');
+		expect(wrapper.text()).toContain('SENTRY_AUTH_TOKEN=wst_');
+		expect(wrapper.text()).toContain('@sentry/mcp-server@0.51.0 mcp');
+		expect(wrapper.text()).not.toContain('--access-token');
 		expect(wrapper.find('[data-testid="mcp-compat-note"]').exists()).toBe(true);
+	});
+
+	it('has iOS and Android steps and picks them from the project platform', async () => {
+		onGet('/api/projects', () => ({
+			projects: [
+				{ id: 'p1', name: 'iOS App', slug: 'ios-app', platform: 'cocoa' },
+				{ id: 'p2', name: 'Android App', slug: 'android-app', platform: 'android' },
+			],
+		}));
+		onGet('/api/projects/ios-app', () => ({ dsn: 'https://key@host/p1' }));
+		onGet('/api/projects/android-app', () => ({ dsn: 'https://key@host/p2' }));
+		const { pinia } = seedAuth({});
+		const router = testRouter();
+		await atRoute(router, '/setup');
+		const { useProjectsStore } = await import('../stores/projects');
+		await useProjectsStore(pinia).loadProjects();
+		const wrapper = mount(Connect, { global: { plugins: [pinia, router] } });
+		await flushPromises();
+
+		const platforms = wrapper.get('[role="radiogroup"][aria-label="Platform"]');
+		expect(platforms.get('[aria-checked="true"]').text()).toBe('iOS');
+		expect(wrapper.text()).toContain('https://github.com/getsentry/sentry-cocoa.git');
+		expect(wrapper.text()).toContain('options.dsn = "https://key@host/p1"');
+
+		await router.replace({ query: { project: 'android-app' } });
+		await flushPromises();
+		expect(platforms.get('[aria-checked="true"]').text()).toBe('Android');
+		expect(wrapper.text()).toMatch(/io\.sentry:sentry-android:\d+\.\d+\.\d+/);
+		expect(wrapper.text()).toContain('android:value="https://key@host/p2"');
 	});
 });

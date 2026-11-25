@@ -19,7 +19,7 @@ import {
 import { useProjectsStore } from '../stores/projects';
 
 type Tab = 'sdks' | 'mcp';
-type Platform = 'browser' | 'node' | 'workers' | 'python' | 'other';
+type Platform = 'browser' | 'node' | 'workers' | 'python' | 'ios' | 'android' | 'other';
 type Client = 'claude-code' | 'json';
 
 const route = useRoute();
@@ -69,6 +69,8 @@ function defaultPlatform(platform?: string): Platform {
 	if (platform.includes('cloudflare')) return 'workers';
 	if (platform.includes('node')) return 'node';
 	if (platform.includes('python')) return 'python';
+	if (/cocoa|apple|ios|swift/.test(platform)) return 'ios';
+	if (/android|java|kotlin/.test(platform)) return 'android';
 	return 'browser';
 }
 const platform = ref<Platform>('browser');
@@ -85,8 +87,13 @@ const platformOptions: { value: Platform; label: string }[] = [
 	{ value: 'node', label: 'Node.js' },
 	{ value: 'workers', label: 'Cloudflare Workers' },
 	{ value: 'python', label: 'Python' },
+	{ value: 'ios', label: 'iOS' },
+	{ value: 'android', label: 'Android' },
 	{ value: 'other', label: 'Other' },
 ];
+
+// Latest on Maven Central when this page was written; Gradle needs an explicit version.
+const ANDROID_SDK_VERSION = '8.65.1';
 
 interface Step {
 	title: string;
@@ -140,6 +147,38 @@ const steps = computed<Step[]>(() => {
 					code: `import sentry_sdk\n\nsentry_sdk.init(dsn="${d}")`,
 				},
 			];
+		case 'ios':
+			return [
+				{
+					title: 'Add the SDK with Swift Package Manager',
+					description:
+						'In Xcode: File → Add Package Dependencies…, paste this URL and pick "Up to Next Major Version".',
+					language: 'Package URL',
+					code: 'https://github.com/getsentry/sentry-cocoa.git',
+				},
+				{
+					title: 'Start it when the app launches',
+					description:
+						'Sentinel does not process dSYM files yet: crashes from release builds may show addresses instead of function names.',
+					language: 'MyApp.swift',
+					code: `import Sentry\nimport SwiftUI\n\n@main\nstruct MyApp: App {\n  init() {\n    SentrySDK.start { options in\n      options.dsn = "${d}"\n    }\n  }\n\n  var body: some Scene {\n    WindowGroup { ContentView() }\n  }\n}`,
+				},
+			];
+		case 'android':
+			return [
+				{
+					title: 'Add the SDK to your app module',
+					language: 'app/build.gradle.kts',
+					code: `dependencies {\n  implementation("io.sentry:sentry-android:${ANDROID_SDK_VERSION}")\n}`,
+				},
+				{
+					title: 'Set the DSN in the manifest',
+					description:
+						'The SDK starts on its own when the app launches. Sentinel does not apply R8/ProGuard mapping files yet, so obfuscated release builds show obfuscated names.',
+					language: 'AndroidManifest.xml',
+					code: `<application>\n  <meta-data\n    android:name="io.sentry.dsn"\n    android:value="${d}" />\n</application>`,
+				},
+			];
 		case 'other':
 			return [
 				{
@@ -167,7 +206,10 @@ const steps = computed<Step[]>(() => {
 });
 
 // --- MCP ---
-const host = window.location.host;
+// Verified against this version (docs/compat-mcp-sentry.md); @latest already
+// changed its command line once, so the snippet pins it.
+const MCP_PACKAGE = '@sentry/mcp-server@0.51.0';
+const origin = window.location.origin;
 const client = ref<Client>('claude-code');
 const clientOptions: { value: Client; label: string }[] = [
 	{ value: 'claude-code', label: 'Claude Code' },
@@ -175,13 +217,14 @@ const clientOptions: { value: Client; label: string }[] = [
 ];
 const mcpCode = computed(() =>
 	client.value === 'claude-code'
-		? `claude mcp add sentinel -- npx -y @sentry/mcp-server@latest \\\n  --host=${host} \\\n  --access-token=wst_…`
+		? `claude mcp add sentinel \\\n  -e SENTRY_URL=${origin} \\\n  -e SENTRY_AUTH_TOKEN=wst_… \\\n  -- npx -y ${MCP_PACKAGE} mcp`
 		: JSON.stringify(
 				{
 					mcpServers: {
 						sentinel: {
 							command: 'npx',
-							args: ['-y', '@sentry/mcp-server@latest', `--host=${host}`, '--access-token=wst_…'],
+							args: ['-y', MCP_PACKAGE, 'mcp'],
+							env: { SENTRY_URL: origin, SENTRY_AUTH_TOKEN: 'wst_…' },
 						},
 					},
 				},
@@ -189,10 +232,16 @@ const mcpCode = computed(() =>
 				2,
 			),
 );
+const supported = [
+	'List organizations and projects',
+	'Search issues (is:unresolved, is:resolved, is:ignored)',
+	'Resolve, ignore or reopen an issue',
+	'List the events and attachments of an issue',
+];
 const prompts = [
-	'List the unresolved issues in my project from the last 24 hours',
-	'Show the stack trace of the latest TypeError and suggest a fix',
-	'Resolve that issue once the fix is deployed',
+	'List the unresolved issues in my Sentinel projects',
+	'Show the latest events of <issue link>',
+	'Resolve <issue link> once the fix is deployed',
 ];
 </script>
 
@@ -259,12 +308,18 @@ const prompts = [
 		<!-- MCP -->
 		<template v-else>
 			<UiAlert tone="info">
-				Sentinel speaks the Sentry API at <code class="font-mono">/api/0</code>. Point a Sentry MCP server
-				at this instance and your agent can list, inspect, comment on and resolve issues.
+				Sentinel speaks the Sentry API at <code class="font-mono">/api/0</code>. Point the Sentry MCP server
+				at this instance and your agent can triage issues from the chat.
 			</UiAlert>
 			<UiAlert tone="warning" data-testid="mcp-compat-note">
-				Compatibility of the Sentry MCP server with Sentinel is still being verified. Listing and reading
-				issues use the Sentry-shaped API; some tools may not work yet.
+				<p>Not every Sentry MCP tool works with Sentinel yet. Verified with version 0.51.0:</p>
+				<ul class="mt-1.5 list-disc pl-5">
+					<li v-for="item in supported" :key="item">{{ item }}</li>
+				</ul>
+				<p class="mt-1.5">
+					Give the agent the issue <strong>link</strong> rather than its id. Issue details, stack traces and
+					notes are not available through the MCP yet.
+				</p>
 			</UiAlert>
 
 			<UiCard>
