@@ -80,6 +80,16 @@ const router = createRouter({
 					component: () => import('../views/Settings.vue'),
 				},
 				{
+					// SDK + MCP setup, reachable from the sidebar shortcut and the user menu
+					path: 'setup',
+					name: 'connect',
+					component: () => import('../views/Connect.vue'),
+				},
+				{
+					path: 'projects/:slug/setup',
+					redirect: (to) => ({ path: '/setup', query: { project: to.params.slug as string } }),
+				},
+				{
 					path: 'projects/:slug/filters',
 					name: 'project-filters',
 					component: () => import('../views/ProjectFilters.vue'),
@@ -110,6 +120,16 @@ const router = createRouter({
 				},
 			],
 		},
+		// Design-system gallery for reviews; never part of a production build.
+		...(import.meta.env.DEV
+			? [
+					{
+						path: '/__ui',
+						name: 'ui-gallery',
+						component: () => import('../views/dev/UiGallery.vue'),
+					},
+				]
+			: []),
 	],
 });
 

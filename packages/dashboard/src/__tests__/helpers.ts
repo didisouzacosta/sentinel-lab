@@ -46,8 +46,24 @@ export function testRouter(): Router {
 		history: createMemoryHistory(),
 		routes: [
 			{ path: '/login', component: { template: '<div>login</div>' } },
-			{ path: '/settings', component: { template: '<div>settings</div>' } },
-			{ path: '/projects', component: { template: '<div>projects</div>' } },
+			{ path: '/settings', name: 'settings', component: { template: '<div>settings</div>' } },
+			{
+				path: '/settings/tokens',
+				name: 'api-tokens',
+				component: { template: '<div>tokens</div>' },
+			},
+			{ path: '/setup', name: 'connect', component: { template: '<div>connect</div>' } },
+			{ path: '/projects', name: 'projects', component: { template: '<div>projects</div>' } },
+			{
+				path: '/projects/:slug/overview',
+				name: 'project-overview',
+				component: { template: '<div>overview</div>' },
+			},
+			{
+				path: '/projects/:slug/issues',
+				name: 'issues',
+				component: { template: '<div>issues</div>' },
+			},
 			{ path: '/admin/users', component: { template: '<div>admin users</div>' } },
 			{ path: '/admin/projects', component: { template: '<div>admin projects</div>' } },
 			{ path: '/admin/settings', component: { template: '<div>admin settings</div>' } },

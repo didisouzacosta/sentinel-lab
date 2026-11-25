@@ -1,26 +1,80 @@
 <script setup lang="ts">
-import { computed, watch } from 'vue';
-import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router';
+import { computed, ref, watch } from 'vue';
+import { RouterView, useRoute } from 'vue-router';
+import AppSidebar from '../components/app/AppSidebar.vue';
+import AppTopBar, { type Crumb } from '../components/app/AppTopBar.vue';
 import ForcePasswordChange from '../components/ForcePasswordChange.vue';
 import PasskeyNag from '../components/PasskeyNag.vue';
+import UiDrawer from '../components/ui/UiDrawer.vue';
 import { useAuthStore } from '../stores/auth';
 import { useProjectsStore } from '../stores/projects';
 
 const route = useRoute();
-const router = useRouter();
 const authStore = useAuthStore();
 const projectsStore = useProjectsStore();
 
-const currentSlug = computed(() => route.params.slug as string | undefined);
+const navOpen = ref(false);
+
 const currentProject = computed(() =>
-	projectsStore.projects.find((p) => p.slug === currentSlug.value),
+	projectsStore.projects.find((p) => p.slug === route.params.slug),
 );
 
-async function logout() {
-	await authStore.logout();
-	projectsStore.reset();
-	router.push('/login');
-}
+const PAGE: Record<string, string> = {
+	'project-overview': 'Overview',
+	issues: 'Issues',
+	'issue-detail': 'Issue',
+	'event-detail': 'Event',
+	releases: 'Releases',
+	'release-detail': 'Release',
+	'project-filters': 'Filters',
+	'project-settings': 'Settings',
+};
+
+const crumbs = computed<Crumb[]>(() => {
+	const name = String(route.name ?? '');
+	const p = currentProject.value;
+	if (p && PAGE[name]) {
+		const base = `/projects/${p.slug}`;
+		const list: Crumb[] = [{ label: p.name, to: `${base}/overview` }];
+		if (name === 'issue-detail' || name === 'event-detail')
+			list.push({ label: 'Issues', to: `${base}/issues` });
+		if (name === 'release-detail') list.push({ label: 'Releases', to: `${base}/releases` });
+		list.push({ label: name === 'release-detail' ? String(route.params.version) : PAGE[name] });
+		return list;
+	}
+	if (name.startsWith('admin-')) {
+		const label = {
+			'admin-users': 'Users',
+			'admin-projects': 'Projects',
+			'admin-settings': 'Settings',
+			'admin-audit': 'Audit',
+		}[name];
+		return [{ label: 'Administration' }, { label: label ?? 'Administration' }];
+	}
+	if (name === 'settings') return [{ label: 'Account' }, { label: 'Settings' }];
+	if (name === 'api-tokens')
+		return [{ label: 'Account', to: '/settings' }, { label: 'API tokens' }];
+	if (name === 'connect') return [{ label: 'Sentinel', to: '/projects' }, { label: 'Connect' }];
+	return [{ label: 'Sentinel' }, { label: 'Projects' }];
+});
+
+// Tab title follows the page: "Issues · web-frontend · Sentinel"
+watch(
+	crumbs,
+	(list) => {
+		const parts = [list.at(-1)?.label, currentProject.value?.name, 'Sentinel'].filter(Boolean);
+		document.title = [...new Set(parts)].join(' · ');
+	},
+	{ immediate: true },
+);
+
+// Navigating closes the mobile drawer
+watch(
+	() => route.fullPath,
+	() => {
+		navOpen.value = false;
+	},
+);
 
 watch(
 	() => authStore.isAuthenticated,
@@ -34,237 +88,35 @@ watch(
 </script>
 
 <template>
-	<div class="flex h-screen">
-		<!-- Blocking forced-password-change screen: replaces all app content
-		     until the temp password is replaced (the server enforces the same
-		     policy on every authenticated route) -->
-		<ForcePasswordChange v-if="authStore.mustChangePassword" />
-		<template v-else>
+	<!-- Blocking forced-password-change screen: replaces all app content until the
+	     temp password is replaced (the server enforces the same policy on every route) -->
+	<ForcePasswordChange v-if="authStore.mustChangePassword" />
+	<div v-else class="flex min-h-dvh bg-canvas text-fg">
+		<a
+			href="#main"
+			class="sr-only rounded-md bg-accent px-3 py-2 text-body-s font-medium text-accent-fg focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-50"
+		>
+			Skip to content
+		</a>
+
 		<!-- Persistent passkey adoption prompt (per-visit dismissal, in-memory only) -->
 		<PasskeyNag />
 
-		<!-- Sidebar -->
-		<aside class="w-64 bg-gray-900 text-white flex flex-col">
-			<!-- Logo -->
-			<div class="p-4 border-b border-gray-800">
-				<RouterLink to="/" class="flex items-center space-x-2">
-					<div class="w-8 h-8 bg-primary-500 rounded-lg flex items-center justify-center">
-						<span class="text-lg font-bold">S</span>
-					</div>
-					<span class="font-semibold">Sentinel</span>
-				</RouterLink>
-			</div>
+		<!-- Desktop sidebar -->
+		<div class="sticky top-0 hidden h-dvh w-60 shrink-0 lg:block">
+			<AppSidebar />
+		</div>
 
-			<!-- Projects -->
-			<nav class="flex-1 overflow-y-auto p-4">
-				<h2 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-4">
-					Projects
-				</h2>
+		<!-- Mobile/tablet drawer -->
+		<UiDrawer v-model:open="navOpen" label="Navigation">
+			<AppSidebar v-if="navOpen" @navigate="navOpen = false" />
+		</UiDrawer>
 
-				<div v-if="projectsStore.loading" class="text-gray-400 text-sm">Loading...</div>
-
-				<ul v-else class="space-y-1">
-					<li v-for="project in projectsStore.projects" :key="project.id">
-						<RouterLink
-							:to="`/projects/${project.slug}/overview`"
-							class="flex items-center px-3 py-2 rounded-lg text-sm"
-							:class="
-								currentSlug === project.slug
-									? 'bg-gray-800 text-white'
-									: 'text-gray-300 hover:bg-gray-800 hover:text-white'
-							"
-						>
-							<span class="truncate">{{ project.name }}</span>
-						</RouterLink>
-					</li>
-				</ul>
-
-				<div
-					v-if="!projectsStore.loading && projectsStore.projects.length === 0"
-					class="text-gray-400 text-sm text-center py-8"
-				>
-					No projects yet. An administrator can create one for you.
-				</div>
-
-				<!-- Administration (passkey-signed-in admins only; project
-				     creation and membership live here) -->
-				<div v-if="authStore.canUseAdmin" class="mt-6" data-testid="admin-nav">
-					<h2
-						class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2"
-					>
-						Administration
-					</h2>
-					<ul class="space-y-1">
-						<li>
-							<RouterLink
-								to="/admin/users"
-								class="flex items-center px-3 py-2 rounded-lg text-sm"
-								:class="
-									route.name === 'admin-users'
-										? 'bg-gray-800 text-white'
-										: 'text-gray-300 hover:bg-gray-800 hover:text-white'
-								"
-							>
-								Users
-							</RouterLink>
-						</li>
-						<li>
-							<RouterLink
-								to="/admin/projects"
-								class="flex items-center px-3 py-2 rounded-lg text-sm"
-								:class="
-									route.name === 'admin-projects'
-										? 'bg-gray-800 text-white'
-										: 'text-gray-300 hover:bg-gray-800 hover:text-white'
-								"
-							>
-								Projects
-							</RouterLink>
-						</li>
-						<li>
-							<RouterLink
-								to="/admin/settings"
-								class="flex items-center px-3 py-2 rounded-lg text-sm"
-								:class="
-									route.name === 'admin-settings'
-										? 'bg-gray-800 text-white'
-										: 'text-gray-300 hover:bg-gray-800 hover:text-white'
-								"
-							>
-								Settings
-							</RouterLink>
-						</li>
-						<li>
-							<RouterLink
-								to="/admin/audit"
-								class="flex items-center px-3 py-2 rounded-lg text-sm"
-								:class="
-									route.name === 'admin-audit'
-										? 'bg-gray-800 text-white'
-										: 'text-gray-300 hover:bg-gray-800 hover:text-white'
-								"
-							>
-								Audit
-							</RouterLink>
-						</li>
-					</ul>
-				</div>
-			</nav>
-
-			<!-- User -->
-			<div class="p-4 border-t border-gray-800">
-				<div class="flex items-center justify-between">
-					<RouterLink
-						to="/settings"
-						class="flex items-center min-w-0 hover:opacity-80"
-						title="Account settings"
-						data-testid="user-widget-settings-link"
-					>
-						<div
-							class="w-8 h-8 bg-gray-700 rounded-full flex items-center justify-center text-sm font-medium"
-						>
-							{{ authStore.user?.name?.charAt(0).toUpperCase() }}
-						</div>
-						<div class="ml-3 min-w-0">
-							<p class="text-sm font-medium truncate">{{ authStore.user?.name }}</p>
-							<p class="text-xs text-gray-400 truncate">{{ authStore.user?.email }}</p>
-						</div>
-					</RouterLink>
-					<button @click="logout" class="text-gray-400 hover:text-white" title="Logout">
-						<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-							<path
-								stroke-linecap="round"
-								stroke-linejoin="round"
-								stroke-width="2"
-								d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"
-							/>
-						</svg>
-					</button>
-				</div>
-			</div>
-		</aside>
-
-		<!-- Main content -->
-		<main class="flex-1 overflow-y-auto">
-			<!-- Header -->
-			<header v-if="currentProject" class="bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 px-6 py-4">
-				<div class="flex items-center justify-between">
-					<div class="flex items-center space-x-4">
-						<h1 class="text-xl font-semibold text-gray-900 dark:text-white">
-							<RouterLink
-								:to="`/projects/${currentProject.slug}/overview`"
-								class="hover:text-primary-600 dark:hover:text-primary-400 transition-colors"
-								title="Back to project overview"
-							>
-								{{ currentProject.name }}
-							</RouterLink>
-						</h1>
-						<span class="badge badge-info">{{ currentProject.platform }}</span>
-					</div>
-					<div class="flex items-center space-x-2">
-						<RouterLink
-							:to="`/projects/${currentProject.slug}/overview`"
-							class="px-3 py-1.5 text-sm rounded-lg"
-							:class="
-								route.name === 'project-overview'
-									? 'bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white'
-									: 'text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'
-							"
-						>
-							Overview
-						</RouterLink>
-						<RouterLink
-							:to="`/projects/${currentProject.slug}/issues`"
-							class="px-3 py-1.5 text-sm rounded-lg"
-							:class="
-								route.name === 'issues'
-									? 'bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white'
-									: 'text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'
-							"
-						>
-							Issues
-						</RouterLink>
-						<RouterLink
-							:to="`/projects/${currentProject.slug}/releases`"
-							class="px-3 py-1.5 text-sm rounded-lg"
-							:class="
-								route.name === 'releases' || route.name === 'release-detail'
-									? 'bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white'
-									: 'text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'
-							"
-						>
-							Releases
-						</RouterLink>
-						<RouterLink
-							:to="`/projects/${currentProject.slug}/filters`"
-							class="px-3 py-1.5 text-sm rounded-lg"
-							:class="
-								route.name === 'project-filters'
-									? 'bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white'
-									: 'text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'
-							"
-						>
-							Filters
-						</RouterLink>
-						<RouterLink
-							:to="`/projects/${currentProject.slug}/settings`"
-							class="px-3 py-1.5 text-sm rounded-lg"
-							:class="
-								route.name === 'project-settings'
-									? 'bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white'
-									: 'text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'
-							"
-						>
-							Settings
-						</RouterLink>
-					</div>
-				</div>
-			</header>
-
-			<div class="p-6">
+		<div class="flex min-w-0 flex-1 flex-col">
+			<AppTopBar :crumbs="crumbs" @open-menu="navOpen = true" />
+			<main id="main" tabindex="-1" class="min-w-0 flex-1 p-4 outline-none sm:p-6">
 				<RouterView />
-			</div>
-		</main>
-		</template>
+			</main>
+		</div>
 	</div>
 </template>

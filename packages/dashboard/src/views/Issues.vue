@@ -378,7 +378,7 @@ watch(
 					type="checkbox"
 					:checked="allSelected"
 					:indeterminate="someSelected && !allSelected"
-					class="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+					class="rounded-sm border-gray-300 text-primary-600 focus:ring-primary-500"
 					@change="toggleSelectAll"
 				/>
 				<span>Select all</span>
@@ -498,7 +498,7 @@ watch(
 					<pre class="text-sm bg-gray-900 text-gray-100 rounded-lg p-4 overflow-x-auto mb-4"><code>npm install @sentry/cloudflare --save</code></pre>
 
 					<p class="text-sm text-gray-600 dark:text-gray-400 mb-3">
-						2. Add a service binding to Sentinel and the compatibility flag in <code class="text-xs bg-gray-200 dark:bg-gray-600 px-1 rounded">wrangler.jsonc</code>:
+						2. Add a service binding to Sentinel and the compatibility flag in <code class="text-xs bg-gray-200 dark:bg-gray-600 px-1 rounded-sm">wrangler.jsonc</code>:
 					</p>
 					<pre class="text-sm bg-gray-900 text-gray-100 rounded-lg p-4 overflow-x-auto mb-4"><code>{
   "compatibility_flags": ["nodejs_als"],
@@ -559,7 +559,7 @@ Sentry.init({
 						type="checkbox"
 						:checked="allSelected"
 						:indeterminate="someSelected && !allSelected"
-						class="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+						class="rounded-sm border-gray-300 text-primary-600 focus:ring-primary-500"
 						aria-label="Select all issues on this page"
 						@change="toggleSelectAll"
 					/>
@@ -575,7 +575,7 @@ Sentry.init({
 					<input
 						type="checkbox"
 						:checked="selectedIds.has(issue.id)"
-						class="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+						class="rounded-sm border-gray-300 text-primary-600 focus:ring-primary-500"
 						@change="toggleSelect(issue.id)"
 					/>
 				</div>

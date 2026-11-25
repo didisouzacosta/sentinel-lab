@@ -394,7 +394,7 @@ onMounted(() => {
 						</div>
 
 						<span
-							class="inline-flex items-center px-2 py-1 text-xs font-medium rounded-full flex-shrink-0"
+							class="inline-flex items-center px-2 py-1 text-xs font-medium rounded-full shrink-0"
 							:class="
 								member.role === 'owner'
 									? 'bg-primary-100 dark:bg-primary-900/30 text-primary-700 dark:text-primary-300'
@@ -425,7 +425,7 @@ onMounted(() => {
 							v-model="webhookUrl"
 							type="url"
 							placeholder="https://hooks.slack.com/services/..."
-							class="w-full px-3 py-2 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg text-sm text-gray-900 dark:text-gray-100 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+							class="w-full px-3 py-2 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg text-sm text-gray-900 dark:text-gray-100 placeholder-gray-400 focus:outline-hidden focus:ring-2 focus:ring-primary-500 focus:border-transparent"
 						/>
 					</div>
 
@@ -471,7 +471,7 @@ onMounted(() => {
 								type="number"
 								min="0"
 								step="100"
-								class="w-48 px-3 py-2 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg text-sm text-gray-900 dark:text-gray-100 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+								class="w-48 px-3 py-2 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg text-sm text-gray-900 dark:text-gray-100 placeholder-gray-400 focus:outline-hidden focus:ring-2 focus:ring-primary-500 focus:border-transparent"
 								placeholder="0 (unlimited)"
 							/>
 							<button
@@ -493,7 +493,7 @@ onMounted(() => {
 							<span :class="rateLimitStatus.isLimited ? 'text-error-600 font-medium' : 'text-gray-900 dark:text-white'">
 								{{ rateLimitStatus.currentHourCount.toLocaleString() }} / {{ maxEventsPerHour.toLocaleString() }}
 							</span>
-							<span v-if="rateLimitStatus.isLimited" class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-error-100 text-error-800 dark:bg-error-900/30 dark:text-error-400">
+							<span v-if="rateLimitStatus.isLimited" class="inline-flex items-center px-2 py-0.5 rounded-sm text-xs font-medium bg-error-100 text-error-800 dark:bg-error-900/30 dark:text-error-400">
 								Rate limited
 							</span>
 						</div>
@@ -550,11 +550,11 @@ onMounted(() => {
 				<div class="space-y-3 mb-6 p-4 bg-gray-50 dark:bg-gray-700/50 rounded-lg">
 					<div>
 						<label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Release</label>
-						<input v-model="smRelease" class="w-full px-3 py-2 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg text-sm text-gray-900 dark:text-gray-100 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent" placeholder="e.g. my-app@1.2.0" />
+						<input v-model="smRelease" class="w-full px-3 py-2 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg text-sm text-gray-900 dark:text-gray-100 placeholder-gray-400 focus:outline-hidden focus:ring-2 focus:ring-primary-500 focus:border-transparent" placeholder="e.g. my-app@1.2.0" />
 					</div>
 					<div>
 						<label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Minified File URL</label>
-						<input v-model="smFileUrl" class="w-full px-3 py-2 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg text-sm text-gray-900 dark:text-gray-100 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent" placeholder="e.g. https://example.com/assets/main.abc123.js" />
+						<input v-model="smFileUrl" class="w-full px-3 py-2 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg text-sm text-gray-900 dark:text-gray-100 placeholder-gray-400 focus:outline-hidden focus:ring-2 focus:ring-primary-500 focus:border-transparent" placeholder="e.g. https://example.com/assets/main.abc123.js" />
 					</div>
 					<div>
 						<label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Source Map File (.map)</label>
@@ -578,7 +578,7 @@ onMounted(() => {
 						<div v-for="sm in sourceMaps" :key="sm.id" class="flex items-center justify-between p-3">
 							<div class="min-w-0 flex-1">
 								<div class="flex items-center space-x-2">
-									<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-primary-100 text-primary-800 dark:bg-primary-900/20 dark:text-primary-400">{{ sm.release }}</span>
+									<span class="inline-flex items-center px-2 py-0.5 rounded-sm text-xs font-medium bg-primary-100 text-primary-800 dark:bg-primary-900/20 dark:text-primary-400">{{ sm.release }}</span>
 									<span class="text-sm text-gray-900 dark:text-white truncate">{{ sm.fileUrl }}</span>
 								</div>
 								<p class="text-xs text-gray-400 mt-1">{{ formatSize(sm.size) }} — {{ formatDate(sm.createdAt) }}</p>

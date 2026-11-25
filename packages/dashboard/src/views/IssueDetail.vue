@@ -623,7 +623,7 @@ onBeforeUnmount(() => {
 							>
 								<!-- Status change -->
 								<div v-if="entry.type === 'status_change'" class="flex items-center space-x-2 text-gray-500">
-									<svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+									<svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
 										<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4" />
 									</svg>
 									<span>
@@ -633,7 +633,7 @@ onBeforeUnmount(() => {
 										to
 										<span class="font-medium">{{ entry.data.to }}</span>
 									</span>
-									<span class="text-xs text-gray-400 flex-shrink-0">{{ formatTime(entry.createdAt) }}</span>
+									<span class="text-xs text-gray-400 shrink-0">{{ formatTime(entry.createdAt) }}</span>
 								</div>
 
 								<!-- Comment -->
@@ -709,7 +709,7 @@ onBeforeUnmount(() => {
 							<span
 								v-for="(value, key) in selectedEvent.tags"
 								:key="key"
-								class="inline-flex items-center px-2 py-1 bg-gray-100 dark:bg-gray-700 rounded text-xs"
+								class="inline-flex items-center px-2 py-1 bg-gray-100 dark:bg-gray-700 rounded-sm text-xs"
 							>
 								<span class="text-gray-500">{{ key }}:</span>
 								<span class="ml-1 text-gray-900 dark:text-white">{{ value }}</span>

@@ -114,7 +114,7 @@ function formatDetails(details: Record<string, unknown> | null): string {
 							<div class="text-xs text-gray-500">{{ entry.actorEmail }}</div>
 						</td>
 						<td class="px-4 py-3">
-							<code class="text-xs bg-gray-100 dark:bg-gray-900 rounded px-1.5 py-0.5">
+							<code class="text-xs bg-gray-100 dark:bg-gray-900 rounded-sm px-1.5 py-0.5">
 								{{ entry.action }}
 							</code>
 						</td>

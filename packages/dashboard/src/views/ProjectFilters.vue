@@ -182,7 +182,7 @@ onMounted(() => loadFilters());
 					</label>
 					<select
 						v-model="newFilter.filterType"
-						class="w-full px-3 py-2 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+						class="w-full px-3 py-2 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg text-sm text-gray-900 dark:text-gray-100 focus:outline-hidden focus:ring-2 focus:ring-primary-500 focus:border-transparent"
 					>
 						<option value="message">Error Message</option>
 						<option value="error_type">Exception Type</option>
@@ -202,7 +202,7 @@ onMounted(() => loadFilters());
 						required
 						maxlength="500"
 						placeholder="e.g. ResizeObserver loop"
-						class="w-full px-3 py-2 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg text-sm text-gray-900 dark:text-gray-100 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+						class="w-full px-3 py-2 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg text-sm text-gray-900 dark:text-gray-100 placeholder-gray-400 focus:outline-hidden focus:ring-2 focus:ring-primary-500 focus:border-transparent"
 					/>
 					<p class="text-xs text-gray-400 mt-1">
 						<template v-if="newFilter.filterType === 'ip_address' || newFilter.filterType === 'release'">
@@ -225,7 +225,7 @@ onMounted(() => loadFilters());
 						v-model="newFilter.description"
 						type="text"
 						placeholder="Why this filter exists"
-						class="w-full px-3 py-2 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg text-sm text-gray-900 dark:text-gray-100 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+						class="w-full px-3 py-2 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg text-sm text-gray-900 dark:text-gray-100 placeholder-gray-400 focus:outline-hidden focus:ring-2 focus:ring-primary-500 focus:border-transparent"
 					/>
 				</div>
 
@@ -273,7 +273,7 @@ onMounted(() => loadFilters());
 					</div>
 					<div class="flex items-center space-x-2 ml-4">
 						<button
-							class="px-2 py-1 text-xs rounded"
+							class="px-2 py-1 text-xs rounded-sm"
 							:class="
 								filter.enabled
 									? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400'
@@ -284,7 +284,7 @@ onMounted(() => loadFilters());
 							{{ filter.enabled ? 'Enabled' : 'Disabled' }}
 						</button>
 						<button
-							class="px-2 py-1 text-xs text-error-600 dark:text-error-400 hover:bg-error-50 dark:hover:bg-error-900/20 rounded"
+							class="px-2 py-1 text-xs text-error-600 dark:text-error-400 hover:bg-error-50 dark:hover:bg-error-900/20 rounded-sm"
 							@click="deleteFilter(filter.id)"
 						>
 							Delete

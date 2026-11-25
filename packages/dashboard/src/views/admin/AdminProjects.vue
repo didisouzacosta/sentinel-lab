@@ -377,7 +377,7 @@ function formatDate(value: string): string {
 				<div v-if="createdDsn" class="space-y-3">
 					<p class="text-sm text-gray-500">Project created. Its DSN:</p>
 					<code
-						class="block bg-gray-100 dark:bg-gray-900 text-gray-900 dark:text-gray-100 rounded px-3 py-2 text-xs break-all"
+						class="block bg-gray-100 dark:bg-gray-900 text-gray-900 dark:text-gray-100 rounded-sm px-3 py-2 text-xs break-all"
 						data-testid="admin-created-dsn"
 					>
 						{{ createdDsn }}
@@ -565,7 +565,7 @@ function formatDate(value: string): string {
 							</div>
 							<div class="text-xs text-gray-500 truncate">{{ member.email }}</div>
 						</div>
-						<div class="flex items-center space-x-2 flex-shrink-0">
+						<div class="flex items-center space-x-2 shrink-0">
 							<template v-if="member.role === 'owner'">
 								<span
 									class="inline-flex items-center px-2 py-1 text-xs font-medium rounded-full bg-primary-100 dark:bg-primary-900/30 text-primary-700 dark:text-primary-300"
@@ -576,7 +576,7 @@ function formatDate(value: string): string {
 							<template v-else>
 								<select
 									:value="member.role"
-									class="text-xs bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded px-2 py-1 text-gray-900 dark:text-gray-100"
+									class="text-xs bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-sm px-2 py-1 text-gray-900 dark:text-gray-100"
 									@change="changeMemberRole(member, ($event.target as HTMLSelectElement).value)"
 								>
 									<option value="admin">Admin</option>

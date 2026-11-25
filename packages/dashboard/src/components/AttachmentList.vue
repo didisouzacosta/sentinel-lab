@@ -170,11 +170,11 @@ onBeforeUnmount(() => {
 						<span class="font-mono text-xs text-gray-900 dark:text-gray-100 truncate">{{ attachment.filename }}</span>
 						<span
 							v-if="compressionBadge(attachment.filename)"
-							class="text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300"
+							class="text-[10px] font-bold px-1.5 py-0.5 rounded-sm bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300"
 						>
 							{{ compressionBadge(attachment.filename) }} → auto-decompressed
 						</span>
-						<span class="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400">
+						<span class="text-[10px] px-1.5 py-0.5 rounded-sm bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400">
 							{{ attachment.contentType }}
 						</span>
 						<span class="text-xs text-gray-500">{{ formatBytes(attachment.size) }}</span>
@@ -220,7 +220,7 @@ onBeforeUnmount(() => {
 							v-if="previews[attachment.id].kind === 'image'"
 							:src="previews[attachment.id].url"
 							alt="Attachment preview"
-							class="max-h-96 rounded"
+							class="max-h-96 rounded-sm"
 						/>
 						<pre
 							v-else

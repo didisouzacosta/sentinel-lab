@@ -94,7 +94,7 @@ watch(slug, () => loadReleases());
 			</svg>
 			<h3 class="mt-2 text-lg font-medium text-gray-900 dark:text-white">No releases yet</h3>
 			<p class="mt-1 text-sm text-gray-500">
-				Releases will appear here once you configure the <code class="text-xs bg-gray-200 dark:bg-gray-600 px-1 rounded">release</code> option in your Sentry SDK.
+				Releases will appear here once you configure the <code class="text-xs bg-gray-200 dark:bg-gray-600 px-1 rounded-sm">release</code> option in your Sentry SDK.
 			</p>
 		</div>
 
