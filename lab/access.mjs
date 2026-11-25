@@ -61,16 +61,29 @@ async function apply() {
 		decision: 'allow',
 		include: admins.map((email) => ({ email: { email } })),
 	};
-	// The reusable-policy listing can miss a policy that exists (seen on
-	// 2026-11-25: `show` printed "policy": null while the app still pointed
-	// at it). Fall back to the policy the app already uses, so apply updates
-	// it instead of creating a same-named duplicate.
+	// The reusable-policy listing can come back without the policy — a token
+	// with app permissions but none on reusable policies sees it only through
+	// the app (2026-11-25: `show` printed "policy": null). Fall back to the
+	// policy the app already uses, so apply never creates a same-named
+	// duplicate.
 	const existingPolicy =
 		(await findByName('/access/policies', POLICY_NAME)) ??
 		(await findByName('/access/apps', APP_NAME))?.policies?.find((p) => p.name === POLICY_NAME);
-	const policy = existingPolicy
-		? await cf('PUT', `/access/policies/${existingPolicy.id}`, policyBody)
-		: await cf('POST', '/access/policies', policyBody);
+	// Rewrite the policy only when the admin list changes: adding a public
+	// path (e.g. /mcp) then needs app permissions alone.
+	const emailsOf = (p) =>
+		(p?.include ?? [])
+			.map((rule) => rule.email?.email)
+			.filter(Boolean)
+			.sort()
+			.join(',');
+	const unchanged = existingPolicy && emailsOf(existingPolicy) === [...admins].sort().join(',');
+	const policy = unchanged
+		? existingPolicy
+		: existingPolicy
+			? await cf('PUT', `/access/policies/${existingPolicy.id}`, policyBody)
+			: await cf('POST', '/access/policies', policyBody);
+	if (unchanged) console.log(`Política "${POLICY_NAME}" sem mudança (mesmos e-mails); só o app é atualizado.`);
 
 	const appBody = {
 		name: APP_NAME,
