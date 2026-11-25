@@ -295,6 +295,32 @@ export function sanitizeEvent(event: SentryEvent): SentryEvent {
 		}
 	}
 
+	// `message` may also be Sentry's Message interface — `{formatted, message,
+	// params}`, the same shape as `logentry` — which SDK-less senders and some
+	// SDKs use. Everything downstream (title, fingerprint, culprit) expects a
+	// string, and an object here used to make the ProjectState write throw
+	// after the client got its 200, losing the event. Keep the text in
+	// `message` and the structured form in `logentry` when there is none.
+	const rawMessage: unknown = (event as { message?: unknown }).message;
+	if (rawMessage !== undefined && typeof rawMessage !== 'string') {
+		const record = event as unknown as Record<string, unknown>;
+		const structured =
+			rawMessage !== null && typeof rawMessage === 'object' && !Array.isArray(rawMessage)
+				? (rawMessage as { formatted?: unknown; message?: unknown })
+				: null;
+		const text =
+			typeof structured?.formatted === 'string'
+				? structured.formatted
+				: typeof structured?.message === 'string'
+					? structured.message
+					: undefined;
+		if (structured && record.logentry === undefined) record.logentry = structured;
+		if (text !== undefined) {
+			event.message = text;
+		} else {
+			delete record.message;
+		}
+	}
 	if (typeof event.message === 'string') {
 		event.message = truncate(event.message, MAX_MESSAGE_LENGTH);
 	}

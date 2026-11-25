@@ -100,6 +100,41 @@ describe('Ingestion: DSN from the envelope header', () => {
 		await expectStored(eventId);
 	});
 
+	it("stores Tem Horário's captureMessage (message as {formatted}) instead of losing it", async () => {
+		// SentryErrorReporter.captureMessage → { level: 'warning', message: { formatted } }
+		const eventId = newId();
+		const event = {
+			event_id: eventId,
+			timestamp: Date.now() / 1000,
+			platform: 'javascript',
+			environment: 'production',
+			tags: { route: '/api/agenda' },
+			level: 'warning',
+			message: { formatted: 'rate limit counter unavailable, failing open' },
+		};
+		const body = `${JSON.stringify({ event_id: eventId, dsn: dsnOf(project) })}\n${JSON.stringify({ type: 'event' })}\n${JSON.stringify(event)}\n`;
+		const response = await post(project.id, body);
+		expect(response.status).toBe(200);
+		await expectStored(eventId);
+
+		const stored = await authFetch(
+			token,
+			`http://localhost/api/projects/${project.slug}/events/${eventId}`,
+		);
+		const data = (await stored.json()) as {
+			event: { message: unknown; logentry?: { formatted: string } };
+		};
+		expect(data.event.message).toBe('rate limit counter unavailable, failing open');
+		expect(data.event.logentry?.formatted).toBe('rate limit counter unavailable, failing open');
+
+		const issues = await authFetch(
+			token,
+			`http://localhost/api/projects/${project.slug}/issues?level=warning`,
+		);
+		const { issues: list } = (await issues.json()) as { issues: Array<{ title: string }> };
+		expect(list.some((i) => i.title.includes('rate limit counter unavailable'))).toBe(true);
+	});
+
 	it('ingests the sendBeacon envelope (text/plain, no other credential)', async () => {
 		const eventId = newId();
 		const response = await post(project.id, browserEnvelope(dsnOf(project), eventId), {
