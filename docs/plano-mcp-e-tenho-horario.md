@@ -147,6 +147,48 @@ entrega DSN**. Criar projeto hoje só pela área de admin, que exige sessão de 
 - Página Connect: aba MCP passa a mostrar o MCP próprio primeiro; o do Sentry fica como alternativa.
 - Testes: cliente MCP de verdade contra o worker no vitest; atualizar `docs/compat-mcp-sentry.md`.
 
+#### Permissões: o MCP nunca pode mais que o usuário (levantado em 25/11/2026)
+
+O Sentinel já tem quatro camadas de permissão, e o MCP respeita todas, sem regra própria:
+
+1. **Papel na instância:** `admin` ou `member`.
+2. **Papel em cada projeto:** `owner`, `admin` ou `member` (quem não é membro não vê o projeto: 404).
+3. **Como entrou:** sessão por senha ou por passkey (a área de admin e criar projeto exigem passkey).
+4. **Escopo do token** (fase 2): `read` ⊂ `write` ⊂ `projects`.
+
+O que cada um pode hoje (conferido no código):
+
+| Ação | Quem pode |
+|---|---|
+| Ver projeto, DSN, issues, eventos, anexos, releases, membros | qualquer membro do projeto (token `read`) |
+| Resolver/ignorar/adiar, juntar e **apagar** issue; comentar; subir/apagar source map | qualquer membro (token `write`) |
+| Apagar comentário | só quem escreveu |
+| Webhook (ver, mudar, testar), limite por hora, retenção, cabeçalhos escondidos, orçamento de anexos, filtros, nome e plataforma | `owner` ou `admin` do projeto (token `write`); para `member` o webhook nem aparece |
+| Trocar a chave do DSN | `owner` ou `admin` do projeto (token `projects`) |
+| Apagar projeto | só o `owner` (token `projects`) |
+| Criar projeto | `admin` da instância com passkey (token `projects`, que só ele cria) |
+| Usuários, membros de projeto, dono, configurações da instância, auditoria | área de admin, só sessão de passkey — **nunca por token, nunca pelo MCP** |
+
+Como o MCP garante isso:
+
+- **Uma regra só:** cada ferramenta chama as rotas do próprio worker por dentro (`app.fetch` com o mesmo
+  `Authorization` do cliente MCP), então passa pelo mesmo `authMiddleware`, os mesmos escopos e as mesmas checagens de
+  papel que o painel e a API. O MCP não tem caminho privilegiado nem cópia das regras — se uma regra mudar na API, o
+  MCP muda junto.
+- **A IA sabe o que pode antes de tentar:** `whoami` devolve o papel na instância, os escopos do token e o papel em
+  cada projeto; `get_project` diz o que aquele usuário pode fazer ali (`can: { editSettings, rotateKey, delete }`).
+- **Só aparece o que o token alcança:** `tools/list` esconde as ferramentas que o escopo nunca permitiria (token `read`
+  não vê nenhuma de escrita; `create_project`, `rotate_dsn` e `delete_project` só aparecem com `projects`). O papel
+  varia por projeto, então as ferramentas de configuração aparecem com `write`, e a chamada num projeto onde o usuário
+  é só `member` volta com o motivo claro ("você é member de X; mudar a retenção exige owner ou admin").
+- **Pergunta antes de agir:** ferramentas de escrita marcadas para o cliente pedir aprovação; as destrutivas pedem o
+  slug repetido em `confirm`.
+- **Auditoria** com `via: api_token` e o prefixo do token (já na fase 2).
+
+Achado para decidir (não muda nada agora): hoje **qualquer membro** de um projeto pode apagar issues, juntar issues e
+apagar source maps. Pelo MCP, isso vale para um token `write` de um membro comum. Se quiser, apagar issue e apagar
+source map passam a exigir `owner`/`admin` — vale para painel, API e MCP ao mesmo tempo.
+
 ### Fase 4 — Integrações (tudo configurável pelo MCP)
 
 O webhook único vira um sistema de integrações em duas camadas:
