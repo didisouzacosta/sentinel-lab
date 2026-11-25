@@ -83,7 +83,8 @@ async function apply() {
 		: existingPolicy
 			? await cf('PUT', `/access/policies/${existingPolicy.id}`, policyBody)
 			: await cf('POST', '/access/policies', policyBody);
-	if (unchanged) console.log(`Política "${POLICY_NAME}" sem mudança (mesmos e-mails); só o app é atualizado.`);
+	if (unchanged)
+		console.log(`Política "${POLICY_NAME}" sem mudança (mesmos e-mails); só o app é atualizado.`);
 
 	const appBody = {
 		name: APP_NAME,

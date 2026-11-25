@@ -41,6 +41,21 @@ pnpm --filter @workers-sentinel/worker test:watch  # Run tests in watch mode
 pnpm --filter @workers-sentinel/worker typecheck   # TypeScript check
 ```
 
+## Continuous deployment (Sentinel Lab)
+
+`lab/main` deploys itself: every push or merge to it runs `.github/workflows/lab-deploy.yml` on GitHub Actions. Nobody needs to deploy by hand.
+
+1. **Lint and typecheck**: `pnpm lint` (Biome, whole repository) and `pnpm typecheck` (worker and dashboard).
+2. **Test** (only if 1 passed): dashboard build, dashboard tests (with the design-system guard), worker tests, passkey origin tests and `node scripts/integration.mjs` (local `wrangler dev`, no Cloudflare credentials).
+3. **Deploy** (only if 2 passed, only for `lab/main`): records the live version, runs `wrangler deploy`, then `lab/smoke-production.sh` against production (health 200, Access 302 on `/`, 401 on `/api/0/`, `/mcp` and an envelope with an unknown key). If a smoke check fails, the job runs `wrangler rollback` to the version it recorded and fails.
+
+- Pull requests to `lab/main` run steps 1 and 2 only. Deploys queue one at a time and are never cancelled halfway.
+- Credentials live in the GitHub environment `production` (deployable only from `lab/main`): the secret `CLOUDFLARE_API_TOKEN` (the token "GitHub Actions · Tenho Horário + Sentinel", shared with the Tenho Horário deploy; see `lab/cloudflare-resources.md`) and the variable `CLOUDFLARE_ACCOUNT_ID`. Agents never create or paste the token; the owner sets it with `gh secret set CLOUDFLARE_API_TOKEN --env production --repo didisouzacosta/sentinel-lab`.
+- A run's summary shows the commit, the previous and new Worker version IDs and the smoke result. Deploys are no longer recorded by hand in `lab/`.
+- Rollback caveat: `wrangler rollback` refuses versions from before a Durable Object migration. For a deploy that adds a migration, a failed smoke check needs a manual fix.
+- Deploying by hand still works (`cd packages/workers-sentinel && npx wrangler deploy`, which builds the dashboard itself), for emergencies only; the next push to `lab/main` deploys over it.
+- The upstream workflows (`ci.yml`, `release.yml`, `changeset-check.yml`) only react to `main` and stay untouched.
+
 ## Architecture
 
 ### Monorepo Structure

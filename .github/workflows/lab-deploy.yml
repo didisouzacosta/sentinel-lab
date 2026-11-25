@@ -1,0 +1,148 @@
+# Sentinel Lab: every push or merge to lab/main is linted, tested and, only if
+# both pass, deployed to Cloudflare (sentinel.adrianosouzacosta.com.br), then
+# checked against production and rolled back automatically if a check fails.
+# Pull requests to lab/main run lint and tests only, never the deploy.
+#
+# The upstream workflows (ci.yml, release.yml, changeset-check.yml) only react
+# to `main` and are left untouched so upstream merges stay clean.
+name: Lab · lint, test and deploy
+
+on:
+  push:
+    branches: [lab/main]
+  pull_request:
+    branches: [lab/main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Deploys queue (never cancelled halfway); pull-request runs replace each other.
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('lab-pr-{0}', github.ref) || 'lab-production' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  WRANGLER_SEND_METRICS: "false"
+
+jobs:
+  lint:
+    name: Lint and typecheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup
+
+      - name: Lint (Biome, whole repository)
+        run: pnpm lint
+
+      - name: Typecheck (worker and dashboard)
+        run: pnpm typecheck
+
+  test:
+    name: Test
+    needs: lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup
+
+      # The worker's wrangler.jsonc serves ../dashboard/dist as assets, so the
+      # worker tests need the dashboard built first.
+      - name: Build dashboard
+        run: pnpm --filter @workers-sentinel/dashboard build
+
+      - name: Dashboard tests (includes the design-system guard)
+        run: pnpm --filter @workers-sentinel/dashboard test
+
+      - name: Worker tests
+        run: pnpm --filter workers-sentinel test
+
+      - name: Passkey origin tests
+        run: pnpm --filter workers-sentinel test:webauthn-origins
+
+      - name: Integration suite (local wrangler dev, no Cloudflare credentials)
+        run: node scripts/integration.mjs
+
+  deploy:
+    name: Deploy to Cloudflare
+    needs: test
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/lab/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: production
+      url: https://sentinel.adrianosouzacosta.com.br
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      SENTINEL_URL: https://sentinel.adrianosouzacosta.com.br
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup
+
+      - name: Check credentials
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "::error::Set the CLOUDFLARE_API_TOKEN secret and the CLOUDFLARE_ACCOUNT_ID variable in the 'production' environment."
+            exit 1
+          fi
+
+      - name: Remember the live version
+        id: before
+        working-directory: packages/workers-sentinel
+        run: |
+          version=$(pnpm exec wrangler deployments status --json \
+            | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const d=JSON.parse(s);console.log(d.versions?.[0]?.version_id??"")})')
+          echo "Live version before deploy: ${version:-none}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      # wrangler builds the dashboard itself (build.command in wrangler.jsonc).
+      - name: Deploy
+        id: deploy
+        working-directory: packages/workers-sentinel
+        run: |
+          pnpm exec wrangler deploy 2>&1 | tee "$RUNNER_TEMP/deploy.log"
+          version=$(sed -n 's/.*Current Version ID: \([0-9a-f-]*\).*/\1/p' "$RUNNER_TEMP/deploy.log" | tail -1)
+          if [ -z "$version" ]; then
+            echo "::error::wrangler deploy did not report a version ID."
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Smoke checks against production
+        id: smoke
+        run: bash lab/smoke-production.sh "$SENTINEL_URL"
+
+      - name: Roll back to the previous version
+        if: failure() && steps.smoke.outcome == 'failure' && steps.before.outputs.version != ''
+        working-directory: packages/workers-sentinel
+        run: |
+          pnpm exec wrangler rollback "${{ steps.before.outputs.version }}" --yes \
+            --message "CI: smoke checks failed for ${GITHUB_SHA::7}, back to the previous version"
+          echo "::error::Smoke checks failed; production was rolled back to ${{ steps.before.outputs.version }}."
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Sentinel Lab deploy"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Commit | \`${GITHUB_SHA::7}\` |"
+            echo "| Previous version | \`${{ steps.before.outputs.version || 'unknown' }}\` |"
+            echo "| New version | \`${{ steps.deploy.outputs.version || 'not deployed' }}\` |"
+            echo "| Smoke checks | ${{ steps.smoke.outcome || 'skipped' }} |"
+          } >> "$GITHUB_STEP_SUMMARY"

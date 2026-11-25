@@ -148,6 +148,10 @@ pnpm install
 pnpm deploy
 ```
 
+> **Sentinel Lab fork:** `lab/main` deploys itself to sentinel.adrianosouzacosta.com.br through GitHub Actions
+> (lint → tests → deploy → smoke checks, with automatic rollback). See "Continuous deployment" in
+> [AGENTS.md](AGENTS.md).
+
 ### Local Development (guarded supervisor)
 
 Run the full stack locally under Workerd — no Cloudflare account or credentials needed:
