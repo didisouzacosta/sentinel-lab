@@ -43,9 +43,7 @@ const titleId = `card-${useId()}`;
 					:is="`h${headingLevel}`"
 					:id="titleId"
 					:class="['flex-1 text-heading-s', tone === 'danger' ? 'text-level-error' : 'text-fg']"
-				>
-					{{ title }}
-				</component>
+>{{ title }}</component>
 				<span v-if="meta" class="text-caption text-fg-subtle">{{ meta }}</span>
 			</slot>
 			<slot name="actions" />

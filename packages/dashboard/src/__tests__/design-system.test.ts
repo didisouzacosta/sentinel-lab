@@ -12,10 +12,7 @@ import { describe, expect, it } from 'vitest';
  * fails the test, so the list can only shrink.
  */
 const LEGACY = new Set([
-	'components/AttachmentList.vue',
 	'views/ApiTokens.vue',
-	'views/EventDetail.vue',
-	'views/IssueDetail.vue',
 	'views/ProjectFilters.vue',
 	'views/ProjectSettings.vue',
 	'views/ReleaseDetail.vue',

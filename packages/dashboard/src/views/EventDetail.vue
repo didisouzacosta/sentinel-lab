@@ -1,8 +1,11 @@
 <script setup lang="ts">
+import { ArrowLeft } from 'lucide-vue-next';
 import { computed, onMounted, ref } from 'vue';
-import { RouterLink, useRoute } from 'vue-router';
+import { useRoute } from 'vue-router';
 import { api } from '../api/client';
 import AttachmentList from '../components/AttachmentList.vue';
+import AppPageHeader from '../components/app/AppPageHeader.vue';
+import { UiAlert, UiButton, UiCode, UiSkeleton } from '../components/ui';
 
 const route = useRoute();
 const slug = computed(() => route.params.slug as string);
@@ -34,40 +37,22 @@ onMounted(() => loadEvent());
 </script>
 
 <template>
-	<div>
-		<!-- Loading -->
-		<div v-if="loading" class="text-center py-12">
-			<div class="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-600 mx-auto"></div>
-		</div>
+	<div class="flex flex-col gap-5">
+		<UiSkeleton v-if="loading" variant="block" label="Loading event" class="h-80" />
 
-		<!-- Error -->
-		<div v-else-if="error" class="bg-error-50 dark:bg-error-900/20 text-error-700 dark:text-error-400 px-4 py-3 rounded-lg">
-			{{ error }}
-		</div>
+		<UiAlert v-else-if="error" tone="error" action-label="Try again" @action="loadEvent">{{ error }}</UiAlert>
 
-		<!-- Event detail -->
-		<div v-else-if="event">
-			<div class="mb-6">
-				<div class="flex items-center space-x-2 text-sm text-gray-500 mb-2">
-					<RouterLink :to="`/projects/${slug}/issues`" class="hover:text-gray-700">Issues</RouterLink>
-					<span>/</span>
-					<RouterLink v-if="issueId" :to="`/projects/${slug}/issues/${issueId}`" class="hover:text-gray-700">
-						Issue
-					</RouterLink>
-					<span>/</span>
-					<span>Event</span>
-				</div>
+		<template v-else-if="event">
+			<AppPageHeader title="Event">
+				<template #subtitle><span class="font-mono">{{ eventId }}</span></template>
+				<template #actions>
+					<UiButton v-if="issueId" :to="`/projects/${slug}/issues/${issueId}`" :icon="ArrowLeft">Back to issue</UiButton>
+				</template>
+			</AppPageHeader>
 
-				<h1 class="text-xl font-bold text-gray-900 dark:text-white">
-					Event {{ eventId }}
-				</h1>
-			</div>
+			<UiCode language="Raw event (JSON)" :code="JSON.stringify(event, null, 2)" />
 
-			<div class="card p-4">
-				<pre class="text-xs font-mono overflow-x-auto whitespace-pre-wrap text-gray-900 dark:text-gray-100">{{ JSON.stringify(event, null, 2) }}</pre>
-			</div>
-
-			<AttachmentList :slug="slug" :event-id="eventId" class="mt-4 block" />
-		</div>
+			<AttachmentList :slug="slug" :event-id="eventId" />
+		</template>
 	</div>
 </template>

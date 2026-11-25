@@ -1,6 +1,8 @@
 <script setup lang="ts">
+import { Download, Eye, EyeOff, Paperclip } from 'lucide-vue-next';
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { api } from '../api/client';
+import { useToast } from '../composables/useToast';
 import {
 	type AttachmentMeta,
 	classifyAttachment,
@@ -8,7 +10,9 @@ import {
 	formatBytes,
 	loadAttachmentPreview,
 } from '../lib/attachments';
+import { UiAlert, UiButton, UiCard, UiSkeleton, UiTag } from './ui';
 
+const toast = useToast();
 const props = defineProps<{
 	slug: string;
 	eventId: string;
@@ -122,8 +126,9 @@ async function download(attachment: AttachmentMeta): Promise<void> {
 	try {
 		await downloadAttachment(props.slug, attachment);
 	} catch (err) {
+		// A failed download should not hide the list: report it and move on.
 		if (run === generation) {
-			error.value = err instanceof Error ? err.message : 'Download failed';
+			toast.error(`Download failed: ${err instanceof Error ? err.message : 'unknown error'}`);
 		}
 	} finally {
 		if (run === generation) downloading.value[attachment.id] = false;
@@ -151,39 +156,31 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-	<div class="card">
-		<h3 class="font-semibold text-gray-900 dark:text-white mb-3">
-			Attachments
-			<span v-if="attachments.length" class="text-gray-400 font-normal text-sm">({{ attachments.length }})</span>
-		</h3>
-
-		<div v-if="loading" class="text-sm text-gray-500">Loading attachments…</div>
-		<div v-else-if="error" class="text-sm text-error-600 dark:text-error-400">{{ error }}</div>
-		<div v-else-if="attachments.length === 0" class="text-sm text-gray-500">
+	<UiCard title="Attachments" :meta="attachments.length ? `${attachments.length} file${attachments.length === 1 ? '' : 's'}` : undefined">
+		<UiSkeleton v-if="loading" variant="line" :count="2" label="Loading attachments" class="p-4" />
+		<UiAlert v-else-if="error" tone="error" action-label="Try again" class="m-4" @action="load">{{ error }}</UiAlert>
+		<p v-else-if="attachments.length === 0" class="flex items-center gap-2 px-4 py-4 text-body-s text-fg-muted">
+			<Paperclip :size="14" class="text-fg-subtle" aria-hidden="true" />
 			No attachments on this event.
-		</div>
+		</p>
 
-		<ul v-else class="space-y-3">
-			<li v-for="attachment in attachments" :key="attachment.id" class="border border-gray-200 dark:border-gray-700 rounded-lg">
-				<div class="flex items-center justify-between gap-3 px-3 py-2 flex-wrap">
-					<div class="min-w-0 flex items-center gap-2">
-						<span class="font-mono text-xs text-gray-900 dark:text-gray-100 truncate">{{ attachment.filename }}</span>
-						<span
-							v-if="compressionBadge(attachment.filename)"
-							class="text-[10px] font-bold px-1.5 py-0.5 rounded-sm bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300"
-						>
+		<ul v-else>
+			<li v-for="attachment in attachments" :key="attachment.id" class="border-b border-border last:border-b-0">
+				<div class="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-2.5">
+					<div class="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+						<span class="min-w-0 truncate font-mono text-body-s text-fg">{{ attachment.filename }}</span>
+						<UiTag v-if="compressionBadge(attachment.filename)">
 							{{ compressionBadge(attachment.filename) }} → auto-decompressed
-						</span>
-						<span class="text-[10px] px-1.5 py-0.5 rounded-sm bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400">
-							{{ attachment.contentType }}
-						</span>
-						<span class="text-xs text-gray-500">{{ formatBytes(attachment.size) }}</span>
+						</UiTag>
+						<UiTag>{{ attachment.contentType }}</UiTag>
+						<span class="text-caption text-fg-subtle" data-numeric>{{ formatBytes(attachment.size) }}</span>
 					</div>
-					<div class="flex items-center gap-2 shrink-0">
-						<button
-							type="button"
-							class="btn-secondary text-xs"
-							:disabled="previews[attachment.id]?.status === 'loading'"
+					<div class="flex shrink-0 items-center gap-1.5">
+						<UiButton
+							size="sm"
+							:icon="previews[attachment.id]?.status === 'ready' ? EyeOff : Eye"
+							:loading="previews[attachment.id]?.status === 'loading'"
+							:aria-expanded="previews[attachment.id]?.status === 'ready'"
 							@click="togglePreview(attachment)"
 						>
 							{{
@@ -193,46 +190,45 @@ onBeforeUnmount(() => {
 										? 'Loading…'
 										: 'Preview'
 							}}
-						</button>
-						<button
-							type="button"
-							class="btn-secondary text-xs"
-							:disabled="downloading[attachment.id]"
+						</UiButton>
+						<UiButton
+							size="sm"
+							:icon="Download"
+							:loading="downloading[attachment.id]"
 							@click="download(attachment)"
 						>
 							{{ downloading[attachment.id] ? 'Downloading…' : 'Download' }}
-						</button>
+						</UiButton>
 					</div>
 				</div>
 
 				<div
 					v-if="previews[attachment.id] && previews[attachment.id].status !== 'loading'"
-					class="border-t border-gray-200 dark:border-gray-700 px-3 py-2"
+					class="border-t border-border bg-canvas px-4 py-3"
 				>
-					<div v-if="previews[attachment.id].status === 'none'" class="text-xs text-gray-500">
+					<p v-if="previews[attachment.id].status === 'none'" class="text-caption text-fg-muted">
 						{{ previews[attachment.id].message }}
-					</div>
-					<div v-else-if="previews[attachment.id].status === 'error'" class="text-xs text-error-600 dark:text-error-400">
+					</p>
+					<p v-else-if="previews[attachment.id].status === 'error'" class="text-caption text-level-error" role="alert">
 						{{ previews[attachment.id].message }}
-					</div>
+					</p>
 					<template v-else-if="previews[attachment.id].status === 'ready'">
 						<img
 							v-if="previews[attachment.id].kind === 'image'"
 							:src="previews[attachment.id].url"
-							alt="Attachment preview"
-							class="max-h-96 rounded-sm"
+							:alt="`Preview of ${attachment.filename}`"
+							class="max-h-96 rounded-md"
 						/>
 						<pre
 							v-else
-							class="text-xs font-mono overflow-x-auto whitespace-pre-wrap text-gray-900 dark:text-gray-100 max-h-96 overflow-y-auto"
-							>{{ previews[attachment.id].text }}</pre
-						>
-						<p v-if="previews[attachment.id].truncated" class="text-xs text-amber-600 dark:text-amber-400 mt-1">
+							class="max-h-96 overflow-auto font-mono text-caption leading-5 whitespace-pre-wrap text-fg"
+						>{{ previews[attachment.id].text }}</pre>
+						<p v-if="previews[attachment.id].truncated" class="mt-2 text-caption text-level-warning">
 							Preview truncated at {{ formatBytes(2 * 1024 * 1024) }} — download for the full file.
 						</p>
 					</template>
 				</div>
 			</li>
 		</ul>
-	</div>
+	</UiCard>
 </template>

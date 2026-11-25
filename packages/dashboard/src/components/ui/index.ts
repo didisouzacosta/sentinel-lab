@@ -15,6 +15,7 @@ export { default as UiDrawer } from './UiDrawer.vue';
 export { default as UiEmptyState } from './UiEmptyState.vue';
 export { default as UiFormField } from './UiFormField.vue';
 export { default as UiInput } from './UiInput.vue';
+export { default as UiMarkdown } from './UiMarkdown.vue';
 export { default as UiMenu } from './UiMenu.vue';
 export { default as UiSegmented } from './UiSegmented.vue';
 export { default as UiSelect } from './UiSelect.vue';
