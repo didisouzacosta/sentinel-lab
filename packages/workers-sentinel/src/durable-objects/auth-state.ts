@@ -2093,7 +2093,11 @@ export class AuthState extends DurableObject<Env> {
 			updatedAt: row.updated_at as string,
 		};
 
-		// Return in the same format as session validation
+		// Return in the same format as session validation. A token without an
+		// expiry NEVER expires (only `expires_at` is enforced, above); the
+		// one-year session.expiresAt below is a rolling placeholder for the
+		// Session shape, recomputed on every request — never read it as the
+		// token's expiry (report `apiToken`/the stored `expiresAt: null` instead).
 		const session: Session = {
 			id: row.token_id as string,
 			userId: row.uid as string,

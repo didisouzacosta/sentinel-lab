@@ -279,6 +279,37 @@ describe('API Token Routes', () => {
 		});
 	});
 
+	describe('Tokens without an expiry', () => {
+		it('never expire: no expiry is stored, listed or enforced, for any access level', async () => {
+			const user = await createTestUser({
+				email: `token-forever-${Date.now()}@example.com`,
+				password: 'testpassword123',
+				name: 'Forever Token User',
+			});
+			for (const scopes of [undefined, ['read'], ['write']]) {
+				const create = await authFetch(user.token!, 'http://localhost/api/auth/tokens', {
+					method: 'POST',
+					body: JSON.stringify({ name: `forever ${scopes ?? 'default'}`, scopes }),
+				});
+				expect(create.status).toBe(200);
+				const { token, rawToken } = (await create.json()) as {
+					token: { id: string; expiresAt: string | null };
+					rawToken: string;
+				};
+				expect(token.expiresAt).toBeNull();
+
+				const list = await authFetch(user.token!, 'http://localhost/api/auth/tokens');
+				const { tokens } = (await list.json()) as {
+					tokens: Array<{ id: string; expiresAt: string | null }>;
+				};
+				expect(tokens.find((t) => t.id === token.id)?.expiresAt).toBeNull();
+
+				const use = await authFetch(rawToken, 'http://localhost/api/projects');
+				expect(use.status).toBe(200);
+			}
+		});
+	});
+
 	describe('Token limits', () => {
 		it('should enforce max 10 tokens per user', async () => {
 			const user = await createTestUser({

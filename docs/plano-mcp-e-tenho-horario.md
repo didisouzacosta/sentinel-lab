@@ -175,7 +175,8 @@ Como o MCP garante isso:
   `Authorization` do cliente MCP), então passa pelo mesmo `authMiddleware`, os mesmos escopos e as mesmas checagens de
   papel que o painel e a API. O MCP não tem caminho privilegiado nem cópia das regras — se uma regra mudar na API, o
   MCP muda junto.
-- **A IA sabe o que pode antes de tentar:** `whoami` devolve o papel na instância, os escopos do token e o papel em
+- **A IA sabe o que pode antes de tentar:** `whoami` devolve o papel na instância, os escopos do token, a validade
+  do token (a guardada: sem data = **nunca expira**, que continua sendo uma opção ao criar o token) e o papel em
   cada projeto; `get_project` diz o que aquele usuário pode fazer ali (`can: { editSettings, rotateKey, delete }`).
 - **Só aparece o que o token alcança:** `tools/list` esconde as ferramentas que o escopo nunca permitiria (token `read`
   não vê nenhuma de escrita; `create_project`, `rotate_dsn` e `delete_project` só aparecem com `projects`). O papel
