@@ -76,11 +76,15 @@ export interface ProjectMember {
 }
 
 // API token types
+/** See lib/token-scopes.ts: each scope implies the ones before it. */
+export type ApiTokenScope = 'read' | 'write' | 'projects';
+
 export interface ApiToken {
 	id: string;
 	userId: string;
 	name: string;
 	tokenPrefix: string;
+	scopes: ApiTokenScope[];
 	lastUsedAt: string | null;
 	expiresAt: string | null;
 	createdAt: string;
@@ -351,6 +355,8 @@ export interface AuthContext {
 	 * (/api/auth/me, change-password, logout, logout-all) stay usable.
 	 */
 	mustChangePassword?: boolean;
+	/** Set only when the request authenticated with a `wst_` API token. */
+	apiToken?: { id: string; prefix: string; scopes: ApiTokenScope[] };
 }
 
 /** Admin-facing user shape (counts via subqueries, newest-first lists). */

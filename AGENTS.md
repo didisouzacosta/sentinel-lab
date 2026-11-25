@@ -103,7 +103,7 @@ The contract for API consumers (dashboard, CLI tooling, agent skills). Two surfa
 | Credential | Where it works | Notes |
 |---|---|---|
 | Session token (`Authorization: Bearer <token>`) | `/api/projects/*`, `/api/auth/*`, `/api/admin/*` | From `POST /api/auth/login`; what the dashboard uses. Sessions record how they were minted: `authMethod` is `password` (login/register) or `passkey` (WebAuthn login) |
-| API token (`Authorization: Bearer wst_…`) | Same protected surface as sessions | Mint via `POST /api/auth/tokens` (session auth required); stored hashed; revocable. **Rejected (403 `session_required`) on passkey register/manage endpoints and on the whole `/api/admin/*` surface** — an API token must not mint credentials that survive token revocation, and admin actions require a dashboard session |
+| API token (`Authorization: Bearer wst_…`) | Same protected surface as sessions, narrowed by **scopes** (see "API token scopes and project lifecycle") | Mint via `POST /api/auth/tokens {name, expiresAt?, scopes?}` (session auth required); stored hashed; revocable. **Rejected (403 `session_required`) on passkey register/manage endpoints and on the whole `/api/admin/*` surface** — an API token must not mint credentials that survive token revocation, and admin actions require a dashboard session |
 | Passkey (WebAuthn credential) | Login only, via `POST /api/auth/webauthn/login/*` | Register/manage require a session; see Passkeys below. A passkey login mints a `passkey`-method session — the only kind that passes the admin gate |
 | DSN public key (`?sentry_key=`, `X-Sentry-Auth`, basic auth, or the envelope header's `dsn` when none of those is sent) | **Ingestion only** (`POST /api/{projectId}/envelope|store`) | Cannot read anything; never valid on `/api/projects/*` |
 
@@ -203,6 +203,23 @@ List endpoints that paginate use keyset pagination:
 - `GET /api/projects/:slug/events/:eventId/attachments` — attachment metadata for one event (no payload): `{ issueId, attachments: [{ id, eventId, filename, contentType, size, createdAt }] }`.
 - `GET /api/projects/:slug/attachments/:attachmentId` — download: raw attachment bytes with the stored `Content-Type` and a sanitized `Content-Disposition: attachment` header (ASCII-safe quoted `filename` plus RFC 5987 `filename*` for non-ASCII names). Binary payloads stream from R2; single-range `Range` requests return `206` with `Content-Range`, unsatisfiable ranges return `416`, and metadata whose blob is missing returns `404 {"error":"attachment_data_missing"}`.
 - Also available: `/:slug/summary`, `/:slug/stats`, `/:slug/tags`, `/:slug/tags/:key/values`, `/:slug/environments`, `/:slug/releases[/:version]`, `/:slug/issues/:issueId/comments|activity`, `/:slug/members`, `/:slug/settings`, `/:slug/rate-limit`, `/:slug/filters`, `/:slug/sourcemaps`.
+
+### API token scopes and project lifecycle
+
+`lib/token-scopes.ts`. Scopes are ordered and each implies the ones before it (stored lists are closed downward):
+
+| Scope | Allows | Who can mint |
+|---|---|---|
+| `read` | Every `GET`/`HEAD` on `/api/projects/*` and `/api/0/*` (projects with their DSN, issues, events, attachments) | Any user (session) |
+| `write` | Also every other method there: triage, notes, project settings (incl. name/platform) | Any user (session) — **the default** (`scopes` omitted → `read`+`write`, which is what every token could do before scopes; the migration backfills existing tokens to exactly that) |
+| `projects` | Also the project lifecycle below | Only an **admin in a passkey session** (`403 forbidden` for non-admins, `403 passkey_required` for password sessions) — the admin area's bar |
+
+- Enforcement: `authMiddleware` refuses any non-`GET/HEAD/OPTIONS` request from a token without `write` (`403 {"error":"insufficient_scope","required":"write"}`; `/api/0` renders it as `{"detail": …}`); lifecycle routes check `projects` themselves (`required: "projects"`). Sessions are never scoped. Tokens still cannot reach `/api/admin/*`, token management or passkey management, whatever their scopes. `AuthContext.apiToken` (`{id, prefix, scopes}`) is set only for token requests.
+- `POST /api/projects {name, platform?}` → `201 {project, dsn}`. Admin only (re-checked at use time, so a demoted admin's `projects` token stops working), via a passkey session or a `projects` token. The caller becomes owner. Name 1..200 (trimmed), platform ≤64 (catalog values in `lib/platforms.ts`; default `javascript`).
+- `PATCH /api/projects/:slug` now also takes `name` (display name; the slug never changes) and `platform` — owner/admin role, `write` scope; changes are audited (`project.renamed`, `project.platform_changed`).
+- `POST /api/projects/:slug/rotate-key` → `{project, dsn}`. Owner/admin role, `projects` scope for tokens. New public key; **the old key stops working at once** (no grace period); the numeric ingest id — the DSN path — is unchanged. Audited `project.key_rotated`.
+- `DELETE /api/projects/:slug` — unchanged for sessions (owner only); tokens additionally need `projects`.
+- Audit rows for actions taken with a token carry `details.via = "api_token"` and `details.tokenPrefix`.
 
 ### Attachments (ingested)
 

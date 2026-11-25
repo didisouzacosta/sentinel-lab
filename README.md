@@ -360,7 +360,7 @@ API tokens allow programmatic access to the Workers Sentinel API — useful for 
 
 1. Go to **Project Settings** in the dashboard
 2. Click **Manage API Tokens** in the API Tokens section
-3. Enter a token name (e.g., `ci-pipeline`) and an optional expiration date
+3. Enter a token name (e.g., `ci-pipeline`), pick its **access** and an optional expiration date
 4. Click **Create Token**
 5. **Copy the token immediately** — it will only be shown once
 
@@ -384,6 +384,27 @@ curl -H "Authorization: Bearer wst_your_token_here" \
 
 API tokens use the `wst_` prefix and work alongside existing session-based authentication.
 
+### Scopes (access)
+
+| Access | Scope | Can do |
+|---|---|---|
+| Read only | `read` | Read projects (with their DSN), issues, events and attachments |
+| Read & write (default) | `write` | Also triage issues, add notes and edit project settings |
+| Projects | `projects` | Also create projects, rotate DSN keys and delete projects — what an AI agent needs to connect your apps end to end. Only an admin signed in with a passkey can create such a token |
+
+A token without the needed scope gets `403 {"error": "insufficient_scope", "required": "…"}`. Tokens created before scopes existed are Read & write.
+
+```bash
+# With a "projects" token: create a project and get its DSN
+curl -X POST -H "Authorization: Bearer wst_…" -H "Content-Type: application/json" \
+  -d '{"name": "My API", "platform": "cloudflare-workers"}' \
+  https://your-sentinel.workers.dev/api/projects
+
+# Rotate its DSN key (the old key stops working at once)
+curl -X POST -H "Authorization: Bearer wst_…" \
+  https://your-sentinel.workers.dev/api/projects/my-api/rotate-key
+```
+
 ### Token Management
 
 - **Expiration**: Tokens can be created with an optional expiration date. Expired tokens are automatically rejected.
@@ -398,6 +419,7 @@ API tokens use the `wst_` prefix and work alongside existing session-based authe
 - Set expiration dates for tokens used in temporary or rotating access scenarios
 - Revoke tokens immediately when they are no longer needed or may be compromised
 - Token management (creating, listing, revoking) requires session authentication — a compromised API token cannot create new tokens
+- Give each token the least access it needs; keep "Projects" tokens for the agent or script that actually sets projects up
 
 ## Architecture
 

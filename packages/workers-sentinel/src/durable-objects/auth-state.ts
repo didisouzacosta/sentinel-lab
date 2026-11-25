@@ -11,11 +11,14 @@ import {
 	verifyRegistrationResponse,
 } from '@simplewebauthn/server';
 import { hashPassword, hashToken, verifyPassword } from '../lib/password';
+import { DEFAULT_API_TOKEN_SCOPES, parseStoredScopes } from '../lib/token-scopes';
 import { validateWebhookUrl } from '../lib/webhook';
 import type {
 	AdminAuditEntry,
 	AdminUser,
 	ApiToken,
+	ApiTokenScope,
+	AuthContext,
 	Env,
 	Project,
 	ProjectMember,
@@ -231,6 +234,13 @@ export class AuthState extends DurableObject<Env> {
 		} catch {
 			// Column already exists
 		}
+		// Migration: API token scopes (lib/token-scopes.ts). Tokens minted
+		// before scopes existed keep exactly what they could do: read + write.
+		try {
+			this.sql.exec("ALTER TABLE api_tokens ADD COLUMN scopes TEXT NOT NULL DEFAULT 'read,write'");
+		} catch {
+			// Column already exists
+		}
 		// Migration: last successful sign-in timestamp (admin user list)
 		try {
 			this.sql.exec('ALTER TABLE users ADD COLUMN last_login_at TEXT');
@@ -389,6 +399,8 @@ export class AuthState extends DurableObject<Env> {
 					return this.handleDeleteProject(request);
 				case '/update-project':
 					return this.handleUpdateProject(request);
+				case '/rotate-project-key':
+					return this.handleRotateProjectKey(request);
 				case '/check-access':
 					return this.handleCheckAccess(request);
 				case '/create-api-token':
@@ -1628,9 +1640,10 @@ export class AuthState extends DurableObject<Env> {
 	}
 
 	private async handleDeleteProject(request: Request): Promise<Response> {
-		const { projectId, userId } = (await request.json()) as {
+		const { projectId, userId, via } = (await request.json()) as {
 			projectId: string;
 			userId: string;
+			via?: Record<string, string>;
 		};
 
 		if (!projectId || !userId) {
@@ -1663,7 +1676,14 @@ export class AuthState extends DurableObject<Env> {
 			this.sql.exec('DELETE FROM project_members WHERE project_id = ?', projectId);
 			this.sql.exec('DELETE FROM projects WHERE id = ?', projectId);
 			if (projectRows.length > 0) {
-				this.audit(userId, 'project.deleted', 'project', projectId, projectRows[0].name as string);
+				this.audit(
+					userId,
+					'project.deleted',
+					'project',
+					projectId,
+					projectRows[0].name as string,
+					via,
+				);
 			}
 		});
 
@@ -1671,10 +1691,14 @@ export class AuthState extends DurableObject<Env> {
 	}
 
 	private async handleUpdateProject(request: Request): Promise<Response> {
-		const { projectId, userId, webhookUrl } = (await request.json()) as {
+		const { projectId, userId, webhookUrl, name, platform, via } = (await request.json()) as {
 			projectId: string;
 			userId: string;
 			webhookUrl?: string | null;
+			/** Display name; the slug never changes. */
+			name?: string;
+			platform?: string;
+			via?: Record<string, string>;
 		};
 
 		if (!projectId || !userId) {
@@ -1715,6 +1739,25 @@ export class AuthState extends DurableObject<Env> {
 			}
 		}
 
+		if (
+			name !== undefined &&
+			(typeof name !== 'string' || name.trim().length === 0 || name.length > 200)
+		) {
+			return this.jsonResponse(
+				{ error: 'invalid_name', message: 'Name must be 1 to 200 characters' },
+				400,
+			);
+		}
+		if (
+			platform !== undefined &&
+			(typeof platform !== 'string' || platform.length === 0 || platform.length > 64)
+		) {
+			return this.jsonResponse(
+				{ error: 'invalid_platform', message: 'Platform must be 1 to 64 characters' },
+				400,
+			);
+		}
+
 		const updates: string[] = [];
 		const params: (string | null)[] = [];
 
@@ -1722,15 +1765,116 @@ export class AuthState extends DurableObject<Env> {
 			updates.push('webhook_url = ?');
 			params.push(webhookUrl || null);
 		}
+		if (name !== undefined) {
+			updates.push('name = ?');
+			params.push(name.trim());
+		}
+		if (platform !== undefined) {
+			updates.push('platform = ?');
+			params.push(platform);
+		}
 
 		if (updates.length === 0) {
 			return this.jsonResponse({ error: 'no_updates' }, 400);
 		}
 
+		const before = this.sql
+			.exec('SELECT name, slug, platform FROM projects WHERE id = ?', projectId)
+			.one();
 		params.push(projectId);
-		this.sql.exec(`UPDATE projects SET ${updates.join(', ')} WHERE id = ?`, ...params);
+		this.ctx.storage.transactionSync(() => {
+			this.sql.exec(`UPDATE projects SET ${updates.join(', ')} WHERE id = ?`, ...params);
+			// Name and platform changes are audited like the admin rename;
+			// webhook changes stay unaudited, as before.
+			if (name !== undefined && name.trim() !== before.name) {
+				this.audit(userId, 'project.renamed', 'project', projectId, name.trim(), {
+					from: before.name as string,
+					to: name.trim(),
+					slug: before.slug as string,
+					...via,
+				});
+			}
+			if (platform !== undefined && platform !== before.platform) {
+				this.audit(
+					userId,
+					'project.platform_changed',
+					'project',
+					projectId,
+					before.name as string,
+					{
+						from: before.platform as string,
+						to: platform,
+						slug: before.slug as string,
+						...via,
+					},
+				);
+			}
+		});
 
 		return this.jsonResponse({ success: true });
+	}
+
+	/**
+	 * Replace a project's DSN public key. The old key stops working at once
+	 * (no grace period): every SDK must be redeployed with the new DSN.
+	 * Owner or project admin only. The numeric ingest id — the DSN path —
+	 * stays, so only the key part of the DSN changes.
+	 */
+	private async handleRotateProjectKey(request: Request): Promise<Response> {
+		const { projectId, userId, via } = (await request.json()) as {
+			projectId?: string;
+			userId?: string;
+			via?: Record<string, string>;
+		};
+		if (!projectId || !userId) {
+			return this.jsonResponse({ error: 'missing_fields' }, 400);
+		}
+		const member = this.sql
+			.exec(
+				'SELECT role FROM project_members WHERE project_id = ? AND user_id = ?',
+				projectId,
+				userId,
+			)
+			.toArray()[0];
+		if (!member || (member.role !== 'owner' && member.role !== 'admin')) {
+			return this.jsonResponse(
+				{
+					error: 'forbidden',
+					message: 'Only the project owner or an admin can rotate the DSN key',
+				},
+				403,
+			);
+		}
+		const rows = this.sql
+			.exec(
+				'SELECT id, name, slug, platform, ingest_id, created_at, created_by FROM projects WHERE id = ?',
+				projectId,
+			)
+			.toArray();
+		if (rows.length === 0) {
+			return this.jsonResponse({ error: 'project_not_found' }, 404);
+		}
+		const current = rows[0];
+		const publicKey = this.generateKey(32);
+		this.ctx.storage.transactionSync(() => {
+			this.sql.exec('UPDATE projects SET public_key = ? WHERE id = ?', publicKey, projectId);
+			this.audit(userId, 'project.key_rotated', 'project', projectId, current.name as string, {
+				slug: current.slug as string,
+				...via,
+			});
+		});
+		return this.jsonResponse({
+			project: {
+				id: current.id as string,
+				name: current.name as string,
+				slug: current.slug as string,
+				platform: current.platform as string,
+				publicKey,
+				ingestId: (current.ingest_id as number | null) ?? null,
+				createdAt: current.created_at as string,
+				createdBy: current.created_by as string,
+			} satisfies Project,
+		});
 	}
 
 	private async handleCheckAccess(request: Request): Promise<Response> {
@@ -1756,11 +1900,14 @@ export class AuthState extends DurableObject<Env> {
 	}
 
 	private async handleCreateApiToken(request: Request): Promise<Response> {
-		const { userId, name, expiresAt } = (await request.json()) as {
+		const { userId, name, expiresAt, scopes } = (await request.json()) as {
 			userId: string;
 			name: string;
 			expiresAt?: string;
+			/** Already validated and closed downward by the route. */
+			scopes?: ApiTokenScope[];
 		};
+		const tokenScopes = parseStoredScopes((scopes ?? DEFAULT_API_TOKEN_SCOPES).join(','));
 
 		if (!userId || !name) {
 			return this.jsonResponse(
@@ -1810,7 +1957,7 @@ export class AuthState extends DurableObject<Env> {
 		const now = new Date().toISOString();
 
 		this.sql.exec(
-			'INSERT INTO api_tokens (id, user_id, name, token_hash, token_prefix, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+			'INSERT INTO api_tokens (id, user_id, name, token_hash, token_prefix, expires_at, created_at, scopes) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
 			tokenId,
 			userId,
 			name,
@@ -1818,6 +1965,7 @@ export class AuthState extends DurableObject<Env> {
 			tokenPrefix,
 			expiresAt || null,
 			now,
+			tokenScopes.join(','),
 		);
 
 		const token: ApiToken = {
@@ -1825,6 +1973,7 @@ export class AuthState extends DurableObject<Env> {
 			userId,
 			name,
 			tokenPrefix,
+			scopes: tokenScopes,
 			lastUsedAt: null,
 			expiresAt: expiresAt || null,
 			createdAt: now,
@@ -1842,7 +1991,7 @@ export class AuthState extends DurableObject<Env> {
 
 		const rows = this.sql
 			.exec(
-				'SELECT id, user_id, name, token_prefix, last_used_at, expires_at, created_at FROM api_tokens WHERE user_id = ? ORDER BY created_at DESC',
+				'SELECT id, user_id, name, token_prefix, scopes, last_used_at, expires_at, created_at FROM api_tokens WHERE user_id = ? ORDER BY created_at DESC',
 				userId,
 			)
 			.toArray();
@@ -1852,6 +2001,7 @@ export class AuthState extends DurableObject<Env> {
 			userId: row.user_id as string,
 			name: row.name as string,
 			tokenPrefix: row.token_prefix as string,
+			scopes: parseStoredScopes(row.scopes),
 			lastUsedAt: (row.last_used_at as string) || null,
 			expiresAt: (row.expires_at as string) || null,
 			createdAt: row.created_at as string,
@@ -1899,7 +2049,7 @@ export class AuthState extends DurableObject<Env> {
 
 		const rows = this.sql
 			.exec(
-				`SELECT t.id as token_id, t.user_id, t.expires_at,
+				`SELECT t.id as token_id, t.user_id, t.expires_at, t.token_prefix, t.scopes,
 				u.id as uid, u.email, u.name, u.role, u.created_at, u.updated_at, u.must_change_password
 				FROM api_tokens t
 				JOIN users u ON t.user_id = u.id
@@ -1951,7 +2101,15 @@ export class AuthState extends DurableObject<Env> {
 			createdAt: row.created_at as string,
 		};
 
-		return this.jsonResponse({ user, session });
+		return this.jsonResponse({
+			user,
+			session,
+			apiToken: {
+				id: row.token_id as string,
+				prefix: row.token_prefix as string,
+				scopes: parseStoredScopes(row.scopes),
+			},
+		} satisfies Pick<AuthContext, 'user' | 'session' | 'apiToken'>);
 	}
 
 	private async handleListProjectMembers(request: Request): Promise<Response> {
@@ -2032,13 +2190,15 @@ export class AuthState extends DurableObject<Env> {
 	 * auto-added as a member — membership is theirs to grant.
 	 */
 	private async handleAdminCreateProject(request: Request): Promise<Response> {
-		const { requestingUserId, requestingUserRole, name, platform, ownerId } =
+		const { requestingUserId, requestingUserRole, name, platform, ownerId, via } =
 			(await request.json()) as {
 				requestingUserId?: string;
 				requestingUserRole?: string;
 				name?: string;
 				platform?: string;
 				ownerId?: string;
+				/** API-token attribution for the audit row (lib/token-scopes.ts auditVia). */
+				via?: Record<string, string>;
 			};
 
 		if (requestingUserRole !== 'admin') {
@@ -2056,9 +2216,12 @@ export class AuthState extends DurableObject<Env> {
 				400,
 			);
 		}
-		if (platform !== undefined && typeof platform !== 'string') {
+		if (platform !== undefined && (typeof platform !== 'string' || platform.length > 64)) {
 			return this.jsonResponse(
-				{ error: 'invalid_platform', message: 'Platform must be a string' },
+				{
+					error: 'invalid_platform',
+					message: 'Platform must be a string of at most 64 characters',
+				},
 				400,
 			);
 		}
@@ -2115,6 +2278,7 @@ export class AuthState extends DurableObject<Env> {
 			this.audit(requestingUserId, 'project.created', 'project', projectId, name, {
 				slug,
 				ownerEmail: owner.email as string,
+				...via,
 			});
 			return {
 				id: projectId,

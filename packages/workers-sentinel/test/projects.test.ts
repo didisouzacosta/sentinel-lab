@@ -1,11 +1,14 @@
 import { SELF } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { authFetch, createTestProject, createTestUser } from './utils';
+import { authFetch, createTestProject, createTestUser, getAdminPasskeySession } from './utils';
 
 describe('Project Routes', () => {
 	let testUser: Awaited<ReturnType<typeof createTestUser>>;
 
 	beforeAll(async () => {
+		// the first account ever registered becomes admin: make sure that is
+		// the admin fixture, so testUser is a plain member
+		await getAdminPasskeySession();
 		testUser = await createTestUser({
 			email: `project-test-${Date.now()}@example.com`,
 			password: 'testpassword123',
@@ -13,8 +16,11 @@ describe('Project Routes', () => {
 		});
 	});
 
-	describe('POST /api/projects (removed — creation is admin-only)', () => {
-		it('should answer 404 for authenticated users', async () => {
+	// Creation stays admin-only (the admin area's bar): an admin in a passkey
+	// session or holding a `projects`-scoped token — see
+	// token-scopes-projects.test.ts. Everyone else is refused.
+	describe('POST /api/projects (admin-only)', () => {
+		it('should answer 403 for authenticated non-admins', async () => {
 			const response = await authFetch(testUser.token!, 'http://localhost/api/projects', {
 				method: 'POST',
 				body: JSON.stringify({
@@ -23,9 +29,9 @@ describe('Project Routes', () => {
 				}),
 			});
 
-			expect(response.status).toBe(404);
+			expect(response.status).toBe(403);
 			const data = (await response.json()) as { error: string };
-			expect(data.error).toBe('not_found');
+			expect(data.error).toBe('forbidden');
 
 			// And nothing was created
 			const list = await authFetch(testUser.token!, 'http://localhost/api/projects');
@@ -33,7 +39,7 @@ describe('Project Routes', () => {
 			expect(listData.projects.some((p) => p.name === 'Should Not Create')).toBe(false);
 		});
 
-		it('should answer 401 for anonymous requests (auth middleware precedes the 404)', async () => {
+		it('should answer 401 for anonymous requests', async () => {
 			const response = await SELF.fetch('http://localhost/api/projects', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },

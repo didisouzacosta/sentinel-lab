@@ -117,11 +117,18 @@ entrega DSN**. Criar projeto hoje só pela área de admin, que exige sessão de 
 - O trecho "sem SDK" foi executado no Node 26 com o `fetch` interceptado: endpoint, DSN no cabeçalho e frames com
   arquivo/linha/coluna corretos.
 
-### Fase 2 — Ciclo de vida do projeto pela API com token
-- Rotas nativas aceitando token com escopo `projects`: criar (quem cria vira dono), editar (nome, plataforma, webhook,
-  limite por hora, retenção, cabeçalhos a esconder), **trocar a chave do DSN** (nova; a chave antiga para de valer na
-  hora — sem período de carência na primeira versão), apagar (reaproveita `purgeProjectState`).
-- Coluna `scopes` nos tokens e checagem no `authMiddleware`; tela de tokens no painel mostra e escolhe os escopos.
+### Fase 2 — Ciclo de vida do projeto pela API com token ✅ (25/11/2026, no código; ainda não publicada)
+- Escopos `read` ⊂ `write` ⊂ `projects` nos tokens (`lib/token-scopes.ts`, coluna `scopes`). Tokens antigos ficam
+  `read`+`write`, que é o que já podiam. `projects` só é criado por admin em sessão de passkey e só vale enquanto o
+  dono continua admin. O middleware barra qualquer escrita sem `write` (`403 insufficient_scope`).
+- Rotas: `POST /api/projects` (cria; quem cria vira dono), `PATCH /api/projects/:slug` com `name` e `platform`,
+  `POST /api/projects/:slug/rotate-key` (a chave antiga para na hora; o id numérico do DSN não muda) e
+  `DELETE /api/projects/:slug` (token precisa de `projects`). Tudo na auditoria com `via: api_token` e o prefixo do
+  token.
+- Painel: a tela de tokens escolhe o acesso ("Read only", "Read & write", "Projects" — este só para admin com passkey)
+  e mostra o acesso de cada token.
+- Ficou de fora (sem necessidade agora): período de carência na troca de chave e tela de renomear/trocar chave no
+  painel — o MCP é a interface principal disso.
 
 ### Fase 3 — Servidor MCP em `/mcp`
 - Endpoint *Streamable HTTP* sem estado (cada chamada é um JSON-RPC; não precisa de Durable Object), com o SDK oficial

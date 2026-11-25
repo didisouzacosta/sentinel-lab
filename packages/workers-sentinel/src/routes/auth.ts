@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { invalidJsonBody } from '../lib/capped-json';
+import { normalizeScopes } from '../lib/token-scopes';
 import { extractBearerToken } from '../middleware/auth';
 import type { AuthContext, Env } from '../types';
 
@@ -291,10 +292,34 @@ tokenRoutes.get('/', async (c) => {
 // Create a new API token
 tokenRoutes.post('/', async (c) => {
 	const auth = c.get('auth') as AuthContext;
-	const body = await c.req.json<{ name: string; expiresAt?: string }>();
+	const body = await c.req.json<{ name: string; expiresAt?: string; scopes?: unknown }>();
 
 	if (!body.name) {
 		return c.json({ error: 'missing_fields', message: 'Token name is required' }, 400);
+	}
+
+	const scopes = normalizeScopes(body.scopes);
+	if (!scopes.ok) {
+		return c.json({ error: 'invalid_scopes', message: scopes.message }, 400);
+	}
+	// `projects` (create/delete projects, rotate DSN keys) has the admin
+	// area's bar: an admin signed in with a passkey.
+	if (scopes.scopes.includes('projects')) {
+		if (auth.user.role !== 'admin') {
+			return c.json(
+				{ error: 'forbidden', message: 'Only admins can mint tokens with the "projects" scope' },
+				403,
+			);
+		}
+		if (auth.session.authMethod !== 'passkey') {
+			return c.json(
+				{
+					error: 'passkey_required',
+					message: 'Sign in with a passkey to mint a token with the "projects" scope',
+				},
+				403,
+			);
+		}
 	}
 
 	const authStateId = c.env.AUTH_STATE.idFromName('global');
@@ -308,6 +333,7 @@ tokenRoutes.post('/', async (c) => {
 				userId: auth.user.id,
 				name: body.name,
 				expiresAt: body.expiresAt,
+				scopes: scopes.scopes,
 			}),
 		}),
 	);

@@ -1,6 +1,8 @@
 import { Hono } from 'hono';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
+import { readCappedJson } from '../lib/capped-json';
 import { purgeProjectState } from '../lib/project-purge';
+import { auditVia, requireScope } from '../lib/token-scopes';
 import { buildWebhookPayload } from '../lib/webhook';
 import type { AuthContext, Env } from '../types';
 
@@ -72,6 +74,114 @@ projectRoutes.get('/:slug', async (c) => {
 	return c.json({ ...data, dsn });
 });
 
+/** DSN for a project, from the host the request reached (same as the read routes). */
+function dsnFor(
+	c: { req: { url: string } },
+	project: { publicKey: string; ingestId?: number | null; id: string },
+) {
+	const host = new URL(c.req.url).host;
+	return `https://${project.publicKey}@${host}/${project.ingestId ?? project.id}`;
+}
+
+const MAX_PROJECT_BODY_BYTES = 16 * 1024;
+
+// Create a project owned by the caller
+// POST /api/projects  { name, platform? }  → 201 { project, dsn }
+//
+// Same bar as the admin area: the caller must be an admin, and either a
+// passkey-minted session or an API token with the `projects` scope (which
+// only an admin in a passkey session can mint). The creator becomes owner.
+projectRoutes.post('/', async (c) => {
+	const auth = c.get('auth');
+	if (!auth) {
+		return c.json({ error: 'unauthorized' }, 401);
+	}
+	if (auth.user.role !== 'admin') {
+		return c.json({ error: 'forbidden', message: 'Only admins can create projects' }, 403);
+	}
+	if (auth.apiToken) {
+		const denied = requireScope(c, auth, 'projects');
+		if (denied) return denied;
+	} else if (auth.session.authMethod !== 'passkey') {
+		return c.json(
+			{
+				error: 'passkey_required',
+				message: 'Creating projects requires signing in with a passkey',
+			},
+			403,
+		);
+	}
+
+	const parsed = await readCappedJson(c, MAX_PROJECT_BODY_BYTES);
+	if (!parsed.ok) return parsed.response;
+	const { name, platform } = parsed.body as { name?: unknown; platform?: unknown };
+	if (typeof name !== 'string' || name.trim().length === 0) {
+		return c.json({ error: 'missing_fields', message: 'name is required' }, 400);
+	}
+
+	const authState = c.env.AUTH_STATE.get(c.env.AUTH_STATE.idFromName('global'));
+	const response = await authState.fetch(
+		new Request('http://internal/admin/create-project', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				requestingUserId: auth.user.id,
+				requestingUserRole: auth.user.role,
+				name: name.trim(),
+				platform,
+				ownerId: auth.user.id,
+				via: auditVia(auth),
+			}),
+		}),
+	);
+	const data = (await response.json()) as {
+		project?: { id: string; publicKey: string; ingestId?: number | null };
+	} & Record<string, unknown>;
+	if (!response.ok || !data.project) {
+		return c.json(data, response.status as ContentfulStatusCode);
+	}
+	return c.json({ ...data, dsn: dsnFor(c, data.project) }, 201);
+});
+
+// Replace the project's DSN key; the old key stops working at once
+// POST /api/projects/:slug/rotate-key  → { project, dsn }
+projectRoutes.post('/:slug/rotate-key', async (c) => {
+	const auth = c.get('auth');
+	if (!auth) {
+		return c.json({ error: 'unauthorized' }, 401);
+	}
+	const denied = requireScope(c, auth, 'projects');
+	if (denied) return denied;
+
+	const authState = c.env.AUTH_STATE.get(c.env.AUTH_STATE.idFromName('global'));
+	const getResponse = await authState.fetch(
+		new Request('http://internal/get-project', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ slug: c.req.param('slug'), userId: auth.user.id }),
+		}),
+	);
+	if (!getResponse.ok) {
+		return c.json(await getResponse.json(), getResponse.status as ContentfulStatusCode);
+	}
+	const { project } = (await getResponse.json()) as { project: { id: string } };
+
+	const response = await authState.fetch(
+		new Request('http://internal/rotate-project-key', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ projectId: project.id, userId: auth.user.id, via: auditVia(auth) }),
+		}),
+	);
+	const data = (await response.json()) as {
+		project?: { id: string; publicKey: string; ingestId?: number | null };
+	} & Record<string, unknown>;
+	if (!response.ok || !data.project) {
+		return c.json(data, response.status as ContentfulStatusCode);
+	}
+	return c.json({ ...data, dsn: dsnFor(c, data.project) });
+});
+
 // Get project settings
 projectRoutes.get('/:slug/settings', async (c) => {
 	const auth = c.get('auth');
@@ -122,9 +232,13 @@ projectRoutes.patch('/:slug', async (c) => {
 		retentionDays?: number;
 		scrubHeaders?: string[];
 		maxAttachmentBytes?: number;
+		name?: string;
+		platform?: string;
 	}>();
 
 	if (
+		body.name === undefined &&
+		body.platform === undefined &&
 		body.webhookUrl === undefined &&
 		body.maxEventsPerHour === undefined &&
 		body.retentionDays === undefined &&
@@ -178,8 +292,10 @@ projectRoutes.patch('/:slug', async (c) => {
 
 	const result: Record<string, unknown> = {};
 
-	// Update webhook URL in AuthState if provided
-	if (body.webhookUrl !== undefined) {
+	// Name, platform and webhook URL live in AuthState (owner/admin; name
+	// and platform changes are audited). Sent first so a bad value fails the
+	// request before any ProjectState setting changes.
+	if (body.webhookUrl !== undefined || body.name !== undefined || body.platform !== undefined) {
 		const updateResponse = await authState.fetch(
 			new Request('http://internal/update-project', {
 				method: 'POST',
@@ -188,6 +304,9 @@ projectRoutes.patch('/:slug', async (c) => {
 					projectId: projectData.project.id,
 					userId: auth.user.id,
 					webhookUrl: body.webhookUrl,
+					name: body.name,
+					platform: body.platform,
+					via: auditVia(auth),
 				}),
 			}),
 		);
@@ -373,6 +492,8 @@ projectRoutes.delete('/:slug', async (c) => {
 	if (!auth) {
 		return c.json({ error: 'unauthorized' }, 401);
 	}
+	const denied = requireScope(c, auth, 'projects');
+	if (denied) return denied;
 
 	const slug = c.req.param('slug');
 
@@ -403,6 +524,7 @@ projectRoutes.delete('/:slug', async (c) => {
 			body: JSON.stringify({
 				projectId: projectData.project.id,
 				userId: auth.user.id,
+				via: auditVia(auth),
 			}),
 		}),
 	);

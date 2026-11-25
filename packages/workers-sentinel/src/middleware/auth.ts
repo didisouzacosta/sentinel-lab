@@ -1,4 +1,5 @@
 import { createMiddleware } from 'hono/factory';
+import { requireScope } from '../lib/token-scopes';
 import type { AuthContext, Env } from '../types';
 
 type Variables = {
@@ -11,6 +12,8 @@ export function extractBearerToken(header: string | undefined): string | null {
 	const match = /^\s*bearer\s+(.+)$/i.exec(header);
 	return match ? match[1].trim() : null;
 }
+
+const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
 export const authMiddleware = createMiddleware<{
 	Bindings: Env;
@@ -85,6 +88,14 @@ export const authMiddleware = createMiddleware<{
 	}
 
 	c.set('auth', auth);
+
+	// API token scopes (lib/token-scopes.ts): reads need `read` (every
+	// token has it); anything that is not a read needs `write`. Routes that
+	// need more (project lifecycle → `projects`) check it themselves.
+	if (auth.apiToken && !SAFE_METHODS.has(c.req.method)) {
+		const denied = requireScope(c, auth, 'write');
+		if (denied) return denied;
+	}
 
 	return next();
 });

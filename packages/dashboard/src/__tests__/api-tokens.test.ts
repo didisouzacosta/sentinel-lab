@@ -21,8 +21,8 @@ const token = (id: string, extra: Record<string, unknown> = {}) => ({
 	...extra,
 });
 
-async function mountTokens() {
-	const { pinia } = seedAuth({});
+async function mountTokens(auth: Parameters<typeof seedAuth>[0] = {}) {
+	const { pinia } = seedAuth(auth);
 	const router = testRouter();
 	await atRoute(router, '/settings/tokens');
 	const wrapper = mount(ApiTokens, {
@@ -75,7 +75,11 @@ describe('API tokens', () => {
 		await wrapper.get('[data-testid="token-name"]').setValue('CI');
 		await wrapper.get('[data-testid="token-dialog"] form').trigger('submit');
 		await flushPromises();
-		expect(mockApi.calls.find((c) => c.method === 'post')?.body).toEqual({ name: 'CI' });
+		// read + write unless another access level is picked
+		expect(mockApi.calls.find((c) => c.method === 'post')?.body).toEqual({
+			name: 'CI',
+			scopes: ['write'],
+		});
 
 		const created = wrapper.get('[data-testid="token-created"]');
 		expect((created.element as HTMLDialogElement).open).toBe(true);
@@ -91,6 +95,51 @@ describe('API tokens', () => {
 		expect(wrapper.find('output[aria-label="API token"]').exists()).toBe(false);
 		expect(wrapper.findAll('[data-testid="token-row"]')).toHaveLength(1);
 		wrapper.unmount();
+	});
+
+	it("shows each token's access level (tokens from before scopes read as read & write)", async () => {
+		onGet('/api/auth/tokens', () => ({
+			tokens: [
+				token('t1', { scopes: ['read'] }),
+				token('t2', { scopes: ['read', 'write', 'projects'] }),
+				token('t3'),
+			],
+		}));
+		const wrapper = await mountTokens();
+		const access = wrapper.findAll('[data-testid="token-access"]').map((t) => t.text());
+		expect(access).toEqual(['Read only', 'Projects', 'Read & write']);
+		wrapper.unmount();
+	});
+
+	it('offers the projects scope only to admins signed in with a passkey', async () => {
+		onGet('/api/auth/tokens', () => ({ tokens: [] }));
+		onPost('/api/auth/tokens', () => ({ token: token('t9'), rawToken: 'wst_x' }));
+
+		const member = await mountTokens();
+		await member.get('[data-testid="create-token"]').trigger('click');
+		await flushPromises();
+		const memberOptions = member
+			.findAll('[data-testid="token-scope"] [role="radio"]')
+			.map((o) => o.text());
+		expect(memberOptions).toEqual(['Read only', 'Read & write']);
+		member.unmount();
+		document.body.innerHTML = '';
+
+		const admin = await mountTokens({ role: 'admin', sessionAuthMethod: 'passkey' });
+		await admin.get('[data-testid="create-token"]').trigger('click');
+		await flushPromises();
+		const radios = admin.findAll('[data-testid="token-scope"] [role="radio"]');
+		expect(radios.map((o) => o.text())).toEqual(['Read only', 'Read & write', 'Projects']);
+		await radios[2].trigger('click');
+		expect(admin.get('#token-scope-help').text()).toContain('creates projects');
+		await admin.get('[data-testid="token-name"]').setValue('Claude Code');
+		await admin.get('[data-testid="token-dialog"] form').trigger('submit');
+		await flushPromises();
+		expect(mockApi.calls.find((c) => c.method === 'post')?.body).toEqual({
+			name: 'Claude Code',
+			scopes: ['projects'],
+		});
+		admin.unmount();
 	});
 
 	it('sends the expiry date when given', async () => {

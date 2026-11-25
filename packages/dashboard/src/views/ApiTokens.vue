@@ -12,18 +12,25 @@ import {
 	UiEmptyState,
 	UiFormField,
 	UiInput,
+	UiSegmented,
 	UiSkeleton,
 	UiTag,
 } from '../components/ui';
 import { useConfirm } from '../composables/useConfirm';
 import { useToast } from '../composables/useToast';
 import { timeAgo } from '../lib/format';
+import { useAuthStore } from '../stores/auth';
+
+/** Each scope includes the ones before it (worker: lib/token-scopes.ts). */
+type Scope = 'read' | 'write' | 'projects';
 
 interface ApiToken {
 	id: string;
 	userId: string;
 	name: string;
 	tokenPrefix: string;
+	/** Absent on responses from workers that predate scopes: read + write. */
+	scopes?: Scope[];
 	lastUsedAt: string | null;
 	expiresAt: string | null;
 	createdAt: string;
@@ -31,6 +38,26 @@ interface ApiToken {
 
 const toast = useToast();
 const askConfirm = useConfirm();
+const auth = useAuthStore();
+
+const SCOPE_LABELS: Record<Scope, string> = {
+	read: 'Read only',
+	write: 'Read & write',
+	projects: 'Projects',
+};
+const SCOPE_HELP: Record<Scope, string> = {
+	read: 'Reads projects, DSNs, issues and events. Changes nothing.',
+	write: 'Also triages issues, adds notes and edits project settings.',
+	projects:
+		'Also creates projects, rotates DSN keys and deletes projects — what an agent needs to connect your apps on its own.',
+};
+// `projects` has the admin area's bar: an admin signed in with a passkey.
+const scopeOptions = computed(() =>
+	(['read', 'write', 'projects'] as const)
+		.filter((s) => s !== 'projects' || auth.canUseAdmin)
+		.map((value) => ({ value, label: SCOPE_LABELS[value] })),
+);
+const accessOf = (t: ApiToken): Scope => t.scopes?.at(-1) ?? 'write';
 
 const tokens = ref<ApiToken[]>([]);
 const loading = ref(true);
@@ -39,6 +66,7 @@ const loadError = ref<string | null>(null);
 const createOpen = ref(false);
 const newTokenName = ref('');
 const newTokenExpiry = ref('');
+const newTokenScope = ref<Scope>('write');
 const creating = ref(false);
 const createError = ref<string | null>(null);
 
@@ -98,6 +126,7 @@ async function loadTokens() {
 function openCreate() {
 	newTokenName.value = '';
 	newTokenExpiry.value = '';
+	newTokenScope.value = 'write';
 	createError.value = null;
 	createOpen.value = true;
 }
@@ -108,7 +137,10 @@ async function createToken() {
 	creating.value = true;
 	createError.value = null;
 	try {
-		const body: { name: string; expiresAt?: string } = { name };
+		const body: { name: string; scopes: Scope[]; expiresAt?: string } = {
+			name,
+			scopes: [newTokenScope.value],
+		};
 		if (newTokenExpiry.value) body.expiresAt = new Date(newTokenExpiry.value).toISOString();
 		const response = await api.post<{ token: ApiToken; rawToken: string }>(
 			'/api/auth/tokens',
@@ -176,6 +208,7 @@ onMounted(() => loadTokens());
 						<div class="flex min-w-0 flex-wrap items-center gap-2">
 							<span class="truncate text-body-s font-medium text-fg">{{ token.name }}</span>
 							<UiTag>{{ token.tokenPrefix }}…</UiTag>
+							<UiTag data-testid="token-access">{{ SCOPE_LABELS[accessOf(token)] }}</UiTag>
 						</div>
 						<p
 							class="mt-1 text-caption"
@@ -215,7 +248,7 @@ onMounted(() => loadTokens());
 		<UiDialog
 			v-model:open="createOpen"
 			title="Create API token"
-			description="The token gets your access to every project you are a member of."
+			description="The token acts as you on every project you are a member of, up to the access you pick."
 			form
 			data-testid="token-dialog"
 			@submit="createToken"
@@ -233,6 +266,18 @@ onMounted(() => loadTokens());
 						data-testid="token-name"
 					/>
 				</UiFormField>
+				<div class="flex flex-col gap-1.5">
+					<span class="text-body-s font-medium text-fg" aria-hidden="true">Access</span>
+					<UiSegmented
+						v-model="newTokenScope"
+						label="Access"
+						:options="scopeOptions"
+						aria-describedby="token-scope-help"
+						class="self-start"
+						data-testid="token-scope"
+					/>
+					<p id="token-scope-help" class="text-caption text-fg-subtle">{{ SCOPE_HELP[newTokenScope] }}</p>
+				</div>
 				<UiFormField
 					v-slot="f"
 					label="Expiration (optional)"
