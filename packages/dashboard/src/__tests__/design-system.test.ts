@@ -11,12 +11,7 @@ import { describe, expect, it } from 'vitest';
  * the list must be empty at stage 11. A file on the list that is already clean
  * fails the test, so the list can only shrink.
  */
-const LEGACY = new Set([
-	'views/admin/AdminAudit.vue',
-	'views/admin/AdminProjects.vue',
-	'views/admin/AdminSettings.vue',
-	'views/admin/AdminUsers.vue',
-]);
+const LEGACY = new Set<string>([]);
 
 const RULES: [string, RegExp][] = [
 	[
