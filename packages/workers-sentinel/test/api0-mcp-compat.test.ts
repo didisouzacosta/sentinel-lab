@@ -4,9 +4,11 @@
 //  2. the event's `release` is a Release object or null, never a string;
 //  3. `notes/` aliases `comments/`, and `activities/` exists;
 //  4. `GET /projects/{org}/{project}/` (project detail);
-//  5. `GET /auth/` (the token's user, for `whoami`).
+//  5. `GET /auth/` (the token's user, for `whoami`);
+//  6. events carry Sentry `entries` (exception frames, breadcrumbs, …).
 import { SELF } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
+import { serializeEventEntries } from '../src/lib/sentry-entries';
 import { authFetch, createTestProject, createTestUser } from './utils';
 
 const enc = new TextEncoder();
@@ -275,5 +277,185 @@ describe('/api/0/auth/', () => {
 		const response = await SELF.fetch('http://localhost/api/0/auth/');
 		expect(response.status).toBe(401);
 		expect(typeof ((await response.json()) as { detail: unknown }).detail).toBe('string');
+	});
+});
+
+describe('/api/0 event entries', () => {
+	it('serializes exception frames, message, breadcrumbs and request the Sentry way', async () => {
+		const richProject = await createTestProject(owner.token!, {
+			name: `api0-entries-${crypto.randomUUID().slice(0, 8)}`,
+		});
+		const eventId = hexId();
+		const crumbSeconds = Math.floor(Date.now() / 1000) - 5;
+		await ingest(richProject, eventId, {
+			platform: 'node',
+			message: 'upload failed',
+			exception: {
+				values: [
+					{
+						type: 'CLIRuntimeError',
+						value: 'connection reset',
+						mechanism: { type: 'onunhandledrejection', handled: false },
+						stacktrace: {
+							frames: [
+								{ filename: 'cli.ts', function: 'main', lineno: 12, colno: 3, in_app: true },
+								{
+									filename: 'publish.ts',
+									abs_path: '/app/src/publish.ts',
+									function: 'uploadArtifact',
+									lineno: 118,
+									in_app: true,
+									pre_context: ['const body = read();', 'try {'],
+									context_line: '  await put(body);',
+									post_context: ['} finally {'],
+								},
+								{ filename: 'node:internal/net', function: 'onread', lineno: 7 },
+							],
+						},
+					},
+				],
+			},
+			breadcrumbs: {
+				values: [
+					{
+						category: 'http',
+						message: 'PUT /artifacts',
+						timestamp: crumbSeconds,
+						data: { status: 500 },
+					},
+					{
+						category: 'console',
+						level: 'warning',
+						message: 'retrying',
+						timestamp: new Date().toISOString(),
+					},
+				],
+			},
+			request: {
+				url: 'https://example.com/upload?attempt=2#top',
+				method: 'PUT',
+				headers: { 'User-Agent': 'demo-cli/1.4.2', 'Content-Type': 'application/json' },
+			},
+		});
+		const native = await authFetch(
+			owner.token!,
+			`http://localhost/api/projects/${richProject.slug}/issues`,
+		);
+		const richIssue = ((await native.json()) as { issues: Array<{ id: string }> }).issues[0].id;
+
+		const latest = await api0(
+			`/organizations/sentinel/issues/${richIssue.toUpperCase()}/events/latest/`,
+		);
+		expect(latest.status).toBe(200);
+		const event = (await latest.json()) as {
+			entries: Array<{ type: string; data: Record<string, unknown> }>;
+		};
+		expect(event.entries.map((entry) => entry.type)).toEqual([
+			'exception',
+			'message',
+			'breadcrumbs',
+			'request',
+		]);
+		const byType = Object.fromEntries(event.entries.map((entry) => [entry.type, entry.data]));
+
+		const exception = (byType.exception.values as Array<Record<string, unknown>>)[0];
+		expect(exception.type).toBe('CLIRuntimeError');
+		expect(exception.value).toBe('connection reset');
+		expect(exception.mechanism).toMatchObject({ type: 'onunhandledrejection', handled: false });
+		const frames = (exception.stacktrace as { frames: Array<Record<string, unknown>> }).frames;
+		expect(frames).toHaveLength(3);
+		expect(frames[0]).toMatchObject({
+			filename: 'cli.ts',
+			function: 'main',
+			lineNo: 12,
+			colNo: 3,
+			inApp: true,
+		});
+		expect(frames[1]).toMatchObject({
+			absPath: '/app/src/publish.ts',
+			lineNo: 118,
+			context: [
+				[116, 'const body = read();'],
+				[117, 'try {'],
+				[118, '  await put(body);'],
+				[119, '} finally {'],
+			],
+		});
+		expect(frames[2].inApp).toBe(false);
+		expect((exception.stacktrace as { hasSystemFrames: boolean }).hasSystemFrames).toBe(true);
+		expect(byType.exception.hasSystemFrames).toBe(true);
+
+		expect(byType.message).toMatchObject({ formatted: 'upload failed' });
+
+		const crumbs = byType.breadcrumbs.values as Array<Record<string, unknown>>;
+		expect(crumbs[0]).toMatchObject({
+			type: 'default',
+			category: 'http',
+			level: 'info',
+			message: 'PUT /artifacts',
+			data: { status: 500 },
+			timestamp: new Date(crumbSeconds * 1000).toISOString(),
+		});
+		expect(crumbs[1]).toMatchObject({ level: 'warning', message: 'retrying' });
+
+		expect(byType.request).toMatchObject({
+			url: 'https://example.com/upload',
+			method: 'PUT',
+			query: [['attempt', '2']],
+			fragment: 'top',
+			headers: [
+				['Content-Type', 'application/json'],
+				['User-Agent', 'demo-cli/1.4.2'],
+			],
+			inferredContentType: 'application/json',
+		});
+
+		// An event with nothing but a message has just the message entry.
+		const plain = await api0(`/projects/sentinel/${project.slug}/events/${barEventId}/`);
+		const plainEvent = (await plain.json()) as { entries: Array<{ type: string }> };
+		expect(plainEvent.entries).toEqual([
+			{ type: 'message', data: { formatted: 'mcp compat probe', message: null, params: null } },
+		]);
+	});
+
+	it('drops malformed interfaces instead of echoing them', () => {
+		expect(serializeEventEntries({})).toEqual([]);
+		const entries = serializeEventEntries({
+			exception: { values: ['nope', null, { type: 7, stacktrace: { frames: 'x' } }] },
+			stacktrace: { frames: [{ function: 'top', lineno: 'NaN', in_app: 'yes' }] },
+			threads: [{ id: 1, crashed: true, stacktrace: { frames: [{ function: 'run' }] } }],
+			logentry: { message: 'value %s', params: ['x'], formatted: 'value x' },
+			breadcrumbs: [42, { message: 'ok', timestamp: 'not a date' }],
+			request: { url: '/relative/path', query_string: [['a', 1], ['bad']], headers: 'h' },
+		});
+		const byType = Object.fromEntries(entries.map((entry) => [entry.type, entry.data]));
+		expect(Object.keys(byType)).toEqual([
+			'exception',
+			'stacktrace',
+			'threads',
+			'message',
+			'breadcrumbs',
+			'request',
+		]);
+		expect(byType.exception).toMatchObject({ values: [{ type: null, stacktrace: null }] });
+		expect(byType.stacktrace).toMatchObject({
+			frames: [{ function: 'top', lineNo: null, inApp: false }],
+		});
+		expect(byType.threads).toMatchObject({ values: [{ id: 1, crashed: true }] });
+		expect(byType.message).toEqual({ formatted: 'value x', message: 'value %s', params: ['x'] });
+		expect(byType.breadcrumbs).toEqual({
+			values: [
+				{
+					type: 'default',
+					category: null,
+					level: 'info',
+					message: 'ok',
+					data: null,
+					timestamp: null,
+					event_id: null,
+				},
+			],
+		});
+		expect(byType.request).toMatchObject({ url: null, query: [['a', '1']], headers: [] });
 	});
 });

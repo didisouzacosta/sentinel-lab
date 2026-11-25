@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { createMiddleware } from 'hono/factory';
 import type { AppContext } from '../lib/project-access';
+import { serializeEventEntries } from '../lib/sentry-entries';
 import type { AuthContext, Env, Project } from '../types';
 import { contentDisposition, safeContentType } from './attachments';
 
@@ -542,7 +543,7 @@ function serializeApi0Event(
 		environment: rawEvent.environment ?? null,
 		release: serializeEventRelease(rawEvent.release),
 		fingerprint: rawEvent.fingerprint ?? null,
-		entries: [],
+		entries: serializeEventEntries(rawEvent),
 		occurrence: null,
 		previousEventID: null,
 		nextEventID: null,

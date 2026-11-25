@@ -22,7 +22,7 @@ com sintaxe direta (`is:unresolved`) continua funcionando.
 
 ## Resultado por ferramenta
 
-Primeira rodada em 25/11/2026; segunda rodada no mesmo dia, depois das correções do worker (itens 1–5 abaixo),
+Primeira rodada em 25/11/2026; novas rodadas no mesmo dia, depois das correções do worker (itens 1–6 abaixo),
 com o mesmo cliente MCP contra o `wrangler dev` local e os dados do `_devenv/cloudflare/demo.mjs`.
 
 | Ferramenta | Resultado | Rota chamada / observação |
@@ -31,14 +31,15 @@ com o mesmo cliente MCP contra o `wrangler dev` local e os dados do `_devenv/clo
 | `find_organizations` | ✅ funciona | `GET /organizations/` |
 | `find_projects` | ✅ funciona | `GET /organizations/{org}/projects/` |
 | `search_issues` (com ou sem `projectSlugOrId`) | ✅ funciona | `GET /projects/{org}/{project}/` + `GET /organizations/{org}/issues/?project=…&query=is:…` |
-| `get_issue_details` (com `issueId` ou `issueUrl`) | ✅ funciona | id aceito sem diferenciar maiúsculas; `release` do evento vem como objeto ou `null` |
+| `get_issue_details` (com `issueId` ou `issueUrl`) | ✅ funciona | id aceito sem diferenciar maiúsculas; `release` do evento vem como objeto ou `null`; exceções com frames, contexto de código e `mechanism`, e o `request` |
 | `get_sentry_resource` (URL de issue) | ✅ funciona | mesmo caminho do `get_issue_details` |
 | `update_issue` | ✅ funciona | `GET` + `PUT /organizations/{org}/issues/{id}/` |
 | `add_issue_note` | ✅ funciona | `POST …/issues/{id}/notes/` (texto em `data.text`) |
 | `get_issue_activity` | ✅ funciona | `GET …/issues/{id}/activities/` + `…/notes/`: notas, mudanças de status (`set_resolved` etc.) e `first_seen` |
 | `search_issue_events` | ✅ funciona | `GET /organizations/{org}/issues/{id}/events/` |
 | `get_event_attachment` | ✅ funciona | `GET /projects/{org}/{project}/events/{event}/attachments/` |
-| `get_event_stacktrace`, `get_issue_breadcrumbs` | ⚠️ responde, mas vazio | a rota funciona (`…/issues/{id}/events/latest/`), porém o Sentinel devolve `entries: []`, então não há frames nem breadcrumbs. Falta montar as `entries` (`exception`, `breadcrumbs`, `request`) a partir do evento bruto |
+| `get_issue_breadcrumbs` | ✅ funciona | entrada `breadcrumbs` do evento (timestamps em ISO, mesmo quando o SDK manda segundos) |
+| `get_event_stacktrace` | ✅ funciona | lê só as entradas `threads` ou `stacktrace` (escolhe a thread que travou). Para exceções JavaScript/Node, que não têm threads, a resposta é `no_threads`, como no Sentry de verdade; os frames da exceção aparecem no `get_issue_details` |
 | `search_errors` | ❌ 404 | usa o Discover (`/organizations/{org}/events/`), que o Sentinel não tem |
 | `find_releases`, `find_teams`, `find_dsns` | ❌ 404 | `releases/`, `teams/`, `keys/` não existem no `/api/0` |
 | Monitores, alertas, traces, replays, profiles, dashboards | — fora do escopo | o Sentinel não tem esses recursos |
@@ -51,15 +52,15 @@ com o mesmo cliente MCP contra o `wrangler dev` local e os dados do `_devenv/clo
 3. `…/issues/{id}/notes/` (GET/POST/DELETE) como apelido de `comments/`, e `…/issues/{id}/activities/` a partir do histórico da issue.
 4. `GET /api/0/projects/{org}/{project}/` (detalhe do projeto, mesmo serializer da lista).
 5. `GET /api/0/auth/` (usuário do token) para o `whoami`.
+6. `entries` do evento montadas a partir do evento bruto (`exception`, `stacktrace`, `threads`, `message`, `breadcrumbs`,
+   `request`), com frames no formato do Sentry (`lineNo`, `inApp`, `context`) — `src/lib/sentry-entries.ts`.
 
 Os testes ficam em `packages/workers-sentinel/test/api0-mcp-compat.test.ts`.
 
 ## O que ainda falta
 
-- `entries` do evento (exceção com frames, breadcrumbs, request): sem isso `get_event_stacktrace` e
-  `get_issue_breadcrumbs` respondem sem conteúdo e o `get_issue_details` mostra `exceptions: null`.
 - Discover (`/organizations/{org}/events/`) para o `search_errors`.
 - Releases, times e chaves (`find_releases`, `find_teams`, `find_dsns`).
 
-O aviso da página **Connect** pode ser afrouxado para incluir detalhes da issue, notas, atividade e busca por projeto;
-stack trace e breadcrumbs só depois das `entries`.
+O aviso da página **Connect** pode ser afrouxado para incluir detalhes da issue (com stack trace da exceção),
+breadcrumbs, notas, atividade e busca por projeto. Os frames são os que o SDK mandou: o source map não é aplicado no `/api/0`.
