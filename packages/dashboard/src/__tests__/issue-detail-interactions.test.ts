@@ -204,4 +204,67 @@ describe('attachment list', () => {
 		expect(wrapper.text()).toContain('console.log.gz');
 		expect(useToast().toasts.at(-1)?.message).toBe('Download failed: network down');
 	});
+
+	it('exports the issue as JSON: copy for an AI, or download', async () => {
+		mockIssue([
+			{
+				id: 'a1',
+				issueId: 'issue-1',
+				userId: 'u',
+				userName: 'Ana',
+				type: 'comment',
+				data: { body: 'looking' },
+				createdAt: '2026-10-11T11:00:00Z',
+			},
+		]);
+		const writeText = vi.fn(() => Promise.resolve());
+		Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+		const wrapper = await mountDetail();
+
+		const openExport = async () => {
+			await wrapper.get('[data-testid="issue-export"]').trigger('click');
+			await flushPromises();
+		};
+		const pick = (label: string) =>
+			[...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find((b) =>
+				b.textContent?.includes(label),
+			);
+
+		await openExport();
+		pick('Copy as JSON')?.click();
+		await flushPromises();
+		expect(writeText).toHaveBeenCalledTimes(1);
+		const copied = JSON.parse((writeText.mock.calls[0] as unknown as [string])[0]);
+		expect(copied.format).toBe('sentinel.issue-export/v1');
+		expect(copied.issue).toMatchObject({
+			id: 'issue-1',
+			count: 1284,
+			culprit: 'app.js in chargeOrder',
+		});
+		expect(copied.event.exception.values[0].stacktrace.frames[1]).toMatchObject({
+			function: 'chargeOrder',
+			context_line: 'charge(order.id);',
+		});
+		expect(copied.event.environment).toBe('production');
+		expect(copied.activity[0]).toMatchObject({ by: 'Ana', data: { body: 'looking' } });
+		expect(useToast().toasts.at(-1)?.message).toContain('copied as JSON');
+
+		const createObjectURL = vi.fn(() => 'blob:x');
+		const revokeObjectURL = vi.fn();
+		Object.assign(URL, { createObjectURL, revokeObjectURL });
+		const clicked: string[] = [];
+		const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (
+			this: HTMLAnchorElement,
+		) {
+			clicked.push(this.download);
+		});
+		await openExport();
+		pick('Download .json')?.click();
+		await flushPromises();
+		expect(createObjectURL).toHaveBeenCalledTimes(1);
+		expect(clicked).toEqual(['sentinel-demo-issue-1.json']);
+		expect(revokeObjectURL).toHaveBeenCalledWith('blob:x');
+		click.mockRestore();
+		wrapper.unmount();
+	});
 });

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Check, Clock, Eye, EyeOff, Trash2 } from 'lucide-vue-next';
+import { Check, Clock, Copy, Download, Eye, EyeOff, FileJson, Trash2 } from 'lucide-vue-next';
 import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import { api } from '../api/client';
@@ -24,9 +24,11 @@ import {
 import { useConfirm } from '../composables/useConfirm';
 import { useToast } from '../composables/useToast';
 import { timeAgo } from '../lib/format';
+import { issueExportFilename, issueExportJson } from '../lib/issue-export';
 import { renderMarkdown } from '../lib/markdown';
 import { type ResolvedFrame, resolveFrame } from '../lib/sourcemap-resolver';
 import { useAuthStore } from '../stores/auth';
+import { useProjectsStore } from '../stores/projects';
 
 interface Issue {
 	id: string;
@@ -118,6 +120,57 @@ const resolving = ref(false);
 const activity = ref<Activity[]>([]);
 const newComment = ref('');
 const submittingComment = ref(false);
+
+const projectsStore = useProjectsStore();
+
+// Export: the whole issue (and the event on screen) as JSON, for pasting
+// into an AI assistant or attaching to a ticket (lib/issue-export.ts).
+const EXPORT_OPTIONS = [
+	{
+		value: 'copy',
+		label: 'Copy as JSON',
+		icon: Copy,
+		description: 'Paste it into an AI assistant',
+	},
+	{ value: 'download', label: 'Download .json', icon: Download },
+];
+
+function exportPayload(): string {
+	return issueExportJson({
+		project: {
+			slug: slug.value,
+			name: projectsStore.projects.find((p) => p.slug === slug.value)?.name,
+		},
+		issue: issue.value as unknown as Record<string, unknown> & { id: string },
+		event: selectedEvent.value as unknown as
+			| (Record<string, unknown> & { event_id: string })
+			| null,
+		events: events.value as unknown as Array<Record<string, unknown> & { event_id: string }>,
+		resolvedFrames: resolvedFrames.value,
+		activity: activity.value as unknown as Array<Record<string, unknown>>,
+		issueUrl: window.location.href.split('?')[0],
+	});
+}
+
+async function exportIssue(kind: string) {
+	if (!issue.value) return;
+	const json = exportPayload();
+	if (kind === 'copy') {
+		try {
+			await navigator.clipboard.writeText(json);
+			toast.success('Issue copied as JSON — paste it into your AI assistant');
+		} catch {
+			toast.error('Could not copy to the clipboard. Try "Download .json".');
+		}
+		return;
+	}
+	const url = URL.createObjectURL(new Blob([json], { type: 'application/json' }));
+	const link = document.createElement('a');
+	link.href = url;
+	link.download = issueExportFilename(slug.value, issue.value.id);
+	link.click();
+	URL.revokeObjectURL(url);
+}
 
 const SNOOZE_OPTIONS = [
 	{ value: '1h', label: '1 hour', icon: Clock },
@@ -408,6 +461,12 @@ onMounted(() => loadIssue());
 						</UiMenu>
 						<UiButton v-else :icon="Clock" @click="unsnoozeIssue()">Unsnooze</UiButton>
 					</div>
+					<!-- Export stays in the header on phones too (the bottom bar holds triage) -->
+					<UiMenu label="Export" title="Export issue" :items="EXPORT_OPTIONS" :width="240" @select="exportIssue">
+						<template #trigger="{ props: menuProps }">
+							<UiButton v-bind="menuProps" :icon="FileJson" data-testid="issue-export">Export</UiButton>
+						</template>
+					</UiMenu>
 				</div>
 			</header>
 
