@@ -14,8 +14,8 @@ Todo recurso criado por este projeto começa com **`sentinel-lab`** / **`Sentine
 | Política do Access | `Sentinel Lab · administradores` (allow por e-mail) | Zero Trust Access (reutilizável) | criado | `lab/access.mjs apply` |
 | Token de API do deploy | `GitHub Actions · Tenho Horário + Sentinel` (compartilhado com o Tenho Horário; conta: Workers Scripts, R2 e mais as do Tenho Horário; zonas `adrianosouzacosta.com.br` e `tenhohorario.com.br`: Workers Routes Edit, DNS Edit, Zone Read; sem expiração) | API Token | criado pelo dono em 25/11/2026 | painel da Cloudflare; no Sentinel fica só no environment `production` do GitHub (`CLOUDFLARE_API_TOKEN`). Por ser compartilhado, revogar este token para também o deploy do Tenho Horário |
 | Secret do Worker | `INTEGRATIONS_KEY` (cifra as credenciais das integrações, como a chave do Kaneo; ≥32 caracteres aleatórios) | Workers Secret | a criar pelo dono antes de ligar o Kaneo | `cd packages/workers-sentinel && npx wrangler secret put INTEGRATIONS_KEY` (gere com `openssl rand -hex 32`). Agentes não criam nem colam o valor. Trocar o valor torna ilegíveis as credenciais salvas: cada projeto precisa colar a chave do Kaneo de novo; sai junto com o Worker |
-| Fila de processamento | `sentinel-lab-process` (montagem de uploads grandes do sentry-cli; simbolização depois) | Queues | a criar antes do deploy dos debug files | `lab/setup.sh` (`wrangler queues create`) |
-| Bucket de debug files (dSYM, mapping; chunks do sentry-cli) | `sentinel-lab-debug-files` (regras de ciclo de vida: `chunks/` e `staging/` expiram em 1 dia) | R2 | a criar antes do deploy dos debug files | `lab/setup.sh` |
+| Fila de processamento | `sentinel-lab-process` (montagem de uploads grandes do sentry-cli; simbolização depois) | Queues | criado em 25/11/2026 | `lab/setup.sh` (`wrangler queues create`) |
+| Bucket de debug files (dSYM, mapping; chunks do sentry-cli) | `sentinel-lab-debug-files` (regras de ciclo de vida: `chunks/` e `staging/` expiram em 1 dia) | R2 | criado em 25/11/2026 | `lab/setup.sh` |
 | Simbolizador | `sentinel-lab-symbolicator` | Containers | futuro (simbolização) | — |
 
 ## Deploy automático (desde 25/11/2026)
