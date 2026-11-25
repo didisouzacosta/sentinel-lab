@@ -61,7 +61,13 @@ async function apply() {
 		decision: 'allow',
 		include: admins.map((email) => ({ email: { email } })),
 	};
-	const existingPolicy = await findByName('/access/policies', POLICY_NAME);
+	// The reusable-policy listing can miss a policy that exists (seen on
+	// 2026-11-25: `show` printed "policy": null while the app still pointed
+	// at it). Fall back to the policy the app already uses, so apply updates
+	// it instead of creating a same-named duplicate.
+	const existingPolicy =
+		(await findByName('/access/policies', POLICY_NAME)) ??
+		(await findByName('/access/apps', APP_NAME))?.policies?.find((p) => p.name === POLICY_NAME);
 	const policy = existingPolicy
 		? await cf('PUT', `/access/policies/${existingPolicy.id}`, policyBody)
 		: await cf('POST', '/access/policies', policyBody);
