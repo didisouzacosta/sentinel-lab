@@ -8,13 +8,13 @@ const router = createRouter({
 			path: '/login',
 			name: 'login',
 			component: () => import('../views/Login.vue'),
-			meta: { guest: true },
+			meta: { guest: true, title: 'Sign in · Sentinel' },
 		},
 		{
 			path: '/register',
 			name: 'register',
 			component: () => import('../views/Register.vue'),
-			meta: { guest: true },
+			meta: { guest: true, title: 'Create account · Sentinel' },
 		},
 		{
 			path: '/',
@@ -80,6 +80,16 @@ const router = createRouter({
 					component: () => import('../views/Settings.vue'),
 				},
 				{
+					// SDK + MCP setup, reachable from the sidebar shortcut and the user menu
+					path: 'setup',
+					name: 'connect',
+					component: () => import('../views/Connect.vue'),
+				},
+				{
+					path: 'projects/:slug/setup',
+					redirect: (to) => ({ path: '/setup', query: { project: to.params.slug as string } }),
+				},
+				{
 					path: 'projects/:slug/filters',
 					name: 'project-filters',
 					component: () => import('../views/ProjectFilters.vue'),
@@ -110,6 +120,16 @@ const router = createRouter({
 				},
 			],
 		},
+		// Design-system gallery for reviews; never part of a production build.
+		...(import.meta.env.DEV
+			? [
+					{
+						path: '/__ui',
+						name: 'ui-gallery',
+						component: () => import('../views/dev/UiGallery.vue'),
+					},
+				]
+			: []),
 	],
 });
 
@@ -140,6 +160,11 @@ router.beforeEach(async (to, _from, next) => {
 	}
 
 	next();
+});
+
+// Pages outside the app shell set their own tab title (the shell titles the rest)
+router.afterEach((to) => {
+	if (typeof to.meta.title === 'string') document.title = to.meta.title;
 });
 
 export default router;

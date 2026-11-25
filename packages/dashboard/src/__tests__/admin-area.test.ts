@@ -1,4 +1,4 @@
-import { flushPromises, mount } from '@vue/test-utils';
+import { flushPromises, mount, type VueWrapper } from '@vue/test-utils';
 import { describe, expect, it, vi } from 'vitest';
 import router from '../router';
 import { useProjectsStore } from '../stores/projects';
@@ -58,6 +58,18 @@ async function mountLayout(options: Parameters<typeof seedAuth>[0] = {}) {
 	});
 	await flushPromises();
 	return wrapper;
+}
+
+/** Row actions live in a "⋯" UiMenu (teleported to <body>): open it, pick an item. */
+async function pickRowAction(wrapper: VueWrapper, triggerTestId: string, label: string) {
+	await wrapper.find(`[data-testid="${triggerTestId}"]`).trigger('click');
+	await flushPromises();
+	const item = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(
+		(b) => b.textContent?.trim() === label,
+	);
+	if (!item) throw new Error(`menu item "${label}" not found`);
+	item.click();
+	await flushPromises();
 }
 
 describe('admin nav hidden for members and password-session admins', () => {
@@ -172,7 +184,10 @@ describe('admin users page creates users with validation and surfaces owned-proj
 		const { pinia } = seedAuth({ role: 'admin', sessionAuthMethod: 'passkey' });
 		const componentRouter = testRouter();
 		await atRoute(componentRouter, '/admin/users');
-		const wrapper = mount(AdminUsers, { global: { plugins: [pinia, componentRouter] } });
+		const wrapper = mount(AdminUsers, {
+			attachTo: document.body,
+			global: { plugins: [pinia, componentRouter] },
+		});
 		await flushPromises();
 		return wrapper;
 	}
@@ -205,7 +220,7 @@ describe('admin users page creates users with validation and surfaces owned-proj
 		const wrapper = await mountUsersPage();
 
 		// A no-change save closes the dialog without a request
-		await wrapper.find('[data-testid="admin-user-edit-no-at-identifier"]').trigger('click');
+		await pickRowAction(wrapper, 'admin-user-actions-no-at-identifier', 'Edit');
 		await wrapper.find('[data-testid="admin-edit-submit"]').trigger('click');
 		await flushPromises();
 		expect(
@@ -217,7 +232,7 @@ describe('admin users page creates users with validation and surfaces owned-proj
 
 		// A name-only edit sends only the name; the stored identifier is
 		// never re-sent
-		await wrapper.find('[data-testid="admin-user-edit-no-at-identifier"]').trigger('click');
+		await pickRowAction(wrapper, 'admin-user-actions-no-at-identifier', 'Edit');
 		await wrapper.find('[data-testid="admin-edit-name"]').setValue('Renamed Free');
 		await wrapper.find('[data-testid="admin-edit-submit"]').trigger('click');
 		await flushPromises();
@@ -291,7 +306,7 @@ describe('admin users page creates users with validation and surfaces owned-proj
 		});
 		const wrapper = await mountUsersPage();
 
-		await wrapper.find('[data-testid="admin-user-delete-member@example.com"]').trigger('click');
+		await pickRowAction(wrapper, 'admin-user-actions-member@example.com', 'Delete user');
 		await wrapper.find('[data-testid="admin-delete-submit"]').trigger('click');
 		await flushPromises();
 
@@ -328,7 +343,10 @@ describe('admin projects page assigns owner at creation and reassigns with old o
 		const { pinia } = seedAuth({ role: 'admin', sessionAuthMethod: 'passkey' });
 		const componentRouter = testRouter();
 		await atRoute(componentRouter, '/admin/projects');
-		const wrapper = mount(AdminProjects, { global: { plugins: [pinia, componentRouter] } });
+		const wrapper = mount(AdminProjects, {
+			attachTo: document.body,
+			global: { plugins: [pinia, componentRouter] },
+		});
 		await flushPromises();
 		return wrapper;
 	}
@@ -378,7 +396,7 @@ describe('admin projects page assigns owner at creation and reassigns with old o
 		}));
 		const wrapper = await mountProjectsPage();
 
-		await wrapper.find('[data-testid="admin-project-owner-cli-feedback"]').trigger('click');
+		await pickRowAction(wrapper, 'admin-project-actions-cli-feedback', 'Reassign owner');
 		await wrapper.find('[data-testid="admin-project-owner-select"]').setValue('user-3');
 		await wrapper.find('[data-testid="admin-project-owner-submit"]').trigger('click');
 		await flushPromises();
@@ -396,7 +414,7 @@ describe('admin projects page assigns owner at creation and reassigns with old o
 		onDelete('/api/admin/projects/proj-1', () => ({ success: true }));
 		const wrapper = await mountProjectsPage();
 
-		await wrapper.find('[data-testid="admin-project-delete-cli-feedback"]').trigger('click');
+		await pickRowAction(wrapper, 'admin-project-actions-cli-feedback', 'Delete project');
 		const submit = () => wrapper.find('[data-testid="admin-project-delete-submit"]');
 		expect(submit().attributes('disabled')).toBeDefined();
 
@@ -431,7 +449,7 @@ describe('admin projects page assigns owner at creation and reassigns with old o
 
 		// Rename → the store re-fetches and reflects the new name
 		navProjects = [{ id: 'proj-1', name: 'Renamed', slug: 'cli-feedback', platform: 'javascript' }];
-		await wrapper.find('[data-testid="admin-project-rename-cli-feedback"]').trigger('click');
+		await pickRowAction(wrapper, 'admin-project-actions-cli-feedback', 'Rename');
 		await wrapper.find('[data-testid="admin-project-rename-input"]').setValue('Renamed');
 		await wrapper.find('[data-testid="admin-project-rename-submit"]').trigger('click');
 		await flushPromises();
@@ -439,7 +457,7 @@ describe('admin projects page assigns owner at creation and reassigns with old o
 
 		// Delete → the project is gone from the store
 		navProjects = [];
-		await wrapper.find('[data-testid="admin-project-delete-cli-feedback"]').trigger('click');
+		await pickRowAction(wrapper, 'admin-project-actions-cli-feedback', 'Delete project');
 		await wrapper.find('[data-testid="admin-project-delete-confirm"]').setValue('CLI Feedback');
 		await wrapper.find('[data-testid="admin-project-delete-submit"]').trigger('click');
 		await flushPromises();
@@ -549,12 +567,12 @@ describe('project settings shows read-only roster without management controls', 
 		expect(text).toContain('Owner');
 		// No management controls remain on the roster
 		expect(text).not.toContain('Add Member');
-		const membersCard = wrapper.findAll('.card').find((c) => c.text().includes('Team Members'));
-		expect(membersCard).toBeDefined();
-		expect(membersCard?.findAll('select').length).toBe(0);
-		expect(membersCard?.findAll('button').length).toBe(0);
+		const membersCard = wrapper.find('[data-testid="members-card"]');
+		expect(membersCard.text()).toContain('Team members');
+		expect(membersCard.findAll('select').length).toBe(0);
+		expect(membersCard.findAll('button').length).toBe(0);
 		// Points at the centralized administration surface
-		expect(membersCard?.text()).toContain('administrators');
+		expect(membersCard.text()).toContain('administrators');
 	});
 });
 

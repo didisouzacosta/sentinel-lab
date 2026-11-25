@@ -1,13 +1,37 @@
 <script setup lang="ts">
+import { Fingerprint, KeyRound, Plus, Trash2 } from 'lucide-vue-next';
 import { computed, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
+import {
+	UiAlert,
+	UiButton,
+	UiCard,
+	UiFormField,
+	UiInput,
+	UiSkeleton,
+	UiTabs,
+	UiTag,
+} from '../components/ui';
+import { useConfirm } from '../composables/useConfirm';
+import { useToast } from '../composables/useToast';
 import { type PasskeyCredential, useAuthStore } from '../stores/auth';
 
 const route = useRoute();
 const router = useRouter();
 const authStore = useAuthStore();
 
+const askConfirm = useConfirm();
+const toast = useToast();
+
 const tab = computed(() => (route.query.tab === 'security' ? 'security' : 'general'));
+const tabModel = computed({
+	get: () => tab.value,
+	set: (next: 'general' | 'security') => setTab(next),
+});
+const tabs = [
+	{ value: 'general' as const, label: 'General', testId: 'settings-tab-general' },
+	{ value: 'security' as const, label: 'Security', testId: 'settings-tab-security' },
+];
 
 function setTab(next: 'general' | 'security') {
 	router.replace({ query: { ...route.query, tab: next } });
@@ -117,6 +141,7 @@ async function addPasskey() {
 		await authStore.registerPasskey(trimmed);
 		newPasskeyName.value = '';
 		await loadPasskeys();
+		toast.success(`Passkey "${trimmed}" added`);
 	} catch (err) {
 		passkeyError.value = err instanceof Error ? err.message : 'Failed to add passkey';
 	} finally {
@@ -125,16 +150,22 @@ async function addPasskey() {
 }
 
 async function removePasskey(credential: PasskeyCredential) {
-	const warning = isLastPasskey.value
-		? `Delete "${credential.name}"? This is your last passkey — you'll sign in with your password until you add another.`
-		: `Delete the passkey "${credential.name}"? This cannot be undone.`;
-	if (!confirm(warning)) return;
+	const ok = await askConfirm({
+		title: `Delete "${credential.name}"?`,
+		description: isLastPasskey.value
+			? "This is your last passkey — you'll sign in with your password until you add another."
+			: 'You will no longer be able to sign in with this passkey. This cannot be undone.',
+		confirmLabel: 'Delete passkey',
+		tone: 'danger',
+	});
+	if (!ok) return;
 
 	deletingPasskeyId.value = credential.id;
 	passkeyError.value = null;
 	try {
 		await authStore.deletePasskey(credential.id);
 		await loadPasskeys();
+		toast.success(`Passkey "${credential.name}" deleted`);
 	} catch (err) {
 		passkeyError.value = err instanceof Error ? err.message : 'Failed to delete passkey';
 	} finally {
@@ -162,195 +193,190 @@ watch(
 </script>
 
 <template>
-	<div class="max-w-3xl mx-auto space-y-6">
-		<h1 class="text-2xl font-bold text-gray-900 dark:text-white">Settings</h1>
+	<div class="mx-auto flex max-w-3xl flex-col gap-6">
+		<header>
+			<h1 class="text-heading-l text-fg">Settings</h1>
+			<p class="mt-1 text-body-s text-fg-muted">Your profile, password and passkeys.</p>
+		</header>
 
-		<div class="flex gap-2 border-b border-gray-200 dark:border-gray-700">
-			<button
-				class="px-4 py-2 text-sm font-medium border-b-2"
-				:class="
-					tab === 'general'
-						? 'border-primary-500 text-primary-600 dark:text-primary-400'
-						: 'border-transparent text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'
-				"
-				data-testid="settings-tab-general"
-				@click="setTab('general')"
-			>
-				General
-			</button>
-			<button
-				class="px-4 py-2 text-sm font-medium border-b-2"
-				:class="
-					tab === 'security'
-						? 'border-primary-500 text-primary-600 dark:text-primary-400'
-						: 'border-transparent text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'
-				"
-				data-testid="settings-tab-security"
-				@click="setTab('security')"
-			>
-				Security
-			</button>
-		</div>
+		<UiTabs v-model="tabModel" label="Settings sections" :items="tabs" />
 
 		<!-- General -->
-		<div v-if="tab === 'general'" class="card space-y-4" data-testid="settings-general">
-			<h2 class="text-lg font-semibold text-gray-900 dark:text-white">Profile</h2>
-			<form class="space-y-4" @submit.prevent="saveProfile">
-				<div
-					v-if="profileError"
-					class="bg-error-50 dark:bg-error-900/20 text-error-700 dark:text-error-400 px-4 py-3 rounded-lg text-sm"
-					data-testid="profile-error"
-				>
+		<UiCard v-if="tab === 'general'" title="Profile" data-testid="settings-general">
+			<form class="flex flex-col gap-4 p-4" @submit.prevent="saveProfile">
+				<UiAlert v-if="profileError" tone="error" data-testid="profile-error">
 					{{ profileError }}
-				</div>
-				<div
-					v-if="profileSuccess"
-					class="bg-primary-50 dark:bg-primary-900/20 text-primary-700 dark:text-primary-300 px-4 py-3 rounded-lg text-sm"
-					data-testid="profile-success"
-				>
+				</UiAlert>
+				<UiAlert v-if="profileSuccess" tone="success" data-testid="profile-success">
 					Profile updated
-				</div>
-				<div>
-					<label for="profile-name" class="label">Display name</label>
-					<input
-						id="profile-name"
-						v-model="profileName"
-						type="text"
-						class="input"
-						maxlength="100"
-						required
-						data-testid="profile-name-input"
-					/>
-				</div>
-				<div>
-					<label for="profile-email" class="label">Email</label>
-					<!-- type="text" on purpose: the server deliberately applies no
-						email-format validation, and a type="email" input would impose
-						browser constraint validation the endpoint doesn't have -->
-					<input
+				</UiAlert>
+				<div class="grid gap-4 sm:grid-cols-2">
+					<UiFormField v-slot="f" label="Display name" id="profile-name">
+						<UiInput
+							:id="f.id"
+							v-model="profileName"
+							type="text"
+							maxlength="100"
+							required
+							data-testid="profile-name-input"
+						/>
+					</UiFormField>
+					<UiFormField
+						v-slot="f"
+						label="Email"
 						id="profile-email"
-						v-model="profileEmail"
-						type="text"
-						autocomplete="username"
-						inputmode="email"
-						class="input"
-						maxlength="254"
-						required
-						data-testid="profile-email-input"
-					/>
+						help="Your sign-in identifier — you'll use the new one next time you sign in."
+					>
+						<!-- type="text" on purpose: the server deliberately applies no
+							email-format validation, and a type="email" input would impose
+							browser constraint validation the endpoint doesn't have -->
+						<UiInput
+							:id="f.id"
+							v-model="profileEmail"
+							:aria-describedby="f.describedBy"
+							type="text"
+							autocomplete="username"
+							inputmode="email"
+							maxlength="254"
+							required
+							data-testid="profile-email-input"
+						/>
+					</UiFormField>
 				</div>
-				<div class="flex justify-between text-sm">
-					<span class="text-gray-500 dark:text-gray-400">Role</span>
-					<span class="font-medium text-gray-900 dark:text-white">{{
-						authStore.user?.role
-					}}</span>
+				<div class="flex items-center gap-2 text-body-s">
+					<span class="text-fg-subtle">Role</span>
+					<UiTag>{{ authStore.user?.role }}</UiTag>
 				</div>
-				<button
-					type="submit"
-					class="btn btn-primary"
-					:disabled="savingProfile || !profileDirty"
-					data-testid="profile-save"
-				>
-					{{ savingProfile ? 'Saving…' : 'Save changes' }}
-				</button>
+				<div class="flex items-center gap-3 border-t border-border pt-4">
+					<UiButton
+						type="submit"
+						variant="primary"
+						:loading="savingProfile"
+						:disabled="!profileDirty"
+						data-testid="profile-save"
+					>
+						{{ savingProfile ? 'Saving…' : 'Save changes' }}
+					</UiButton>
+					<p class="text-caption text-fg-subtle">Passkeys and passwords live under Security.</p>
+				</div>
 			</form>
-			<p class="text-xs text-gray-400">
-				Your email is your sign-in identifier — you'll use the new one next time you sign in.
-				Passkeys and passwords live under Security.
-			</p>
-		</div>
+		</UiCard>
 
 		<!-- Security -->
-		<div v-else class="space-y-6">
+		<div v-else class="flex flex-col gap-6">
 			<!-- Admin tools unlock note (admins on password sessions) -->
-			<div
+			<UiAlert
 				v-if="authStore.isAdmin && !authStore.canUseAdmin"
-				class="bg-primary-50 dark:bg-primary-900/20 text-primary-700 dark:text-primary-300 px-4 py-3 rounded-lg text-sm"
+				tone="info"
 				data-testid="admin-passkey-note"
 			>
 				Sign out and back in with your passkey to unlock admin tools. Admin actions require
 				a passkey-signed-in session.
-			</div>
+			</UiAlert>
 
 			<!-- Change password -->
-			<div class="card space-y-4" data-testid="settings-change-password">
-				<h2 class="text-lg font-semibold text-gray-900 dark:text-white">Change password</h2>
-				<p class="text-sm text-gray-600 dark:text-gray-400">
-					Changing your password signs you out of every device.
-				</p>
-				<form class="space-y-4" @submit.prevent="changePassword">
-					<div v-if="passwordError" class="bg-error-50 dark:bg-error-900/20 text-error-700 dark:text-error-400 px-4 py-3 rounded-lg text-sm">
-						{{ passwordError }}
+			<UiCard
+				title="Change password"
+				meta="Signs you out of every device"
+				data-testid="settings-change-password"
+			>
+				<form class="flex flex-col gap-4 p-4" @submit.prevent="changePassword">
+					<UiAlert v-if="passwordError" tone="error">{{ passwordError }}</UiAlert>
+					<UiFormField v-slot="f" label="Current password" id="current-password">
+						<UiInput :id="f.id" v-model="currentPassword" type="password" autocomplete="current-password" required />
+					</UiFormField>
+					<div class="grid gap-4 sm:grid-cols-2">
+						<UiFormField v-slot="f" label="New password" id="new-password" help="At least 8 characters">
+							<UiInput
+								:id="f.id"
+								v-model="newPassword"
+								:aria-describedby="f.describedBy"
+								type="password"
+								autocomplete="new-password"
+								required
+							/>
+						</UiFormField>
+						<UiFormField v-slot="f" label="Confirm new password" id="confirm-password">
+							<UiInput :id="f.id" v-model="confirmPassword" type="password" autocomplete="new-password" required />
+						</UiFormField>
 					</div>
-					<div>
-						<label for="current-password" class="label">Current password</label>
-						<input id="current-password" v-model="currentPassword" type="password" autocomplete="current-password" class="input" required />
+					<div class="border-t border-border pt-4">
+						<UiButton
+							type="submit"
+							variant="primary"
+							:icon="KeyRound"
+							:loading="changingPassword"
+							data-testid="change-password-submit"
+						>
+							{{ changingPassword ? 'Changing…' : 'Change password' }}
+						</UiButton>
 					</div>
-					<div>
-						<label for="new-password" class="label">New password</label>
-						<input id="new-password" v-model="newPassword" type="password" autocomplete="new-password" class="input" required />
-					</div>
-					<div>
-						<label for="confirm-password" class="label">Confirm new password</label>
-						<input id="confirm-password" v-model="confirmPassword" type="password" autocomplete="new-password" class="input" required />
-					</div>
-					<button type="submit" class="btn btn-primary" :disabled="changingPassword" data-testid="change-password-submit">
-						{{ changingPassword ? 'Changing…' : 'Change password' }}
-					</button>
 				</form>
-			</div>
+			</UiCard>
 
 			<!-- Passkeys -->
-			<div class="card space-y-4" data-testid="settings-passkeys">
-				<h2 class="text-lg font-semibold text-gray-900 dark:text-white">Passkeys</h2>
-				<p class="text-sm text-gray-600 dark:text-gray-400">
-					Sign in with a fingerprint, face, or security key — no password needed.
-				</p>
+			<UiCard
+				title="Passkeys"
+				meta="Fingerprint, face or security key"
+				data-testid="settings-passkeys"
+			>
+				<UiAlert v-if="passkeyError" tone="error" class="m-4 mb-0">{{ passkeyError }}</UiAlert>
 
-				<div v-if="passkeyError" class="bg-error-50 dark:bg-error-900/20 text-error-700 dark:text-error-400 px-4 py-3 rounded-lg text-sm">
-					{{ passkeyError }}
-				</div>
+				<UiSkeleton v-if="passkeysLoading" variant="line" :count="2" label="Loading passkeys" class="p-4" />
 
-				<div v-if="passkeysLoading" class="text-sm text-gray-500">Loading…</div>
-
-				<ul v-else-if="passkeys.length > 0" class="divide-y divide-gray-200 dark:divide-gray-700">
-					<li v-for="credential in passkeys" :key="credential.id" class="py-3 flex items-center justify-between gap-4">
-						<div class="min-w-0">
-							<p class="text-sm font-medium text-gray-900 dark:text-white truncate">{{ credential.name }}</p>
-							<p class="text-xs text-gray-500 dark:text-gray-400">
+				<ul v-else-if="passkeys.length > 0" class="divide-y divide-border">
+					<li
+						v-for="credential in passkeys"
+						:key="credential.id"
+						class="flex items-center gap-3 px-4 py-3"
+					>
+						<span class="flex size-9 shrink-0 items-center justify-center rounded-lg bg-accent-subtle text-accent-text">
+							<Fingerprint :size="18" aria-hidden="true" />
+						</span>
+						<div class="min-w-0 flex-1">
+							<p class="truncate text-body-s font-medium text-fg">{{ credential.name }}</p>
+							<p class="text-caption text-fg-subtle">
 								Created {{ formatDate(credential.createdAt) }} · Last used {{ formatDate(credential.lastUsedAt) }}
 							</p>
 						</div>
-						<button
-							class="btn btn-danger text-sm"
-							:disabled="deletingPasskeyId === credential.id"
-							:class="isLastPasskey ? 'font-semibold' : ''"
+						<UiButton
+							variant="danger"
+							size="sm"
+							:icon="Trash2"
+							:loading="deletingPasskeyId === credential.id"
 							:title="isLastPasskey ? 'This is your last passkey — password sign-in will still work' : undefined"
 							@click="removePasskey(credential)"
 						>
 							{{ deletingPasskeyId === credential.id ? 'Deleting…' : 'Delete' }}
-						</button>
+						</UiButton>
 					</li>
 				</ul>
-				<p v-else class="text-sm text-gray-500 dark:text-gray-400">No passkeys yet.</p>
+				<p v-else class="px-4 py-4 text-body-s text-fg-muted">No passkeys yet.</p>
 
-				<form class="flex items-end gap-3" @submit.prevent="addPasskey">
-					<div class="flex-1">
-						<label for="new-passkey-name" class="label">Add a passkey</label>
-						<input
-							id="new-passkey-name"
+				<form
+					class="flex flex-col gap-3 border-t border-border bg-canvas/40 p-4 sm:flex-row sm:items-end"
+					@submit.prevent="addPasskey"
+				>
+					<UiFormField v-slot="f" label="Add a passkey" id="new-passkey-name" class="flex-1">
+						<UiInput
+							:id="f.id"
 							v-model="newPasskeyName"
 							type="text"
-							class="input"
 							placeholder="e.g. YubiKey 5C, iPhone"
 							data-testid="new-passkey-name"
 						/>
-					</div>
-					<button type="submit" class="btn btn-primary" :disabled="addingPasskey" data-testid="add-passkey-button">
+					</UiFormField>
+					<UiButton
+						type="submit"
+						variant="primary"
+						:icon="Plus"
+						:loading="addingPasskey"
+						data-testid="add-passkey-button"
+					>
 						{{ addingPasskey ? 'Waiting…' : 'Add passkey' }}
-					</button>
+					</UiButton>
 				</form>
-			</div>
+			</UiCard>
 		</div>
 	</div>
 </template>

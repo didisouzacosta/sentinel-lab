@@ -1,6 +1,9 @@
 <script setup lang="ts">
+import { ScrollText } from 'lucide-vue-next';
 import { onMounted, ref } from 'vue';
 import { api } from '../../api/client';
+import AppPageHeader from '../../components/app/AppPageHeader.vue';
+import { UiAlert, UiButton, UiCard, UiEmptyState, UiSkeleton, UiTag } from '../../components/ui';
 
 interface AuditEntry {
 	id: string;
@@ -22,6 +25,7 @@ const nextCursor = ref<string | null>(null);
 const hasMore = ref(false);
 
 async function load(cursor?: string) {
+	error.value = null;
 	try {
 		const response = await api.get<{
 			entries: AuditEntry[];
@@ -69,87 +73,59 @@ function formatDetails(details: Record<string, unknown> | null): string {
 </script>
 
 <template>
-	<div>
-		<h1 class="text-2xl font-bold text-gray-900 dark:text-white mb-2">Audit log</h1>
-		<p class="text-sm text-gray-500 mb-6">
-			Every administrative action, newest first.
-		</p>
+	<div class="flex flex-col gap-5">
+		<AppPageHeader title="Audit log" subtitle="Every administrative action, newest first." />
 
-		<div v-if="loading" class="text-center py-12">
-			<div class="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-600 mx-auto"></div>
-			<p class="mt-4 text-gray-500">Loading audit log...</p>
-		</div>
+		<UiSkeleton v-if="loading" :count="6" label="Loading audit log" />
 
-		<div
-			v-else-if="error"
-			class="bg-error-50 dark:bg-error-900/20 text-error-700 dark:text-error-400 px-4 py-3 rounded-lg"
-		>
+		<UiAlert v-else-if="error && entries.length === 0" tone="error" action-label="Try again" @action="loading = true; load()">
 			{{ error }}
-		</div>
+		</UiAlert>
 
-		<div v-else class="card overflow-x-auto">
-			<table class="w-full text-sm" data-testid="admin-audit-table">
-				<thead>
-					<tr class="text-left text-xs text-gray-500 uppercase border-b border-gray-200 dark:border-gray-700">
-						<th class="px-4 py-3">Time</th>
-						<th class="px-4 py-3">Actor</th>
-						<th class="px-4 py-3">Action</th>
-						<th class="px-4 py-3">Target</th>
-						<th class="px-4 py-3">Details</th>
+		<UiCard v-else>
+			<table v-if="entries.length" class="w-full border-collapse text-left max-sm:block lg:table-fixed" data-testid="admin-audit-table">
+				<caption class="sr-only">Audit log</caption>
+				<thead class="max-sm:sr-only">
+					<tr class="border-b border-border bg-raised text-overline text-fg-subtle uppercase">
+						<th scope="col" class="w-48 py-2 pl-4 font-semibold">Time</th>
+						<th scope="col" class="w-52 py-2 pl-3 font-semibold">Actor</th>
+						<th scope="col" class="w-48 py-2 pl-3 font-semibold">Action</th>
+						<th scope="col" class="w-48 py-2 pl-3 font-semibold max-md:hidden">Target</th>
+						<th scope="col" class="py-2 pr-4 pl-3 font-semibold max-lg:hidden">Details</th>
 					</tr>
 				</thead>
-				<tbody>
+				<tbody class="max-sm:block">
 					<tr
 						v-for="entry in entries"
 						:key="entry.id"
-						class="border-b border-gray-100 dark:border-gray-800"
+						class="border-b border-border align-top last:border-b-0 max-sm:flex max-sm:flex-col max-sm:gap-1 max-sm:px-4 max-sm:py-3"
 					>
-						<td class="px-4 py-3 text-gray-500 whitespace-nowrap">
+						<td class="py-2.5 pl-4 text-body-s text-fg-muted max-sm:order-last max-sm:p-0 max-sm:text-caption" data-numeric>
 							{{ formatTime(entry.createdAt) }}
 						</td>
-						<td class="px-4 py-3">
-							<div class="font-medium text-gray-900 dark:text-white">
-								{{ entry.actorName }}
-							</div>
-							<div class="text-xs text-gray-500">{{ entry.actorEmail }}</div>
+						<td class="min-w-0 py-2.5 pl-3 max-sm:p-0">
+							<p class="truncate text-body-s font-medium text-fg">{{ entry.actorName }}</p>
+							<p class="truncate text-caption text-fg-subtle">{{ entry.actorEmail }}</p>
 						</td>
-						<td class="px-4 py-3">
-							<code class="text-xs bg-gray-100 dark:bg-gray-900 rounded px-1.5 py-0.5">
-								{{ entry.action }}
-							</code>
+						<td class="py-2.5 pl-3 max-sm:p-0">
+							<UiTag>{{ entry.action }}</UiTag>
 						</td>
-						<td class="px-4 py-3">
-							<span class="text-xs text-gray-500">{{ entry.targetType }}</span>
-							<div
-								v-if="entry.targetLabel"
-								class="font-medium text-gray-900 dark:text-white text-xs"
-							>
-								{{ entry.targetLabel }}
-							</div>
+						<td class="min-w-0 py-2.5 pl-3 max-md:hidden">
+							<p class="text-caption text-fg-subtle">{{ entry.targetType }}</p>
+							<p v-if="entry.targetLabel" class="truncate text-body-s text-fg">{{ entry.targetLabel }}</p>
 						</td>
-						<td class="px-4 py-3 text-xs text-gray-500">
-							{{ formatDetails(entry.details) }}
-						</td>
-					</tr>
-					<tr v-if="entries.length === 0">
-						<td colspan="5" class="px-4 py-8 text-center text-gray-500">
-							No admin actions recorded yet.
+						<td class="py-2.5 pr-4 pl-3 font-mono text-caption break-all text-fg-subtle max-lg:hidden">
+							{{ formatDetails(entry.details) || '—' }}
 						</td>
 					</tr>
 				</tbody>
 			</table>
+			<UiEmptyState v-else :icon="ScrollText" title="No admin actions recorded yet" />
 
-			<div v-if="hasMore" class="p-4 text-center border-t border-gray-100 dark:border-gray-800">
-				<button
-					class="btn btn-secondary"
-					:disabled="loadingMore"
-					data-testid="admin-audit-load-more"
-					@click="loadMore"
-				>
-					<span v-if="loadingMore">Loading…</span>
-					<span v-else>Load more</span>
-				</button>
+			<div v-if="hasMore" class="flex flex-col items-center gap-2 border-t border-border p-3">
+				<UiAlert v-if="error" tone="error">{{ error }}</UiAlert>
+				<UiButton :loading="loadingMore" data-testid="admin-audit-load-more" @click="loadMore">Load more</UiButton>
 			</div>
-		</div>
+		</UiCard>
 	</div>
 </template>

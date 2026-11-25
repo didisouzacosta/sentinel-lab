@@ -1,6 +1,37 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue';
+import {
+	Ellipsis,
+	Fingerprint,
+	KeyRound,
+	Pencil,
+	Plus,
+	Search,
+	Trash2,
+	Users,
+} from 'lucide-vue-next';
+import { computed, onMounted, ref } from 'vue';
 import { ApiError, api } from '../../api/client';
+import AppPageHeader from '../../components/app/AppPageHeader.vue';
+import {
+	UiAlert,
+	UiAvatar,
+	UiButton,
+	UiCard,
+	UiCheckbox,
+	UiDialog,
+	UiEmptyState,
+	UiFormField,
+	UiInput,
+	UiMenu,
+	UiSegmented,
+	UiSelect,
+	UiSkeleton,
+	UiTag,
+} from '../../components/ui';
+import type { MenuItem } from '../../components/ui/UiMenu.vue';
+import { useConfirm } from '../../composables/useConfirm';
+import { useToast } from '../../composables/useToast';
+import { timeAgo } from '../../lib/format';
 
 interface AdminUser {
 	id: string;
@@ -21,17 +52,28 @@ interface OwnedProject {
 	slug: string;
 }
 
+type Status = 'active' | 'password' | 'disabled';
+type Action = 'edit' | 'reset' | 'passkeys' | 'delete';
+
+const toast = useToast();
+const askConfirm = useConfirm();
+
 const users = ref<AdminUser[]>([]);
 const loading = ref(true);
 const error = ref<string | null>(null);
 
-// Create modal
+// Filters (client-side: the list is small and already loaded)
+const query = ref('');
+const roleFilter = ref<'' | 'admin' | 'member'>('');
+const statusFilter = ref<'' | Status>('');
+
+// Create
 const showCreate = ref(false);
 const createForm = ref({ name: '', email: '', password: '', isAdmin: false });
 const creating = ref(false);
 const createError = ref<string | null>(null);
 
-// Edit modal
+// Edit
 const editing = ref<AdminUser | null>(null);
 const editForm = ref({
 	name: '',
@@ -42,21 +84,87 @@ const editForm = ref({
 const savingEdit = ref(false);
 const editError = ref<string | null>(null);
 
-// Reset password modal
+// Reset password
 const resetting = ref<AdminUser | null>(null);
 const newPassword = ref('');
 const resettingBusy = ref(false);
 const resetError = ref<string | null>(null);
 
-// Delete confirm
+// Delete (its own dialog: the server can answer with the projects that block it)
 const deleting = ref<AdminUser | null>(null);
 const deleteBusy = ref(false);
 const deleteError = ref<string | null>(null);
 const deleteBlockedProjects = ref<OwnedProject[] | null>(null);
 
-// Remove passkeys confirm
-const clearingPasskeys = ref<AdminUser | null>(null);
-const clearBusy = ref(false);
+/** v-model:open for dialogs whose open state is "an item is selected". */
+function openWhile<T>(target: { value: T | null }) {
+	return computed({
+		get: () => target.value !== null,
+		set: (open: boolean) => {
+			if (!open) target.value = null;
+		},
+	});
+}
+const editOpen = openWhile(editing);
+const resetOpen = openWhile(resetting);
+const deleteOpen = openWhile(deleting);
+
+const STATUS_LABEL: Record<Status, string> = {
+	active: 'Active',
+	password: 'Password change due',
+	disabled: 'Disabled',
+};
+const STATUS_CLASS: Record<Status, string> = {
+	active: 'bg-success-bg text-success',
+	password: 'bg-level-warning-bg text-level-warning',
+	disabled: 'bg-level-debug-bg text-level-debug',
+};
+const statusOf = (u: AdminUser): Status =>
+	u.disabled ? 'disabled' : u.mustChangePassword ? 'password' : 'active';
+
+const roleOptions = [
+	{ value: 'member' as const, label: 'Member' },
+	{ value: 'admin' as const, label: 'Admin' },
+];
+
+const filtered = computed(() => {
+	const q = query.value.trim().toLowerCase();
+	return users.value.filter(
+		(u) =>
+			(!q || u.name.toLowerCase().includes(q) || u.email.toLowerCase().includes(q)) &&
+			(!roleFilter.value || u.role === roleFilter.value) &&
+			(!statusFilter.value || statusOf(u) === statusFilter.value),
+	);
+});
+const summary = computed(() => {
+	const admins = users.value.filter((u) => u.role === 'admin').length;
+	return `${users.value.length} ${users.value.length === 1 ? 'user' : 'users'} · ${admins} ${admins === 1 ? 'admin' : 'admins'}`;
+});
+
+function actionsFor(user: AdminUser): MenuItem<Action>[] {
+	return [
+		{ value: 'edit', label: 'Edit', icon: Pencil },
+		{ value: 'reset', label: 'Reset password', icon: KeyRound },
+		{
+			value: 'passkeys',
+			label: 'Remove passkeys',
+			icon: Fingerprint,
+			disabled: user.passkeyCount === 0,
+		},
+		{ value: 'delete', label: 'Delete user', icon: Trash2, danger: true, separator: true },
+	];
+}
+
+function onAction(user: AdminUser, action: Action) {
+	if (action === 'edit') openEdit(user);
+	else if (action === 'reset') openReset(user);
+	else if (action === 'passkeys') removePasskeys(user);
+	else openDelete(user);
+}
+
+function message(err: unknown, fallback: string) {
+	return err instanceof Error ? err.message : fallback;
+}
 
 async function loadUsers() {
 	loading.value = true;
@@ -65,7 +173,7 @@ async function loadUsers() {
 		const response = await api.get<{ users: AdminUser[] }>('/api/admin/users');
 		users.value = response.users;
 	} catch (err) {
-		error.value = err instanceof Error ? err.message : 'Failed to load users';
+		error.value = message(err, 'Failed to load users');
 	} finally {
 		loading.value = false;
 	}
@@ -94,9 +202,10 @@ async function createUser() {
 			role: createForm.value.isAdmin ? 'admin' : 'member',
 		});
 		showCreate.value = false;
+		toast.success(`User ${createForm.value.email} created`);
 		await loadUsers();
 	} catch (err) {
-		createError.value = err instanceof Error ? err.message : 'Failed to create user';
+		createError.value = message(err, 'Failed to create user');
 	} finally {
 		creating.value = false;
 	}
@@ -104,12 +213,7 @@ async function createUser() {
 
 function openEdit(user: AdminUser) {
 	editing.value = user;
-	editForm.value = {
-		name: user.name,
-		email: user.email,
-		role: user.role,
-		disabled: user.disabled,
-	};
+	editForm.value = { name: user.name, email: user.email, role: user.role, disabled: user.disabled };
 	editError.value = null;
 }
 
@@ -128,20 +232,18 @@ async function saveEdit() {
 	if (editForm.value.role !== user.role) updates.role = editForm.value.role;
 	if (editForm.value.disabled !== user.disabled) updates.disabled = editForm.value.disabled;
 	if (Object.keys(updates).length === 0) {
-		// Nothing changed — close without a request
-		editing.value = null;
+		editing.value = null; // nothing changed — close without a request
 		return;
 	}
 	savingEdit.value = true;
 	editError.value = null;
 	try {
-		const response = await api.patch<{ user: AdminUser }>(`/api/admin/users/${user.id}`, updates);
+		await api.patch<{ user: AdminUser }>(`/api/admin/users/${user.id}`, updates);
 		editing.value = null;
+		toast.success('User updated');
 		await loadUsers();
-		// Keep a handle on the updated row (not strictly needed; loadUsers refreshes)
-		void response;
 	} catch (err) {
-		editError.value = err instanceof Error ? err.message : 'Failed to update user';
+		editError.value = message(err, 'Failed to update user');
 	} finally {
 		savingEdit.value = false;
 	}
@@ -165,26 +267,30 @@ async function resetPassword() {
 		await api.post(`/api/admin/users/${resetting.value.id}/reset-password`, {
 			newPassword: newPassword.value,
 		});
+		toast.success(`Password reset for ${resetting.value.email}`);
 		resetting.value = null;
 		await loadUsers();
 	} catch (err) {
-		resetError.value = err instanceof Error ? err.message : 'Failed to reset password';
+		resetError.value = message(err, 'Failed to reset password');
 	} finally {
 		resettingBusy.value = false;
 	}
 }
 
-async function removePasskeys() {
-	if (!clearingPasskeys.value) return;
-	clearBusy.value = true;
+async function removePasskeys(user: AdminUser) {
+	const ok = await askConfirm({
+		title: 'Remove all passkeys?',
+		description: `${user.email} (${user.passkeyCount} ${user.passkeyCount === 1 ? 'passkey' : 'passkeys'}) will fall back to password sign-in.`,
+		confirmLabel: 'Remove passkeys',
+		tone: 'danger',
+	});
+	if (!ok) return;
 	try {
-		await api.delete(`/api/admin/users/${clearingPasskeys.value.id}/passkeys`);
-		clearingPasskeys.value = null;
+		await api.delete(`/api/admin/users/${user.id}/passkeys`);
+		toast.success(`Passkeys removed for ${user.email}`);
 		await loadUsers();
 	} catch (err) {
-		error.value = err instanceof Error ? err.message : 'Failed to remove passkeys';
-	} finally {
-		clearBusy.value = false;
+		toast.error(message(err, 'Failed to remove passkeys'));
 	}
 }
 
@@ -196,26 +302,27 @@ function openDelete(user: AdminUser) {
 
 async function deleteUser() {
 	if (!deleting.value) return;
+	const email = deleting.value.email;
 	deleteBusy.value = true;
 	deleteError.value = null;
 	deleteBlockedProjects.value = null;
 	try {
 		await api.delete(`/api/admin/users/${deleting.value.id}`);
 		deleting.value = null;
+		toast.success(`User ${email} deleted`);
 		await loadUsers();
 	} catch (err) {
 		if (err instanceof ApiError && err.code === 'owns_projects') {
 			const projects = err.body?.projects;
 			deleteBlockedProjects.value = Array.isArray(projects) ? (projects as OwnedProject[]) : [];
 		}
-		deleteError.value = err instanceof Error ? err.message : 'Failed to delete user';
+		deleteError.value = message(err, 'Failed to delete user');
 	} finally {
 		deleteBusy.value = false;
 	}
 }
 
-function formatDate(value: string | null): string {
-	if (!value) return '—';
+function formatDate(value: string): string {
 	return new Date(value).toLocaleDateString('en-US', {
 		year: 'numeric',
 		month: 'short',
@@ -225,381 +332,280 @@ function formatDate(value: string | null): string {
 </script>
 
 <template>
-	<div>
-		<div class="flex items-center justify-between mb-6">
-			<h1 class="text-2xl font-bold text-gray-900 dark:text-white">Users</h1>
-			<button class="btn btn-primary" data-testid="admin-users-create" @click="openCreate">
-				Create user
-			</button>
+	<div class="flex flex-col gap-5">
+		<AppPageHeader title="Users" :subtitle="loading ? undefined : summary">
+			<template #actions>
+				<UiButton variant="primary" :icon="Plus" data-testid="admin-users-create" @click="openCreate">
+					Create user
+				</UiButton>
+			</template>
+		</AppPageHeader>
+
+		<div class="flex flex-wrap gap-2">
+			<UiInput
+				v-model="query"
+				:icon="Search"
+				type="search"
+				placeholder="Filter by name or email"
+				aria-label="Filter by name or email"
+				class="w-full sm:w-72"
+			/>
+			<UiSelect v-model="roleFilter" aria-label="Role" class="max-sm:flex-1">
+				<option value="">All roles</option>
+				<option value="admin">Admins</option>
+				<option value="member">Members</option>
+			</UiSelect>
+			<UiSelect v-model="statusFilter" aria-label="Status" class="max-sm:flex-1">
+				<option value="">All statuses</option>
+				<option value="active">Active</option>
+				<option value="password">Password change due</option>
+				<option value="disabled">Disabled</option>
+			</UiSelect>
 		</div>
 
-		<div v-if="loading" class="text-center py-12">
-			<div class="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-600 mx-auto"></div>
-			<p class="mt-4 text-gray-500">Loading users...</p>
-		</div>
+		<UiSkeleton v-if="loading" :count="5" label="Loading users" />
 
-		<div
-			v-else-if="error"
-			class="bg-error-50 dark:bg-error-900/20 text-error-700 dark:text-error-400 px-4 py-3 rounded-lg"
-		>
+		<UiAlert v-else-if="error" tone="error" action-label="Try again" @action="loadUsers">
 			{{ error }}
-		</div>
+		</UiAlert>
 
-		<div v-else class="card overflow-x-auto">
-			<table class="w-full text-sm" data-testid="admin-users-table">
-				<thead>
-					<tr class="text-left text-xs text-gray-500 uppercase border-b border-gray-200 dark:border-gray-700">
-						<th class="px-4 py-3">Name</th>
-						<th class="px-4 py-3">Email</th>
-						<th class="px-4 py-3">Role</th>
-						<th class="px-4 py-3">Status</th>
-						<th class="px-4 py-3">Passkeys</th>
-						<th class="px-4 py-3">Last sign-in</th>
-						<th class="px-4 py-3">Created</th>
-						<th class="px-4 py-3 text-right">Actions</th>
+		<UiCard v-else>
+			<table class="w-full border-collapse text-left max-sm:block sm:table-fixed" data-testid="admin-users-table">
+				<caption class="sr-only">Users</caption>
+				<thead class="max-sm:sr-only">
+					<tr class="border-b border-border bg-raised text-overline text-fg-subtle uppercase">
+						<th scope="col" class="py-2 pl-4 font-semibold">Name</th>
+						<th scope="col" class="py-2 pr-4 font-semibold max-lg:hidden">Email</th>
+						<th scope="col" class="w-24 py-2 pr-4 font-semibold">Role</th>
+						<th scope="col" class="w-44 py-2 pr-4 font-semibold">Status</th>
+						<th scope="col" class="w-24 py-2 pr-4 font-semibold">Passkeys</th>
+						<th scope="col" class="w-32 py-2 pr-4 font-semibold max-md:hidden">Last sign-in</th>
+						<th scope="col" class="w-32 py-2 pr-4 font-semibold max-xl:hidden">Created</th>
+						<th scope="col" class="w-14 py-2 pr-4"><span class="sr-only">Actions</span></th>
 					</tr>
 				</thead>
-				<tbody>
+				<tbody class="max-sm:block">
 					<tr
-						v-for="user in users"
+						v-for="user in filtered"
 						:key="user.id"
-						class="border-b border-gray-100 dark:border-gray-800"
+						class="relative border-b border-border last:border-b-0 max-sm:flex max-sm:flex-wrap max-sm:items-center max-sm:gap-x-3 max-sm:gap-y-1.5 max-sm:py-3 max-sm:pr-14 max-sm:pl-4"
 						:data-testid="`admin-user-row-${user.email}`"
 					>
-						<td class="px-4 py-3 font-medium text-gray-900 dark:text-white">
-							{{ user.name }}
+						<td class="min-w-0 py-2.5 pl-4 max-sm:basis-full max-sm:p-0">
+							<div class="flex min-w-0 items-center gap-2.5">
+								<UiAvatar :name="user.name" size="sm" />
+								<div class="min-w-0">
+									<p class="truncate text-body-s font-medium text-fg">{{ user.name }}</p>
+									<p class="truncate text-caption text-fg-subtle lg:hidden">{{ user.email }}</p>
+								</div>
+							</div>
 						</td>
-						<td class="px-4 py-3 text-gray-500">{{ user.email }}</td>
-						<td class="px-4 py-3">
+						<td class="truncate py-2.5 pr-4 text-body-s text-fg-muted max-lg:hidden">{{ user.email }}</td>
+						<td class="py-2.5 pr-4 max-sm:p-0">
+							<UiTag :tone="user.role === 'admin' ? 'accent' : 'neutral'">{{ user.role }}</UiTag>
+						</td>
+						<td class="py-2.5 pr-4 max-sm:p-0">
 							<span
-								class="inline-flex items-center px-2 py-1 text-xs font-medium rounded-full"
-								:class="
-									user.role === 'admin'
-										? 'bg-primary-100 dark:bg-primary-900/30 text-primary-700 dark:text-primary-300'
-										: 'bg-gray-100 dark:bg-gray-600 text-gray-700 dark:text-gray-300'
-								"
+								class="inline-flex h-5 items-center rounded-full px-2 text-caption font-medium whitespace-nowrap"
+								:class="STATUS_CLASS[statusOf(user)]"
 							>
-								{{ user.role === 'admin' ? 'Admin' : 'Member' }}
+								{{ STATUS_LABEL[statusOf(user)] }}
 							</span>
 						</td>
-						<td class="px-4 py-3">
-							<span
-								v-if="user.disabled"
-								class="inline-flex items-center px-2 py-1 text-xs font-medium rounded-full bg-error-100 dark:bg-error-900/30 text-error-700 dark:text-error-300"
-							>
-								Disabled
+						<td class="py-2.5 pr-4 text-body-s text-fg-muted max-sm:p-0 max-sm:text-caption" data-numeric>
+							<span class="inline-flex items-center gap-1.5" :aria-label="`${user.passkeyCount} passkeys`">
+								<Fingerprint :size="14" class="text-fg-subtle" aria-hidden="true" />
+								{{ user.passkeyCount }}
 							</span>
-							<span
-								v-else-if="user.mustChangePassword"
-								class="inline-flex items-center px-2 py-1 text-xs font-medium rounded-full bg-warning-100 dark:bg-warning-900/30 text-warning-700 dark:text-warning-300"
-							>
-								Password change due
-							</span>
-							<span v-else class="text-xs text-gray-500">Active</span>
 						</td>
-						<td class="px-4 py-3 text-gray-500">{{ user.passkeyCount }}</td>
-						<td class="px-4 py-3 text-gray-500">{{ formatDate(user.lastLoginAt) }}</td>
-						<td class="px-4 py-3 text-gray-500">{{ formatDate(user.createdAt) }}</td>
-						<td class="px-4 py-3 text-right space-x-1 whitespace-nowrap">
-							<button
-								class="text-primary-600 dark:text-primary-400 hover:underline text-xs"
-								:data-testid="`admin-user-edit-${user.email}`"
-								@click="openEdit(user)"
+						<td class="py-2.5 pr-4 text-body-s text-fg-muted max-md:hidden" data-numeric>
+							{{ user.lastLoginAt ? timeAgo(user.lastLoginAt) : 'never' }}
+						</td>
+						<td class="py-2.5 pr-4 text-body-s text-fg-muted max-xl:hidden" data-numeric>
+							{{ formatDate(user.createdAt) }}
+						</td>
+						<td class="py-2.5 pr-4 text-right max-sm:absolute max-sm:top-2.5 max-sm:right-3 max-sm:p-0">
+							<UiMenu
+								:label="`Actions for ${user.email}`"
+								:title="user.name"
+								:items="actionsFor(user)"
+								@select="onAction(user, $event)"
 							>
-								Edit
-							</button>
-							<button
-								class="text-primary-600 dark:text-primary-400 hover:underline text-xs"
-								:data-testid="`admin-user-reset-${user.email}`"
-								@click="openReset(user)"
-							>
-								Reset password
-							</button>
-							<button
-								class="text-primary-600 dark:text-primary-400 hover:underline text-xs"
-								:data-testid="`admin-user-passkeys-${user.email}`"
-								@click="clearingPasskeys = user"
-							>
-								Remove passkeys
-							</button>
-							<button
-								class="text-error-600 dark:text-error-400 hover:underline text-xs"
-								:data-testid="`admin-user-delete-${user.email}`"
-								@click="openDelete(user)"
-							>
-								Delete
-							</button>
+								<template #trigger="{ props: menuProps }">
+									<UiButton
+										v-bind="menuProps"
+										variant="ghost"
+										size="icon-sm"
+										:icon="Ellipsis"
+										:aria-label="`Actions for ${user.email}`"
+										:data-testid="`admin-user-actions-${user.email}`"
+									/>
+								</template>
+							</UiMenu>
 						</td>
 					</tr>
 				</tbody>
 			</table>
-		</div>
+			<UiEmptyState
+				v-if="filtered.length === 0"
+				:icon="Users"
+				title="No users match"
+				description="Try another name, role or status."
+			/>
+		</UiCard>
 
-		<!-- Create modal -->
-		<div
-			v-if="showCreate"
-			class="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
-			@click.self="showCreate = false"
+		<!-- Create -->
+		<UiDialog
+			v-model:open="showCreate"
+			title="Create user"
+			description="They sign in with a temporary password and must change it first."
+			form
+			@submit="createUser"
 		>
-			<div class="bg-white dark:bg-gray-800 rounded-lg p-6 max-w-md w-full mx-4">
-				<h3 class="text-lg font-semibold text-gray-900 dark:text-white mb-4">Create user</h3>
-				<div class="space-y-4">
-					<div>
-						<label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Name</label>
-						<input
-							v-model="createForm.name"
-							class="w-full px-3 py-2 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg text-sm text-gray-900 dark:text-gray-100"
-							data-testid="admin-create-name"
-						/>
-					</div>
-					<div>
-						<label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Email</label>
-						<input
-							v-model="createForm.email"
-							type="email"
-							class="w-full px-3 py-2 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg text-sm text-gray-900 dark:text-gray-100"
-							data-testid="admin-create-email"
-						/>
-					</div>
-					<div>
-						<label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-							Temporary password
-						</label>
-						<input
-							v-model="createForm.password"
-							type="text"
-							class="w-full px-3 py-2 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg text-sm text-gray-900 dark:text-gray-100"
-							data-testid="admin-create-password"
-						/>
-						<p class="text-xs text-gray-500 mt-1">
-							The user must change this password at first sign-in.
-						</p>
-					</div>
-					<label class="flex items-center space-x-2 text-sm text-gray-700 dark:text-gray-300">
-						<input
-							v-model="createForm.isAdmin"
-							type="checkbox"
-							data-testid="admin-create-is-admin"
-						/>
-						<span>This is an administrator</span>
-					</label>
-					<div
-						v-if="createError"
-						class="bg-error-50 dark:bg-error-900/20 text-error-700 dark:text-error-400 px-4 py-3 rounded-lg text-sm"
-						data-testid="admin-create-error"
-					>
-						{{ createError }}
-					</div>
-					<div class="flex justify-end space-x-3">
-						<button class="btn btn-secondary" @click="showCreate = false">Cancel</button>
-						<button
-							class="btn btn-primary"
-							:disabled="creating || !createForm.name || !createForm.email || !createForm.password"
-							data-testid="admin-create-submit"
-							@click="createUser"
-						>
-							<span v-if="creating">Creating…</span>
-							<span v-else>Create</span>
-						</button>
-					</div>
-				</div>
-			</div>
-		</div>
-
-		<!-- Edit modal -->
-		<div
-			v-if="editing"
-			class="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
-			@click.self="editing = null"
-		>
-			<div class="bg-white dark:bg-gray-800 rounded-lg p-6 max-w-md w-full mx-4">
-				<h3 class="text-lg font-semibold text-gray-900 dark:text-white mb-4">Edit user</h3>
-				<div class="space-y-4">
-					<div>
-						<label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Name</label>
-						<input
-							v-model="editForm.name"
-							class="w-full px-3 py-2 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg text-sm text-gray-900 dark:text-gray-100"
-							data-testid="admin-edit-name"
-						/>
-					</div>
-					<div>
-						<label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Email</label>
-						<input
-							v-model="editForm.email"
-							type="email"
-							class="w-full px-3 py-2 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg text-sm text-gray-900 dark:text-gray-100"
-							data-testid="admin-edit-email"
-						/>
-					</div>
-					<div class="flex items-center space-x-4">
-						<label class="flex items-center space-x-2 text-sm text-gray-700 dark:text-gray-300">
-							<input
-								v-model="editForm.role"
-								type="radio"
-								value="member"
-								data-testid="admin-edit-role-member"
-							/>
-							<span>Member</span>
-						</label>
-						<label class="flex items-center space-x-2 text-sm text-gray-700 dark:text-gray-300">
-							<input
-								v-model="editForm.role"
-								type="radio"
-								value="admin"
-								data-testid="admin-edit-role-admin"
-							/>
-							<span>Admin</span>
-						</label>
-					</div>
-					<label class="flex items-center space-x-2 text-sm text-gray-700 dark:text-gray-300">
-						<input
-							v-model="editForm.disabled"
-							type="checkbox"
-							data-testid="admin-edit-disabled"
-						/>
-						<span>Disabled (blocks sign-in, kills sessions)</span>
-					</label>
-					<div
-						v-if="editError"
-						class="bg-error-50 dark:bg-error-900/20 text-error-700 dark:text-error-400 px-4 py-3 rounded-lg text-sm"
-						data-testid="admin-edit-error"
-					>
-						{{ editError }}
-					</div>
-					<div class="flex justify-end space-x-3">
-						<button class="btn btn-secondary" @click="editing = null">Cancel</button>
-						<button
-							class="btn btn-primary"
-							:disabled="savingEdit"
-							data-testid="admin-edit-submit"
-							@click="saveEdit"
-						>
-							<span v-if="savingEdit">Saving…</span>
-							<span v-else>Save</span>
-						</button>
-					</div>
-				</div>
-			</div>
-		</div>
-
-		<!-- Reset password modal -->
-		<div
-			v-if="resetting"
-			class="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
-			@click.self="resetting = null"
-		>
-			<div class="bg-white dark:bg-gray-800 rounded-lg p-6 max-w-md w-full mx-4">
-				<h3 class="text-lg font-semibold text-gray-900 dark:text-white mb-2">
-					Reset password
-				</h3>
-				<p class="text-sm text-gray-500 mb-4">
-					{{ resetting.email }} will be signed out everywhere and must change this
-					temporary password at next sign-in.
-				</p>
-				<div class="space-y-4">
-					<div>
-						<label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-							New temporary password
-						</label>
-						<input
-							v-model="newPassword"
-							type="text"
-							class="w-full px-3 py-2 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg text-sm text-gray-900 dark:text-gray-100"
-							data-testid="admin-reset-password"
-						/>
-					</div>
-					<div
-						v-if="resetError"
-						class="bg-error-50 dark:bg-error-900/20 text-error-700 dark:text-error-400 px-4 py-3 rounded-lg text-sm"
-					>
-						{{ resetError }}
-					</div>
-					<div class="flex justify-end space-x-3">
-						<button class="btn btn-secondary" @click="resetting = null">Cancel</button>
-						<button
-							class="btn btn-primary"
-							:disabled="resettingBusy || newPassword.length < 8"
-							data-testid="admin-reset-submit"
-							@click="resetPassword"
-						>
-							<span v-if="resettingBusy">Resetting…</span>
-							<span v-else>Reset password</span>
-						</button>
-					</div>
-				</div>
-			</div>
-		</div>
-
-		<!-- Remove passkeys confirm -->
-		<div
-			v-if="clearingPasskeys"
-			class="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
-			@click.self="clearingPasskeys = null"
-		>
-			<div class="bg-white dark:bg-gray-800 rounded-lg p-6 max-w-md w-full mx-4">
-				<h3 class="text-lg font-semibold text-gray-900 dark:text-white mb-2">
-					Remove all passkeys?
-				</h3>
-				<p class="text-sm text-gray-500 mb-6">
-					{{ clearingPasskeys.email }} ({{ clearingPasskeys.passkeyCount }} passkeys) will
-					fall back to password sign-in.
-				</p>
-				<div class="flex justify-end space-x-3">
-					<button class="btn btn-secondary" @click="clearingPasskeys = null">Cancel</button>
-					<button class="btn btn-danger" :disabled="clearBusy" @click="removePasskeys">
-						<span v-if="clearBusy">Removing…</span>
-						<span v-else>Remove passkeys</span>
-					</button>
-				</div>
-			</div>
-		</div>
-
-		<!-- Delete confirm -->
-		<div
-			v-if="deleting"
-			class="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
-			@click.self="deleting = null"
-		>
-			<div class="bg-white dark:bg-gray-800 rounded-lg p-6 max-w-md w-full mx-4">
-				<h3 class="text-lg font-semibold text-gray-900 dark:text-white mb-2">Delete user?</h3>
-				<p class="text-sm text-gray-500 mb-4">
-					{{ deleting.email }} — all sessions, API tokens, passkeys, and project
-					memberships will be removed.
-				</p>
-				<div
-					v-if="deleteBlockedProjects"
-					class="bg-warning-50 dark:bg-warning-900/20 text-warning-700 dark:text-warning-300 px-4 py-3 rounded-lg text-sm mb-4"
-					data-testid="admin-delete-blocked"
+			<div class="flex flex-col gap-4">
+				<UiFormField v-slot="f" label="Name" required>
+					<UiInput :id="f.id" v-model="createForm.name" required data-testid="admin-create-name" />
+				</UiFormField>
+				<UiFormField v-slot="f" label="Email" required>
+					<UiInput :id="f.id" v-model="createForm.email" type="email" required data-testid="admin-create-email" />
+				</UiFormField>
+				<UiFormField
+					v-slot="f"
+					label="Temporary password"
+					help="At least 8 characters. The user must change it at first sign-in."
+					required
 				>
-					<p class="font-medium mb-1">
-						This user owns projects — reassign or delete these first:
-					</p>
-					<ul class="list-disc list-inside">
+					<UiInput
+						:id="f.id"
+						v-model="createForm.password"
+						:aria-describedby="f.describedBy"
+						type="text"
+						autocomplete="off"
+						class="font-mono"
+						data-testid="admin-create-password"
+					/>
+				</UiFormField>
+				<UiCheckbox v-model="createForm.isAdmin" label="This is an administrator" data-testid="admin-create-is-admin" />
+				<UiAlert v-if="createError" tone="error" data-testid="admin-create-error">{{ createError }}</UiAlert>
+			</div>
+			<template #footer="{ close }">
+				<UiButton @click="close">Cancel</UiButton>
+				<UiButton
+					type="submit"
+					variant="primary"
+					:loading="creating"
+					:disabled="!createForm.name || !createForm.email || !createForm.password"
+					data-testid="admin-create-submit"
+				>
+					Create user
+				</UiButton>
+			</template>
+		</UiDialog>
+
+		<!-- Edit -->
+		<UiDialog v-model:open="editOpen" title="Edit user" :description="editing?.email" form @submit="saveEdit">
+			<div v-if="editing" class="flex flex-col gap-4">
+				<UiFormField v-slot="f" label="Name">
+					<UiInput :id="f.id" v-model="editForm.name" data-testid="admin-edit-name" />
+				</UiFormField>
+				<UiFormField v-slot="f" label="Email">
+					<!-- type="text": stored identifiers may be format-free (no "@"), so native email
+					     validation would block saving unrelated changes -->
+					<UiInput :id="f.id" v-model="editForm.email" type="text" inputmode="email" autocomplete="off" data-testid="admin-edit-email" />
+				</UiFormField>
+				<div class="flex flex-col gap-1.5">
+					<span class="text-body-s font-medium text-fg">Role</span>
+					<UiSegmented v-model="editForm.role" label="Role" :options="roleOptions" />
+				</div>
+				<UiCheckbox
+					v-model="editForm.disabled"
+					label="Disabled (blocks sign-in, ends sessions)"
+					data-testid="admin-edit-disabled"
+				/>
+				<UiAlert v-if="editError" tone="error" data-testid="admin-edit-error">{{ editError }}</UiAlert>
+			</div>
+			<template #footer="{ close }">
+				<template v-if="editing">
+					<UiButton @click="close">Cancel</UiButton>
+					<UiButton type="submit" variant="primary" :loading="savingEdit" data-testid="admin-edit-submit">
+						Save
+					</UiButton>
+				</template>
+			</template>
+		</UiDialog>
+
+		<!-- Reset password -->
+		<UiDialog
+			v-model:open="resetOpen"
+			title="Reset password"
+			:description="resetting ? `${resetting.email} is signed out everywhere and must change this temporary password at next sign-in.` : undefined"
+			form
+			@submit="resetPassword"
+		>
+			<div v-if="resetting" class="flex flex-col gap-4">
+				<UiFormField v-slot="f" label="New temporary password" help="At least 8 characters">
+					<UiInput
+						:id="f.id"
+						v-model="newPassword"
+						:aria-describedby="f.describedBy"
+						type="text"
+						autocomplete="off"
+						class="font-mono"
+						data-testid="admin-reset-password"
+					/>
+				</UiFormField>
+				<UiAlert v-if="resetError" tone="error">{{ resetError }}</UiAlert>
+			</div>
+			<template #footer="{ close }">
+				<template v-if="resetting">
+					<UiButton @click="close">Cancel</UiButton>
+					<UiButton
+						type="submit"
+						variant="primary"
+						:loading="resettingBusy"
+						:disabled="newPassword.length < 8"
+						data-testid="admin-reset-submit"
+					>
+						Reset password
+					</UiButton>
+				</template>
+			</template>
+		</UiDialog>
+
+		<!-- Delete -->
+		<UiDialog
+			v-model:open="deleteOpen"
+			title="Delete user?"
+			:description="deleting ? `${deleting.email} — sessions, API tokens, passkeys and project memberships are removed.` : undefined"
+			size="sm"
+		>
+			<div v-if="deleting" class="flex flex-col gap-3">
+				<UiAlert v-if="deleteBlockedProjects" tone="warning" data-testid="admin-delete-blocked">
+					<p class="font-medium">This user owns projects — reassign or delete these first:</p>
+					<ul class="mt-1 list-disc pl-5">
 						<li v-for="project in deleteBlockedProjects" :key="project.id">
-							{{ project.name }} ({{ project.slug }})
+							{{ project.name }} (<span class="font-mono">{{ project.slug }}</span>)
 						</li>
 					</ul>
-				</div>
-				<div
-					v-else-if="deleteError"
-					class="bg-error-50 dark:bg-error-900/20 text-error-700 dark:text-error-400 px-4 py-3 rounded-lg text-sm mb-4"
-				>
-					{{ deleteError }}
-				</div>
-				<div class="flex justify-end space-x-3">
-					<button class="btn btn-secondary" @click="deleting = null">Cancel</button>
-					<button
-						class="btn btn-danger"
-						:disabled="deleteBusy || !!deleteBlockedProjects"
+				</UiAlert>
+				<UiAlert v-else-if="deleteError" tone="error">{{ deleteError }}</UiAlert>
+				<p v-else class="text-body-s text-fg-muted">This cannot be undone.</p>
+			</div>
+			<template #footer="{ close }">
+				<template v-if="deleting">
+					<UiButton @click="close">Cancel</UiButton>
+					<UiButton
+						variant="danger"
+						:icon="Trash2"
+						:loading="deleteBusy"
+						:disabled="!!deleteBlockedProjects"
 						data-testid="admin-delete-submit"
 						@click="deleteUser"
 					>
-						<span v-if="deleteBusy">Deleting…</span>
-						<span v-else>Delete user</span>
-					</button>
-				</div>
-			</div>
-		</div>
+						Delete user
+					</UiButton>
+				</template>
+			</template>
+		</UiDialog>
 	</div>
 </template>

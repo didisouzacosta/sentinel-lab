@@ -1,8 +1,35 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue';
+import {
+	Check,
+	CircleCheck,
+	Eye,
+	EyeOff,
+	GitMerge,
+	History,
+	Plug,
+	SlidersHorizontal,
+	Trash2,
+} from 'lucide-vue-next';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { RouterLink, useRoute } from 'vue-router';
 import { api } from '../api/client';
-import { useProjectsStore } from '../stores/projects';
+import AppIssueFilters, { type TagFacet } from '../components/app/AppIssueFilters.vue';
+import AppPageHeader from '../components/app/AppPageHeader.vue';
+import {
+	UiAlert,
+	UiBadge,
+	UiButton,
+	UiCard,
+	UiCheckbox,
+	UiDialog,
+	UiEmptyState,
+	UiSkeleton,
+	UiTabs,
+	UiTag,
+} from '../components/ui';
+import { useConfirm } from '../composables/useConfirm';
+import { useToast } from '../composables/useToast';
+import { formatNumber, timeAgo } from '../lib/format';
 
 interface Issue {
 	id: string;
@@ -23,10 +50,9 @@ interface Issue {
 }
 
 const route = useRoute();
-const projectsStore = useProjectsStore();
+const toast = useToast();
+const askConfirm = useConfirm();
 const slug = computed(() => route.params.slug as string);
-const currentProject = computed(() => projectsStore.projects.find((p) => p.slug === slug.value));
-const isCloudflareWorkers = computed(() => currentProject.value?.platform === 'cloudflare-workers');
 
 /** Status values the route query may seed (empty = all). */
 const QUERY_STATUSES = new Set(['', 'unresolved', 'resolved', 'ignored', 'snoozed']);
@@ -44,15 +70,17 @@ function limitFromQuery(): number {
 	return PAGE_SIZES.includes(raw) ? raw : 25;
 }
 
-interface TagFacet {
-	key: string;
-	issueCount: number;
-	eventCount: number;
-	topValues: Array<{ value: string; issueCount: number; eventCount: number }>;
-}
+const statusTabs = [
+	{ value: 'unresolved', label: 'Unresolved' },
+	{ value: 'resolved', label: 'Resolved' },
+	{ value: 'ignored', label: 'Ignored' },
+	{ value: 'snoozed', label: 'Snoozed' },
+	{ value: '', label: 'All' },
+];
 
 const issues = ref<Issue[]>([]);
 const loading = ref(true);
+const loadingMore = ref(false);
 const error = ref<string | null>(null);
 // Seeded from the route query so overview cards can deep-link with filters
 const statusFilter = ref<string>(statusFromQuery());
@@ -62,70 +90,91 @@ const environmentFilter = ref<string>('');
 const environments = ref<Array<{ name: string; issueCount: number }>>([]);
 const hasMore = ref(false);
 const nextCursor = ref<string | undefined>();
-const dsn = ref<string>('');
 const tagFacets = ref<TagFacet[]>([]);
 const selectedTags = ref<string[]>([]);
 const selectedIds = ref<Set<string>>(new Set());
 const bulkLoading = ref(false);
 const merging = ref(false);
+const filtersOpen = ref(false);
 
 const allSelected = computed(
 	() => issues.value.length > 0 && issues.value.every((i) => selectedIds.value.has(i.id)),
 );
 const someSelected = computed(() => selectedIds.value.size > 0);
+const selectionLabel = computed(
+	() => `${selectedIds.value.size} issue${selectedIds.value.size === 1 ? '' : 's'}`,
+);
+const activeFilterCount = computed(
+	() => selectedTags.value.length + (environmentFilter.value ? 1 : 0),
+);
+const filtered = computed(() => activeFilterCount.value > 0 || statusFilter.value !== 'unresolved');
 
 function toggleSelect(id: string) {
 	const next = new Set(selectedIds.value);
-	if (next.has(id)) {
-		next.delete(id);
-	} else {
-		next.add(id);
-	}
+	if (next.has(id)) next.delete(id);
+	else next.add(id);
 	selectedIds.value = next;
 }
 
 function toggleSelectAll() {
-	if (allSelected.value) {
-		selectedIds.value = new Set();
-	} else {
-		selectedIds.value = new Set(issues.value.map((i) => i.id));
-	}
+	selectedIds.value = allSelected.value ? new Set() : new Set(issues.value.map((i) => i.id));
 }
 
 function clearSelection() {
 	selectedIds.value = new Set();
 }
 
+const STATUS_DONE: Record<string, string> = {
+	resolved: 'resolved',
+	ignored: 'ignored',
+	unresolved: 'reopened',
+};
+
 async function bulkUpdateStatus(newStatus: string) {
 	if (selectedIds.value.size === 0) return;
+	const label = selectionLabel.value;
 	bulkLoading.value = true;
-
 	try {
 		await api.patch(`/api/projects/${slug.value}/issues/bulk`, {
 			issueIds: Array.from(selectedIds.value),
 			status: newStatus,
 		});
 		for (const issue of issues.value) {
-			if (selectedIds.value.has(issue.id)) {
-				issue.status = newStatus;
-			}
+			if (selectedIds.value.has(issue.id)) issue.status = newStatus;
 		}
 		if (statusFilter.value && statusFilter.value !== newStatus) {
 			issues.value = issues.value.filter((i) => !selectedIds.value.has(i.id));
 		}
 		clearSelection();
+		toast.success(`${label} ${STATUS_DONE[newStatus] ?? 'updated'}`);
 	} catch (err) {
-		console.error('Bulk update failed:', err);
+		toast.error(
+			`Could not update the issues: ${err instanceof Error ? err.message : 'unknown error'}`,
+		);
 	} finally {
 		bulkLoading.value = false;
 	}
 }
 
+function selectedTitles(): string[] {
+	return issues.value
+		.filter((i) => selectedIds.value.has(i.id))
+		.slice(0, 5)
+		.map((i) => `${i.metadata?.type || i.title}: ${i.metadata?.value || ''}`.trim());
+}
+
 async function bulkDelete() {
 	if (selectedIds.value.size === 0) return;
-	if (!confirm(`Delete ${selectedIds.value.size} issue(s)? This cannot be undone.`)) return;
+	const label = selectionLabel.value;
+	const ok = await askConfirm({
+		title: `Delete ${label}?`,
+		description: 'All their events and attachments are removed. This cannot be undone.',
+		confirmLabel: `Delete ${label}`,
+		tone: 'danger',
+		items: selectedTitles(),
+	});
+	if (!ok) return;
 	bulkLoading.value = true;
-
 	try {
 		await api.patch(`/api/projects/${slug.value}/issues/bulk`, {
 			issueIds: Array.from(selectedIds.value),
@@ -133,8 +182,11 @@ async function bulkDelete() {
 		});
 		issues.value = issues.value.filter((i) => !selectedIds.value.has(i.id));
 		clearSelection();
+		toast.success(`${label} deleted`);
 	} catch (err) {
-		console.error('Bulk delete failed:', err);
+		toast.error(
+			`Could not delete the issues: ${err instanceof Error ? err.message : 'unknown error'}`,
+		);
 	} finally {
 		bulkLoading.value = false;
 	}
@@ -142,16 +194,17 @@ async function bulkDelete() {
 
 async function mergeSelected() {
 	if (selectedIds.value.size < 2) return;
-	if (
-		!confirm(
-			`Merge ${selectedIds.value.size} issues? Events from ${selectedIds.value.size - 1} issue(s) will be moved into the primary issue (first selected). This cannot be undone.`,
-		)
-	)
-		return;
-
-	// Use the first issue in the current list order that is selected as primary
+	// The first selected issue in list order becomes the primary
 	const primaryIssue = issues.value.find((i) => selectedIds.value.has(i.id));
 	if (!primaryIssue) return;
+	const count = selectedIds.value.size;
+	const ok = await askConfirm({
+		title: `Merge ${count} issues?`,
+		description: `Events from ${count - 1} issue${count - 1 === 1 ? '' : 's'} move into "${primaryIssue.metadata?.type || primaryIssue.title}" (the first selected). This cannot be undone.`,
+		confirmLabel: `Merge ${count} issues`,
+		items: selectedTitles(),
+	});
+	if (!ok) return;
 
 	merging.value = true;
 	try {
@@ -161,16 +214,18 @@ async function mergeSelected() {
 		});
 		clearSelection();
 		await loadIssues();
-	} catch (err) {
-		console.error('Failed to merge issues:', err);
-		alert('Failed to merge issues. Please try again.');
+		toast.success(`${count} issues merged`);
+	} catch {
+		toast.error('Failed to merge issues. Please try again.');
 	} finally {
 		merging.value = false;
 	}
 }
 
 async function loadIssues(append = false) {
-	if (!append) {
+	if (append) {
+		loadingMore.value = true;
+	} else {
 		loading.value = true;
 		clearSelection();
 	}
@@ -178,22 +233,12 @@ async function loadIssues(append = false) {
 
 	try {
 		const params = new URLSearchParams();
-		if (statusFilter.value) {
-			params.set('status', statusFilter.value);
-		}
-		if (environmentFilter.value) {
-			params.set('environment', environmentFilter.value);
-		}
-		if (sortMode.value === 'user') {
-			params.set('sort', 'user_count');
-		}
+		if (statusFilter.value) params.set('status', statusFilter.value);
+		if (environmentFilter.value) params.set('environment', environmentFilter.value);
+		if (sortMode.value === 'user') params.set('sort', 'user_count');
 		params.set('limit', String(pageSize.value));
-		if (append && nextCursor.value) {
-			params.set('cursor', nextCursor.value);
-		}
-		for (const tag of selectedTags.value) {
-			params.append('tag', tag);
-		}
+		if (append && nextCursor.value) params.set('cursor', nextCursor.value);
+		for (const tag of selectedTags.value) params.append('tag', tag);
 
 		const response = await api.get<{
 			issues: Issue[];
@@ -201,22 +246,14 @@ async function loadIssues(append = false) {
 			nextCursor?: string;
 		}>(`/api/projects/${slug.value}/issues?${params}`);
 
-		if (append) {
-			issues.value = [...issues.value, ...response.issues];
-		} else {
-			issues.value = response.issues;
-		}
+		issues.value = append ? [...issues.value, ...response.issues] : response.issues;
 		hasMore.value = response.hasMore;
 		nextCursor.value = response.nextCursor;
-
-		// Load DSN if no issues (for quickstart display)
-		if (response.issues.length === 0 && !dsn.value) {
-			loadDsn();
-		}
 	} catch (err) {
 		error.value = err instanceof Error ? err.message : 'Failed to load issues';
 	} finally {
 		loading.value = false;
+		loadingMore.value = false;
 	}
 }
 
@@ -237,12 +274,8 @@ function getSelectedTagValue(key: string): string {
 }
 
 function toggleTag(key: string, value: string) {
-	if (value) {
-		selectedTags.value = selectedTags.value.filter((t) => !t.startsWith(`${key}:`));
-		selectedTags.value.push(`${key}:${value}`);
-	} else {
-		selectedTags.value = selectedTags.value.filter((t) => !t.startsWith(`${key}:`));
-	}
+	const rest = selectedTags.value.filter((t) => !t.startsWith(`${key}:`));
+	selectedTags.value = value ? [...rest, `${key}:${value}`] : rest;
 	loadIssues();
 }
 
@@ -251,13 +284,12 @@ function removeTag(tag: string) {
 	loadIssues();
 }
 
-async function loadDsn() {
-	try {
-		const response = await api.get<{ dsn: string }>(`/api/projects/${slug.value}`);
-		dsn.value = response.dsn;
-	} catch {
-		// Ignore - DSN will just show placeholder
-	}
+function clearFilters() {
+	const hadTags = selectedTags.value.length > 0;
+	selectedTags.value = [];
+	if (environmentFilter.value)
+		environmentFilter.value = ''; // its watcher reloads
+	else if (hadTags) loadIssues();
 }
 
 async function loadEnvironments() {
@@ -275,40 +307,32 @@ async function updateStatus(issue: Issue, newStatus: string) {
 	try {
 		await api.patch(`/api/projects/${slug.value}/issues/${issue.id}`, { status: newStatus });
 		issue.status = newStatus;
+		toast.success(`Issue ${STATUS_DONE[newStatus] ?? 'updated'}`);
 	} catch (err) {
-		console.error('Failed to update status:', err);
+		toast.error(
+			`Could not update the issue: ${err instanceof Error ? err.message : 'unknown error'}`,
+		);
 	}
 }
 
-function formatTimeAgo(dateString: string): string {
-	const date = new Date(dateString);
-	const now = new Date();
-	const seconds = Math.floor((now.getTime() - date.getTime()) / 1000);
-
-	if (seconds < 60) return 'just now';
-	if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
-	if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
-	if (seconds < 604800) return `${Math.floor(seconds / 86400)}d ago`;
-	return date.toLocaleDateString();
+function isSnoozed(issue: Issue) {
+	return !!issue.snoozedUntil && new Date(issue.snoozedUntil) > new Date();
 }
 
-function getLevelBadgeClass(level: string): string {
-	switch (level) {
-		case 'fatal':
-		case 'error':
-			return 'badge-error';
-		case 'warning':
-			return 'badge-warning';
-		default:
-			return 'badge-info';
-	}
+// Esc clears the selection (when no dialog or menu is handling it)
+function onKeydown(event: KeyboardEvent) {
+	if (event.key !== 'Escape' || !someSelected.value || event.defaultPrevented) return;
+	if (document.querySelector('dialog[open], [role="menu"]')) return; // the overlay handles Esc
+	clearSelection();
 }
 
 onMounted(() => {
 	loadIssues();
 	loadTagFacets();
 	loadEnvironments();
+	window.addEventListener('keydown', onKeydown);
 });
+onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown));
 
 watch(statusFilter, () => loadIssues());
 watch(environmentFilter, () => loadIssues());
@@ -332,332 +356,217 @@ watch(
 </script>
 
 <template>
-	<div>
-		<!-- Filters -->
-		<div class="flex items-center space-x-4 mb-4">
-			<select v-model="statusFilter" class="input w-auto">
-				<option value="">All Issues</option>
-				<option value="unresolved">Unresolved</option>
-				<option value="resolved">Resolved</option>
-				<option value="ignored">Ignored</option>
-				<option value="snoozed">Snoozed</option>
-			</select>
-			<select
-				v-model.number="pageSize"
-				class="input w-auto"
-				title="Issues per page"
-				aria-label="Issues per page"
-			>
-				<option :value="25">25 / page</option>
-				<option :value="50">50 / page</option>
-				<option :value="100">100 / page</option>
-			</select>
-			<select
-				v-for="facet in tagFacets"
-				:key="facet.key"
-				class="input w-auto"
-				:value="getSelectedTagValue(facet.key)"
-				@change="toggleTag(facet.key, ($event.target as HTMLSelectElement).value)"
-			>
-				<option value="">{{ facet.key }}</option>
-				<option v-for="tv in facet.topValues" :key="tv.value" :value="tv.value">
-					{{ tv.value }} ({{ tv.issueCount }})
-				</option>
-			</select>
-			<select v-if="environments.length > 0" v-model="environmentFilter" class="input w-auto">
-				<option value="">All Environments</option>
-				<option v-for="env in environments" :key="env.name" :value="env.name">
-					{{ env.name }} ({{ env.issueCount }})
-				</option>
-			</select>
-			<label
-				v-if="issues.length > 0"
-				class="flex items-center space-x-2 text-sm text-gray-600 dark:text-gray-300 cursor-pointer"
-			>
-				<input
-					type="checkbox"
-					:checked="allSelected"
-					:indeterminate="someSelected && !allSelected"
-					class="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
-					@change="toggleSelectAll"
-				/>
-				<span>Select all</span>
-			</label>
-		</div>
+	<div class="flex flex-col gap-5" :class="someSelected ? 'pb-24 sm:pb-0' : ''">
+		<AppPageHeader title="Issues" subtitle="Errors grouped by fingerprint, most recent first" />
 
-		<!-- Active tag filters -->
-		<div v-if="selectedTags.length > 0" class="flex items-center flex-wrap gap-2 mb-4">
-			<span
+		<UiTabs v-model="statusFilter" label="Issue status" :items="statusTabs" />
+
+		<!-- Filters: toolbar on desktop, sheet on phones -->
+		<div class="hidden md:block">
+			<AppIssueFilters
+				v-model:environment="environmentFilter"
+				v-model:sort="sortMode"
+				v-model:page-size="pageSize"
+				:environments="environments"
+				:facets="tagFacets"
+				:tag-value="getSelectedTagValue"
+				layout="inline"
+				id-prefix="filters-inline"
+				@tag="toggleTag"
+			/>
+		</div>
+		<div class="md:hidden">
+			<UiButton size="sm" :icon="SlidersHorizontal" data-testid="open-filters" @click="filtersOpen = true">
+				Filters{{ activeFilterCount ? ` (${activeFilterCount})` : '' }}
+			</UiButton>
+		</div>
+		<UiDialog v-model:open="filtersOpen" title="Filters">
+			<AppIssueFilters
+				v-model:environment="environmentFilter"
+				v-model:sort="sortMode"
+				v-model:page-size="pageSize"
+				:environments="environments"
+				:facets="tagFacets"
+				:tag-value="getSelectedTagValue"
+				layout="stacked"
+				id-prefix="filters-sheet"
+				@tag="toggleTag"
+			/>
+			<template #footer="{ close }">
+				<UiButton v-if="activeFilterCount" variant="ghost" @click="clearFilters">Reset</UiButton>
+				<UiButton variant="primary" @click="close">Show issues</UiButton>
+			</template>
+		</UiDialog>
+
+		<!-- Active filters -->
+		<div v-if="activeFilterCount > 0" class="flex flex-wrap items-center gap-2" data-testid="active-filters">
+			<UiTag
+				v-if="environmentFilter"
+				tone="accent"
+				removable
+				:remove-label="`Remove environment ${environmentFilter}`"
+				@remove="environmentFilter = ''"
+			>
+				environment: {{ environmentFilter }}
+			</UiTag>
+			<UiTag
 				v-for="tag in selectedTags"
 				:key="tag"
-				class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-primary-100 text-primary-800 dark:bg-primary-900/30 dark:text-primary-300"
+				tone="accent"
+				removable
+				:remove-label="`Remove filter ${tag}`"
+				@remove="removeTag(tag)"
 			>
-				{{ tag }}
-				<button
-					class="ml-1.5 inline-flex items-center justify-center w-4 h-4 rounded-full hover:bg-primary-200 dark:hover:bg-primary-800"
-					@click="removeTag(tag)"
-				>
-					&times;
-				</button>
-			</span>
-		</div>
-
-		<!-- Bulk action bar -->
-		<div
-			v-if="someSelected"
-			class="mb-4 flex items-center justify-between bg-primary-50 dark:bg-primary-900/20 border border-primary-200 dark:border-primary-800 rounded-lg px-4 py-3"
-		>
-			<span class="text-sm font-medium text-primary-700 dark:text-primary-300">
-				{{ selectedIds.size }} issue{{ selectedIds.size !== 1 ? 's' : '' }} selected
-			</span>
-			<div class="flex items-center space-x-2">
-				<button
-					class="btn btn-secondary text-sm"
-					:disabled="bulkLoading"
-					@click="bulkUpdateStatus('resolved')"
-				>
-					Resolve
-				</button>
-				<button
-					class="btn btn-secondary text-sm"
-					:disabled="bulkLoading"
-					@click="bulkUpdateStatus('ignored')"
-				>
-					Ignore
-				</button>
-				<button
-					class="btn btn-secondary text-sm"
-					:disabled="bulkLoading"
-					@click="bulkUpdateStatus('unresolved')"
-				>
-					Reopen
-				</button>
-				<button
-					class="btn btn-danger text-sm"
-					:disabled="bulkLoading"
-					@click="bulkDelete"
-				>
-					Delete
-				</button>
-				<button
-					v-if="selectedIds.size >= 2"
-					class="btn btn-secondary text-sm"
-					:disabled="merging || bulkLoading"
-					@click="mergeSelected"
-				>
-					{{ merging ? 'Merging...' : 'Merge' }}
-				</button>
-				<button
-					class="text-sm text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 ml-2"
-					@click="clearSelection"
-				>
-					Clear
-				</button>
-			</div>
+				{{ tag.replace(':', ': ') }}
+			</UiTag>
+			<button type="button" class="text-caption text-fg-subtle hover:text-fg hover:underline" @click="clearFilters">
+				Clear filters
+			</button>
 		</div>
 
 		<!-- Loading -->
-		<div v-if="loading && issues.length === 0" class="text-center py-12">
-			<div class="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-600 mx-auto"></div>
-			<p class="mt-4 text-gray-500">Loading issues...</p>
-		</div>
+		<UiCard v-if="loading && issues.length === 0">
+			<UiSkeleton :count="6" label="Loading issues" />
+		</UiCard>
 
 		<!-- Error -->
-		<div v-else-if="error" class="bg-error-50 dark:bg-error-900/20 text-error-700 dark:text-error-400 px-4 py-3 rounded-lg">
+		<UiAlert v-else-if="error" tone="error" action-label="Try again" @action="loadIssues()">
 			{{ error }}
-		</div>
+		</UiAlert>
 
-		<!-- Empty state with quickstart -->
-		<div v-else-if="issues.length === 0" class="max-w-2xl mx-auto">
-			<div class="text-center py-8">
-				<svg class="mx-auto h-12 w-12 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-					<path
-						stroke-linecap="round"
-						stroke-linejoin="round"
-						stroke-width="2"
-						d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
-					/>
-				</svg>
-				<h3 class="mt-2 text-lg font-medium text-gray-900 dark:text-white">No issues yet</h3>
-				<p class="mt-1 text-sm text-gray-500">
-					Configure your SDK to start capturing errors.
-				</p>
-			</div>
-
-			<!-- Quickstart guide -->
-			<div class="bg-gray-50 dark:bg-gray-700 rounded-lg p-6 mt-6">
-				<h3 class="font-medium text-gray-900 dark:text-white mb-4">
-					{{ isCloudflareWorkers ? 'Quick Setup (Cloudflare Workers)' : 'Quick Setup' }}
-				</h3>
-
-				<!-- Cloudflare Workers setup -->
-				<template v-if="isCloudflareWorkers">
-					<p class="text-sm text-gray-600 dark:text-gray-400 mb-3">
-						1. Install the SDK:
-					</p>
-					<pre class="text-sm bg-gray-900 text-gray-100 rounded-lg p-4 overflow-x-auto mb-4"><code>npm install @sentry/cloudflare --save</code></pre>
-
-					<p class="text-sm text-gray-600 dark:text-gray-400 mb-3">
-						2. Add a service binding to Sentinel and the compatibility flag in <code class="text-xs bg-gray-200 dark:bg-gray-600 px-1 rounded">wrangler.jsonc</code>:
-					</p>
-					<pre class="text-sm bg-gray-900 text-gray-100 rounded-lg p-4 overflow-x-auto mb-4"><code>{
-  "compatibility_flags": ["nodejs_als"],
-  "services": [
-    { "binding": "SENTINEL", "service": "workers-sentinel", "entrypoint": "SentinelRpc" }
-  ]
-}</code></pre>
-
-					<p class="text-sm text-gray-600 dark:text-gray-400 mb-3">
-						3. Initialize Sentry with the RPC transport:
-					</p>
-					<pre class="text-sm bg-gray-900 text-gray-100 rounded-lg p-4 overflow-x-auto"><code>import * as Sentry from "@sentry/cloudflare";
-import { waitUntil } from "cloudflare:workers";
-
-const DSN = "{{ dsn }}";
-
-export default Sentry.withSentry(
-  (env: Env) => ({
-    dsn: DSN,
-    transport: () => ({
-      send: async (envelope) => {
-        const rpcPromise = env.SENTINEL.captureEnvelope(DSN, envelope);
-        waitUntil(rpcPromise);
-        const result = await rpcPromise;
-        return { statusCode: result.status };
-      },
-      flush: async () => true,
-    }),
-  }),
-  {
-    async fetch(request, env, ctx) {
-      return new Response("Hello World!");
-    },
-  }
-);</code></pre>
-					<p class="text-xs text-gray-500 dark:text-gray-400 mt-3">
-						Using a service binding with RPC routes requests internally within Cloudflare's network, avoiding external HTTP roundtrips and reducing latency.
-					</p>
-				</template>
-
-				<!-- Default JavaScript setup -->
-				<template v-else>
-					<pre class="text-sm bg-gray-900 text-gray-100 rounded-lg p-4 overflow-x-auto"><code>import * as Sentry from '@sentry/browser';
-
-Sentry.init({
-  dsn: '{{ dsn }}',
-});</code></pre>
-				</template>
-			</div>
-		</div>
-
-		<!-- Issues list -->
-		<div v-else class="card divide-y divide-gray-200 dark:divide-gray-700">
-			<!-- Page-scoped select-all -->
-			<div class="flex items-center px-4 py-2 text-xs text-gray-500 dark:text-gray-400">
-				<div class="pr-3">
-					<input
-						type="checkbox"
-						:checked="allSelected"
-						:indeterminate="someSelected && !allSelected"
-						class="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
-						aria-label="Select all issues on this page"
-						@change="toggleSelectAll"
-					/>
-				</div>
-				<span>{{ allSelected ? 'All' : 'Select all' }} {{ issues.length }} issue{{ issues.length !== 1 ? 's' : '' }} on this page</span>
-			</div>
-			<div
-				v-for="issue in issues"
-				:key="issue.id"
-				class="flex items-start p-4 hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors"
+		<!-- Empty -->
+		<UiCard v-else-if="issues.length === 0">
+			<UiEmptyState
+				v-if="filtered"
+				:icon="CircleCheck"
+				title="No issues match"
+				description="Nothing in this status with the current filters."
 			>
-				<div class="flex items-center pt-1 pr-3">
-					<input
-						type="checkbox"
-						:checked="selectedIds.has(issue.id)"
-						class="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
-						@change="toggleSelect(issue.id)"
-					/>
-				</div>
-				<RouterLink
-					:to="`/projects/${slug}/issues/${issue.id}`"
-					class="flex-1 min-w-0"
+				<UiButton v-if="activeFilterCount" @click="clearFilters">Clear filters</UiButton>
+			</UiEmptyState>
+			<UiEmptyState v-else :icon="Plug" title="No issues yet" description="Configure your SDK to start capturing errors.">
+				<UiButton variant="primary" :icon="Plug" :to="`/setup?project=${slug}`" data-testid="empty-setup-link">
+					Set up an SDK
+				</UiButton>
+			</UiEmptyState>
+		</UiCard>
+
+		<!-- Issues -->
+		<UiCard v-else class="overflow-visible">
+			<!-- Bulk actions: sticky under the top bar; fixed at the bottom on phones -->
+			<div
+				v-if="someSelected"
+				class="z-20 flex flex-wrap items-center gap-2 border-b border-border bg-accent-subtle px-4 py-2 max-sm:fixed max-sm:inset-x-0 max-sm:bottom-0 max-sm:border-t max-sm:pb-[max(0.5rem,env(safe-area-inset-bottom))] sm:sticky sm:top-14 sm:rounded-t-[10px]"
+				data-testid="bulk-bar"
+			>
+				<UiCheckbox
+					:model-value="allSelected"
+					:indeterminate="someSelected && !allSelected"
+					aria-label="Select all issues on this page"
+					@update:model-value="toggleSelectAll"
+				/>
+				<span class="text-body-s font-medium text-accent-text" aria-live="polite">{{ selectionLabel }} selected</span>
+				<span class="flex-1" />
+				<UiButton size="sm" :icon="Check" :disabled="bulkLoading" @click="bulkUpdateStatus('resolved')">Resolve</UiButton>
+				<UiButton size="sm" :icon="EyeOff" :disabled="bulkLoading" @click="bulkUpdateStatus('ignored')">Ignore</UiButton>
+				<UiButton size="sm" :icon="History" :disabled="bulkLoading" @click="bulkUpdateStatus('unresolved')">Reopen</UiButton>
+				<UiButton
+					v-if="selectedIds.size >= 2"
+					size="sm"
+					:icon="GitMerge"
+					:loading="merging"
+					:disabled="bulkLoading"
+					@click="mergeSelected"
 				>
-					<div class="flex items-start justify-between">
-						<div class="flex-1 min-w-0">
-							<div class="flex items-center space-x-2">
-								<span :class="['badge', getLevelBadgeClass(issue.level)]">
-									{{ issue.level }}
-								</span>
-								<h3 class="text-sm font-medium text-gray-900 dark:text-white truncate">
-									{{ issue.metadata.type }}
-								</h3>
-							</div>
-							<p class="mt-1 text-sm text-gray-600 dark:text-gray-300 truncate">
-								{{ issue.metadata.value || issue.title }}
-							</p>
-							<p v-if="issue.culprit" class="mt-1 text-xs text-gray-400 truncate">
-								{{ issue.culprit }}
-							</p>
-						</div>
-
-						<div class="ml-4 flex flex-col items-end text-sm">
-							<div class="flex items-center space-x-4 text-gray-500">
-								<span title="Events">{{ issue.count.toLocaleString() }}</span>
-								<span v-if="issue.userCount > 0" title="Users">
-									{{ issue.userCount.toLocaleString() }} users
-								</span>
-							</div>
-							<p class="text-xs text-gray-400 mt-1">
-								{{ formatTimeAgo(issue.lastSeen) }}
-							</p>
-						</div>
-						<p
-							v-if="issue.snoozedUntil && new Date(issue.snoozedUntil) > new Date()"
-							class="mt-1 text-xs text-warning-600 dark:text-warning-400"
-						>
-							Snoozed until {{ new Date(issue.snoozedUntil).toLocaleString() }}
-						</p>
-					</div>
-
-					<!-- Quick actions -->
-					<div class="mt-3 flex items-center space-x-2" @click.prevent>
-						<button
-							v-if="issue.status !== 'resolved'"
-							class="text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
-							@click="updateStatus(issue, 'resolved')"
-						>
-							Resolve
-						</button>
-						<button
-							v-if="issue.status !== 'ignored'"
-							class="text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
-							@click="updateStatus(issue, 'ignored')"
-						>
-							Ignore
-						</button>
-						<button
-							v-if="issue.status !== 'unresolved'"
-							class="text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
-							@click="updateStatus(issue, 'unresolved')"
-						>
-							Reopen
-						</button>
-					</div>
-				</RouterLink>
+					{{ merging ? 'Merging...' : 'Merge' }}
+				</UiButton>
+				<UiButton size="sm" variant="danger" :icon="Trash2" :disabled="bulkLoading" @click="bulkDelete">Delete</UiButton>
+				<UiButton size="sm" variant="ghost" @click="clearSelection">Clear</UiButton>
 			</div>
-		</div>
+
+			<table class="w-full border-collapse text-left max-sm:block sm:table-fixed">
+				<caption class="sr-only">Issues</caption>
+				<thead class="max-sm:sr-only">
+					<tr class="border-b border-border bg-raised text-overline text-fg-subtle uppercase">
+						<th scope="col" class="w-10 py-2 pl-4">
+							<UiCheckbox
+								v-if="!someSelected"
+								:model-value="allSelected"
+								aria-label="Select all issues on this page"
+								@update:model-value="toggleSelectAll"
+							/>
+						</th>
+						<th scope="col" class="py-2 font-semibold">Issue</th>
+						<th scope="col" class="w-28 py-2 pr-4 text-right font-semibold">Last seen</th>
+						<th scope="col" class="w-20 py-2 pr-4 text-right font-semibold">Events</th>
+						<th scope="col" class="w-20 py-2 pr-4 text-right font-semibold">Users</th>
+					</tr>
+				</thead>
+				<tbody class="max-sm:block">
+					<tr
+						v-for="issue in issues"
+						:key="issue.id"
+						class="group border-b border-border align-top transition-colors last:border-b-0 hover:bg-raised max-sm:flex max-sm:gap-3 max-sm:px-4 max-sm:py-3"
+						:class="selectedIds.has(issue.id) ? 'bg-accent-subtle hover:bg-accent-subtle' : ''"
+						data-testid="issue-row"
+					>
+						<td class="py-3.5 pl-4 max-sm:p-0 max-sm:pt-0.5">
+							<UiCheckbox
+								:model-value="selectedIds.has(issue.id)"
+								:aria-label="`Select ${issue.metadata?.type || issue.title}`"
+								@update:model-value="toggleSelect(issue.id)"
+							/>
+						</td>
+						<td class="relative min-w-0 py-3 pr-4 max-sm:flex-1 max-sm:p-0">
+							<RouterLink :to="`/projects/${slug}/issues/${issue.id}`" class="block rounded-sm outline-none focus-visible:ring-3 focus-visible:ring-accent/40">
+								<span class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+									<UiBadge :level="issue.level" />
+									<span class="text-body font-medium text-fg">{{ issue.metadata?.type || issue.title }}</span>
+									<span class="min-w-0 truncate text-body text-fg-muted max-sm:basis-full">{{ issue.metadata?.value || issue.title }}</span>
+								</span>
+								<span class="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 text-caption text-fg-subtle">
+									<span v-if="issue.culprit" class="min-w-0 truncate font-mono">{{ issue.culprit }}</span>
+									<span v-if="issue.culprit" aria-hidden="true">·</span>
+									<span>first seen {{ timeAgo(issue.firstSeen) }}</span>
+								</span>
+								<span v-if="isSnoozed(issue)" class="mt-1 block text-caption text-level-warning">
+									Snoozed until {{ new Date(issue.snoozedUntil!).toLocaleString() }}
+								</span>
+								<!-- Phone-only numbers line (columns are hidden there) -->
+								<span class="mt-1.5 flex gap-3 text-caption sm:hidden" data-numeric>
+									<span class="text-fg">{{ formatNumber(issue.count) }} events</span>
+									<span class="text-fg">{{ formatNumber(issue.userCount) }} users</span>
+									<span class="text-fg-subtle">{{ timeAgo(issue.lastSeen) }}</span>
+								</span>
+							</RouterLink>
+							<!-- Quick actions: on hover/focus (desktop), always on phones -->
+							<div
+								class="mt-1.5 flex items-center gap-1 sm:pointer-events-none sm:absolute sm:top-2 sm:right-2 sm:mt-0 sm:rounded-lg sm:border sm:border-border sm:bg-surface sm:p-0.5 sm:opacity-0 sm:shadow-xs sm:transition-opacity sm:group-focus-within:pointer-events-auto sm:group-focus-within:opacity-100 sm:group-hover:pointer-events-auto sm:group-hover:opacity-100">
+								<UiButton v-if="issue.status !== 'resolved'" size="sm" variant="ghost" :icon="Check" class="max-sm:-ml-2.5" @click="updateStatus(issue, 'resolved')">
+									Resolve
+								</UiButton>
+								<UiButton v-if="issue.status !== 'ignored'" size="sm" variant="ghost" :icon="EyeOff" @click="updateStatus(issue, 'ignored')">
+									Ignore
+								</UiButton>
+								<UiButton v-if="issue.status !== 'unresolved'" size="sm" variant="ghost" :icon="Eye" @click="updateStatus(issue, 'unresolved')">
+									Reopen
+								</UiButton>
+							</div>
+						</td>
+						<td class="py-3.5 pr-4 text-right text-body-s text-fg-subtle max-sm:hidden" data-numeric>{{ timeAgo(issue.lastSeen) }}</td>
+						<td class="py-3.5 pr-4 text-right text-body-s font-medium text-fg max-sm:hidden" data-numeric>{{ formatNumber(issue.count) }}</td>
+						<td class="py-3.5 pr-4 text-right text-body-s font-medium text-fg max-sm:hidden" data-numeric>{{ formatNumber(issue.userCount) }}</td>
+					</tr>
+				</tbody>
+			</table>
+		</UiCard>
 
 		<!-- Load more -->
-		<div v-if="hasMore" class="mt-4 text-center">
-			<button
-				class="btn btn-secondary"
-				:disabled="loading"
-				@click="loadIssues(true)"
-			>
-				<span v-if="loading">Loading...</span>
-				<span v-else>Load More</span>
-			</button>
+		<div v-if="hasMore && issues.length > 0" class="flex items-center justify-between gap-3">
+			<span class="text-caption text-fg-subtle">Showing {{ issues.length }}</span>
+			<UiButton size="sm" :loading="loadingMore" @click="loadIssues(true)">
+				{{ loadingMore ? 'Loading...' : 'Load More' }}
+			</UiButton>
 		</div>
 	</div>
 </template>

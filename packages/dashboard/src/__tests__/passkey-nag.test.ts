@@ -110,3 +110,21 @@ describe('passkey nag dismissal is per-visit only', () => {
 		expect(rePrompted.find('[data-testid="passkey-nag"]').exists()).toBe(true);
 	});
 });
+
+describe('passkey nag is a real modal dialog', () => {
+	it('opens modally and treats Esc as "Not now"', async () => {
+		const { pinia, store } = seedAuth({ hasPasskey: false });
+		const wrapper = mount(PasskeyNag, { attachTo: document.body, global: { plugins: [pinia] } });
+		await flushPromises();
+		const dialog = wrapper.get('[data-testid="passkey-nag"]').element as HTMLDialogElement;
+		expect(dialog.tagName).toBe('DIALOG');
+		expect(dialog.open).toBe(true);
+		expect(dialog.getAttribute('aria-labelledby')).toBeTruthy();
+
+		dialog.dispatchEvent(new Event('cancel', { cancelable: true }));
+		await flushPromises();
+		expect(store.dismissedForThisVisit).toBe(true);
+		expect(wrapper.find('[data-testid="passkey-nag"]').exists()).toBe(false);
+		wrapper.unmount();
+	});
+});

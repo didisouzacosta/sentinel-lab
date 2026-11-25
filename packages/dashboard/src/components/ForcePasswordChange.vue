@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ref } from 'vue';
 import { useAuthStore } from '../stores/auth';
+import AuthShell from './app/AuthShell.vue';
+import { UiAlert, UiButton, UiFormField, UiInput } from './ui';
 
 const authStore = useAuthStore();
 
@@ -36,93 +38,63 @@ async function submit() {
 </script>
 
 <template>
-	<div
-		class="fixed inset-0 z-50 flex items-center justify-center bg-gray-900/80 backdrop-blur-sm"
-		data-testid="force-password-change"
-	>
-		<div class="card p-8 w-full max-w-md">
-			<div class="flex items-center space-x-3 mb-4">
-				<div
-					class="w-10 h-10 rounded-full bg-warning-100 dark:bg-warning-900/30 text-warning-700 dark:text-warning-300 flex items-center justify-center"
-				>
-					<svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-						<path
-							stroke-linecap="round"
-							stroke-linejoin="round"
-							stroke-width="2"
-							d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
-						/>
-					</svg>
-				</div>
-				<h1 class="text-xl font-semibold text-gray-900 dark:text-white">
-					Set a new password
-				</h1>
-			</div>
+	<!-- Replaces the whole app until the temporary password is changed -->
+	<div data-testid="force-password-change">
+		<AuthShell>
+			<header class="flex flex-col gap-3">
+				<h1 class="text-heading-l text-fg">Set a new password</h1>
+				<UiAlert tone="warning">
+					Your account was created or reset by an administrator with a temporary password.
+					Choose a new password to continue — everything else stays blocked until then.
+				</UiAlert>
+			</header>
 
-			<p class="text-sm text-gray-500 mb-6">
-				Your account was created or reset by an administrator with a temporary password.
-				Choose a new password to continue — everything else stays blocked until then.
-			</p>
-
-			<form class="space-y-4" @submit.prevent="submit">
-				<div>
-					<label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-						Current password (the temporary one)
-					</label>
-					<input
+			<form class="flex flex-col gap-5" @submit.prevent="submit">
+				<UiFormField v-slot="f" label="Current password (the temporary one)" id="force-current">
+					<UiInput
+						:id="f.id"
 						v-model="currentPassword"
 						type="password"
 						required
 						autocomplete="current-password"
-						class="w-full px-3 py-2 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg text-sm text-gray-900 dark:text-gray-100"
 						data-testid="force-password-current"
 					/>
-				</div>
-				<div>
-					<label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-						New password
-					</label>
-					<input
+				</UiFormField>
+				<UiFormField v-slot="f" label="New password" id="force-new" help="At least 8 characters">
+					<UiInput
+						:id="f.id"
 						v-model="newPassword"
+						:aria-describedby="f.describedBy"
 						type="password"
 						required
 						autocomplete="new-password"
-						class="w-full px-3 py-2 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg text-sm text-gray-900 dark:text-gray-100"
 						data-testid="force-password-new"
 					/>
-				</div>
-				<div>
-					<label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-						Confirm new password
-					</label>
-					<input
+				</UiFormField>
+				<UiFormField v-slot="f" label="Confirm new password" id="force-confirm">
+					<UiInput
+						:id="f.id"
 						v-model="confirmPassword"
 						type="password"
 						required
 						autocomplete="new-password"
-						class="w-full px-3 py-2 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg text-sm text-gray-900 dark:text-gray-100"
 						data-testid="force-password-confirm"
 					/>
-				</div>
+				</UiFormField>
 
-				<div
-					v-if="error"
-					class="bg-error-50 dark:bg-error-900/20 text-error-700 dark:text-error-400 px-4 py-3 rounded-lg text-sm"
-					data-testid="force-password-error"
-				>
-					{{ error }}
-				</div>
+				<UiAlert v-if="error" tone="error" data-testid="force-password-error">{{ error }}</UiAlert>
 
-				<button
+				<UiButton
 					type="submit"
-					class="btn btn-primary w-full"
-					:disabled="saving || !currentPassword || !newPassword || !confirmPassword"
+					variant="primary"
+					class="h-11 w-full"
+					:loading="saving"
+					:disabled="!currentPassword || !newPassword || !confirmPassword"
 					data-testid="force-password-submit"
 				>
-					<span v-if="saving">Saving…</span>
-					<span v-else>Set password and sign in again</span>
-				</button>
+					{{ saving ? 'Saving…' : 'Set password and sign in again' }}
+				</UiButton>
 			</form>
-		</div>
+		</AuthShell>
 	</div>
 </template>

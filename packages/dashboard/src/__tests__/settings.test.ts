@@ -1,5 +1,6 @@
 import { flushPromises, mount } from '@vue/test-utils';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { confirmState, settleConfirm } from '../composables/useConfirm';
 import { useAuthStore } from '../stores/auth';
 import Layout from '../views/Layout.vue';
 import Settings from '../views/Settings.vue';
@@ -128,12 +129,14 @@ describe('settings lists adds and deletes passkeys with required names', () => {
 		const verifyCall = mockApi.calls.find((c) => c.url === '/api/auth/webauthn/verify/register');
 		expect(verifyCall?.body).toMatchObject({ ceremonyId: 'cer-reg-1', name: 'Backup Key' });
 
-		// Deleting the last passkey warns it is the last one
-		const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+		// Deleting the last passkey asks for confirmation (useConfirm) and warns it is the last one
 		const deleteButtons = wrapper.findAll('button').filter((b) => b.text() === 'Delete');
 		await deleteButtons[0].trigger('click');
 		await flushPromises();
-		expect(confirmSpy.mock.calls[0][0]).toContain('last passkey');
+		expect(confirmState.current?.tone).toBe('danger');
+		expect(confirmState.current?.description).toContain('last passkey');
+		settleConfirm(true);
+		await flushPromises();
 		expect(
 			mockApi.calls.some(
 				(c) => c.method === 'post' && c.url === '/api/auth/webauthn/credentials/delete',
@@ -142,7 +145,30 @@ describe('settings lists adds and deletes passkeys with required names', () => {
 
 		const store = useAuthStore(pinia);
 		expect(store.hasPasskey).toBe(false);
-		confirmSpy.mockRestore();
+	});
+
+	it('keeps the passkey when the confirmation is cancelled', async () => {
+		onGet('/api/auth/webauthn/credentials', () => ({
+			credentials: [
+				{ id: 'cred-1', name: 'YubiKey 5C', createdAt: '2026-01-01T10:00:00Z', lastUsedAt: null },
+			],
+		}));
+		const { pinia } = seedAuth({ hasPasskey: true });
+		const router = testRouter();
+		await atRoute(router, '/settings?tab=security');
+		const wrapper = mount(Settings, { global: { plugins: [pinia, router] } });
+		await flushPromises();
+
+		await wrapper
+			.findAll('button')
+			.filter((b) => b.text() === 'Delete')[0]
+			.trigger('click');
+		await flushPromises();
+		settleConfirm(false);
+		await flushPromises();
+		expect(mockApi.calls.some((c) => c.url === '/api/auth/webauthn/credentials/delete')).toBe(
+			false,
+		);
 	});
 });
 

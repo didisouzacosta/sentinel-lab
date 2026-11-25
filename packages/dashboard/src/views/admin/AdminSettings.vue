@@ -1,6 +1,11 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue';
 import { api } from '../../api/client';
+import AppPageHeader from '../../components/app/AppPageHeader.vue';
+import { UiAlert, UiCard, UiSkeleton, UiSwitch, UiTag } from '../../components/ui';
+import { useToast } from '../../composables/useToast';
+
+const toast = useToast();
 
 const registrationOpen = ref<boolean | null>(null);
 const loading = ref(true);
@@ -34,8 +39,9 @@ async function toggleRegistration() {
 			{ registrationOpen: !registrationOpen.value },
 		);
 		registrationOpen.value = response.settings.registrationOpen;
+		toast.success(registrationOpen.value ? 'Registration opened' : 'Registration closed');
 	} catch (err) {
-		error.value = err instanceof Error ? err.message : 'Failed to update settings';
+		toast.error(err instanceof Error ? err.message : 'Failed to update settings');
 	} finally {
 		saving.value = false;
 	}
@@ -43,52 +49,34 @@ async function toggleRegistration() {
 </script>
 
 <template>
-	<div>
-		<h1 class="text-2xl font-bold text-gray-900 dark:text-white mb-6">Settings</h1>
+	<div class="flex max-w-3xl flex-col gap-5">
+		<AppPageHeader title="Settings" subtitle="Instance-wide options" />
 
-		<div v-if="loading" class="text-center py-12">
-			<div class="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-600 mx-auto"></div>
-		</div>
+		<UiSkeleton v-if="loading" variant="block" label="Loading settings" class="h-28" />
 
-		<div
-			v-else-if="error"
-			class="bg-error-50 dark:bg-error-900/20 text-error-700 dark:text-error-400 px-4 py-3 rounded-lg"
-		>
-			{{ error }}
-		</div>
+		<UiAlert v-else-if="error" tone="error" action-label="Try again" @action="load">{{ error }}</UiAlert>
 
-		<div v-else class="card p-6 max-w-2xl">
-			<h2 class="text-lg font-semibold text-gray-900 dark:text-white mb-2">Registration</h2>
-			<p class="text-sm text-gray-500 mb-4">
-				When open, anyone can create an account (the first account on a fresh install still
-				requires the setup token). When closed, only administrators can add users.
-			</p>
-
-			<div class="flex items-center space-x-4">
-				<button
-					class="btn"
-					:class="registrationOpen ? 'btn-danger' : 'btn-primary'"
+		<UiCard v-else title="Registration">
+			<div class="flex items-center gap-4 px-4 py-4">
+				<div class="min-w-0 flex-1">
+					<div class="flex items-center gap-2">
+						<span id="registration-label" class="text-body-s font-medium text-fg">Open registration</span>
+						<UiTag :tone="registrationOpen ? 'accent' : 'neutral'" data-testid="admin-settings-registration-state">{{ registrationOpen ? 'Open' : 'Closed' }}</UiTag>
+					</div>
+					<p id="registration-help" class="mt-1 text-body-s text-fg-muted">
+						Anyone can create an account (the first account on a fresh install still needs the setup token).
+						When off, only administrators add users.
+					</p>
+				</div>
+				<UiSwitch
+					:model-value="!!registrationOpen"
 					:disabled="saving"
+					aria-labelledby="registration-label"
+					aria-describedby="registration-help"
 					data-testid="admin-settings-registration-toggle"
-					@click="toggleRegistration"
-				>
-					<span v-if="saving">Saving…</span>
-					<span v-else>
-						{{ registrationOpen ? 'Close registration' : 'Open registration' }}
-					</span>
-				</button>
-				<span
-					class="inline-flex items-center px-2 py-1 text-xs font-medium rounded-full"
-					:class="
-						registrationOpen
-							? 'bg-success-100 dark:bg-success-900/30 text-success-700 dark:text-success-300'
-							: 'bg-gray-100 dark:bg-gray-600 text-gray-700 dark:text-gray-300'
-					"
-					data-testid="admin-settings-registration-state"
-				>
-					{{ registrationOpen ? 'Open' : 'Closed' }}
-				</span>
+					@update:model-value="toggleRegistration"
+				/>
 			</div>
-		</div>
+		</UiCard>
 	</div>
 </template>

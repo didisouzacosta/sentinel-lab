@@ -1,8 +1,29 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { RouterLink, useRoute } from 'vue-router';
+import { Check, Clock, Eye, EyeOff, Trash2 } from 'lucide-vue-next';
+import { computed, onMounted, ref, watch } from 'vue';
+import { useRoute } from 'vue-router';
 import { api } from '../api/client';
 import AttachmentList from '../components/AttachmentList.vue';
+import AppStackFrame from '../components/app/AppStackFrame.vue';
+import {
+	UiAlert,
+	UiAvatar,
+	UiBadge,
+	UiButton,
+	UiCard,
+	UiDescriptionList,
+	UiFormField,
+	UiInput,
+	UiMarkdown,
+	UiMenu,
+	UiSegmented,
+	UiSelect,
+	UiSkeleton,
+	UiTag,
+} from '../components/ui';
+import { useConfirm } from '../composables/useConfirm';
+import { useToast } from '../composables/useToast';
+import { timeAgo } from '../lib/format';
 import { renderMarkdown } from '../lib/markdown';
 import { type ResolvedFrame, resolveFrame } from '../lib/sourcemap-resolver';
 import { useAuthStore } from '../stores/auth';
@@ -80,6 +101,8 @@ interface Activity {
 
 const route = useRoute();
 const authStore = useAuthStore();
+const toast = useToast();
+const askConfirm = useConfirm();
 const slug = computed(() => route.params.slug as string);
 const issueId = computed(() => route.params.issueId as string);
 
@@ -95,14 +118,62 @@ const resolving = ref(false);
 const activity = ref<Activity[]>([]);
 const newComment = ref('');
 const submittingComment = ref(false);
-const showSnoozeMenu = ref(false);
-const snoozeDropdownRef = ref<HTMLElement | null>(null);
 
-function handleClickOutside(event: MouseEvent) {
-	if (snoozeDropdownRef.value && !snoozeDropdownRef.value.contains(event.target as Node)) {
-		showSnoozeMenu.value = false;
-	}
-}
+const SNOOZE_OPTIONS = [
+	{ value: '1h', label: '1 hour', icon: Clock },
+	{ value: '1d', label: '1 day', icon: Clock },
+	{ value: '3d', label: '3 days', icon: Clock },
+	{ value: '1w', label: '1 week', icon: Clock },
+];
+const sourceView = computed({
+	get: () => (showOriginal.value ? 'original' : 'minified'),
+	set: (v: string) => {
+		showOriginal.value = v === 'original';
+	},
+});
+const selectedEventId = computed({
+	get: () => selectedEvent.value?.event_id ?? '',
+	set: (id: string) => {
+		selectedEvent.value = events.value.find((e) => e.event_id === id) || null;
+	},
+});
+// Offer Original/Minified only when a source map actually matched a frame
+const anyMapped = computed(() => [...resolvedFrames.value.values()].some((r) => r.resolved));
+const selectedIndex = computed(() =>
+	events.value.findIndex((e) => e.event_id === selectedEvent.value?.event_id),
+);
+const eventInfo = computed(() => {
+	const e = selectedEvent.value;
+	if (!e) return [];
+	return [
+		{ label: 'Event ID', value: e.event_id, mono: true },
+		{ label: 'Timestamp', value: formatTime(e.timestamp) },
+		...(e.environment ? [{ label: 'Environment', value: e.environment }] : []),
+		...(e.release ? [{ label: 'Release', value: e.release, mono: true }] : []),
+	];
+});
+const userInfo = computed(() => {
+	const u = selectedEvent.value?.user;
+	if (!u) return [];
+	return [
+		...(u.id ? [{ label: 'ID', value: u.id, mono: true }] : []),
+		...(u.email ? [{ label: 'Email', value: u.email }] : []),
+		...(u.ip_address ? [{ label: 'IP Address', value: u.ip_address, mono: true }] : []),
+	];
+});
+const levelText: Record<string, string> = {
+	fatal: 'text-level-fatal',
+	error: 'text-level-error',
+	warning: 'text-level-warning',
+	info: 'text-level-info',
+	debug: 'text-level-debug',
+};
+const STATUS_DONE: Record<string, string> = {
+	resolved: 'resolved',
+	ignored: 'ignored',
+	unresolved: 'reopened',
+};
+const errorText = (err: unknown) => (err instanceof Error ? err.message : 'unknown error');
 
 const isSnoozed = computed(
 	() => issue.value?.snoozedUntil && new Date(issue.value.snoozedUntil) > new Date(),
@@ -137,10 +208,12 @@ async function snoozeIssue(duration: string) {
 			{ duration },
 		);
 		issue.value.snoozedUntil = response.issue.snoozedUntil;
+		toast.success(`Snoozed until ${formatTime(response.issue.snoozedUntil ?? '')}`, {
+			action: { label: 'Undo', onClick: () => void unsnoozeIssue() },
+		});
 	} catch (err) {
-		console.error('Failed to snooze issue:', err);
+		toast.error(`Could not snooze the issue: ${errorText(err)}`);
 	}
-	showSnoozeMenu.value = false;
 }
 
 async function unsnoozeIssue() {
@@ -148,8 +221,9 @@ async function unsnoozeIssue() {
 	try {
 		await api.delete(`/api/projects/${slug.value}/issues/${issueId.value}/snooze`);
 		issue.value.snoozedUntil = null;
+		toast.success('Issue unsnoozed');
 	} catch (err) {
-		console.error('Failed to unsnooze issue:', err);
+		toast.error(`Could not unsnooze the issue: ${errorText(err)}`);
 	}
 }
 
@@ -215,9 +289,10 @@ async function updateStatus(newStatus: string) {
 	try {
 		await api.patch(`/api/projects/${slug.value}/issues/${issueId.value}`, { status: newStatus });
 		issue.value.status = newStatus;
+		toast.success(`Issue ${STATUS_DONE[newStatus] ?? 'updated'}`);
 		await loadActivity();
 	} catch (err) {
-		console.error('Failed to update status:', err);
+		toast.error(`Could not update the issue: ${errorText(err)}`);
 	}
 }
 
@@ -228,7 +303,7 @@ async function loadActivity() {
 		);
 		activity.value = response.activity;
 	} catch (err) {
-		console.error('Failed to load activity:', err);
+		toast.error(`Could not refresh the activity: ${errorText(err)}`);
 	}
 }
 
@@ -243,18 +318,28 @@ async function addComment() {
 		newComment.value = '';
 		await loadActivity();
 	} catch (err) {
-		console.error('Failed to add comment:', err);
+		toast.error(`Could not post comment: ${errorText(err)}`, {
+			action: { label: 'Retry', onClick: () => void addComment() },
+		});
 	} finally {
 		submittingComment.value = false;
 	}
 }
 
 async function deleteComment(commentId: string) {
+	const ok = await askConfirm({
+		title: 'Delete this comment?',
+		description: 'It is removed from the activity for everyone. This cannot be undone.',
+		confirmLabel: 'Delete comment',
+		tone: 'danger',
+	});
+	if (!ok) return;
 	try {
 		await api.delete(`/api/projects/${slug.value}/issues/${issueId.value}/comments/${commentId}`);
 		await loadActivity();
+		toast.success('Comment deleted');
 	} catch (err) {
-		console.error('Failed to delete comment:', err);
+		toast.error(`Could not delete the comment: ${errorText(err)}`);
 	}
 }
 
@@ -263,11 +348,10 @@ function formatTime(dateString: string): string {
 }
 
 function toggleFrame(index: number) {
-	if (expandedFrames.value.has(index)) {
-		expandedFrames.value.delete(index);
-	} else {
-		expandedFrames.value.add(index);
-	}
+	const next = new Set(expandedFrames.value);
+	if (next.has(index)) next.delete(index);
+	else next.add(index);
+	expandedFrames.value = next;
 }
 
 function getStackFrames(): StackFrame[] {
@@ -276,559 +360,255 @@ function getStackFrames(): StackFrame[] {
 	return [...exc.stacktrace.frames].reverse();
 }
 
-function getLevelClass(level: string): string {
-	switch (level) {
-		case 'fatal':
-		case 'error':
-			return 'text-error-600 dark:text-error-400';
-		case 'warning':
-			return 'text-warning-600 dark:text-warning-400';
-		default:
-			return 'text-primary-600 dark:text-primary-400';
-	}
-}
-
-onMounted(() => {
-	loadIssue();
-	document.addEventListener('click', handleClickOutside);
-});
-
-onBeforeUnmount(() => {
-	document.removeEventListener('click', handleClickOutside);
-});
+onMounted(() => loadIssue());
 </script>
 
 <template>
 	<div>
 		<!-- Loading -->
-		<div v-if="loading" class="text-center py-12">
-			<div class="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-600 mx-auto"></div>
+		<div v-if="loading" class="flex flex-col gap-5" data-testid="issue-loading">
+			<UiSkeleton variant="line" :count="3" label="Loading issue" class="max-w-xl" />
+			<UiSkeleton variant="block" label="Loading metrics" class="h-[70px]" />
+			<div class="grid gap-5 lg:grid-cols-[1fr_340px]">
+				<UiSkeleton variant="block" label="Loading stack trace" class="h-80" />
+				<UiSkeleton variant="block" label="Loading event" class="h-48" />
+			</div>
 		</div>
 
 		<!-- Error -->
-		<div v-else-if="error" class="bg-error-50 dark:bg-error-900/20 text-error-700 dark:text-error-400 px-4 py-3 rounded-lg">
-			{{ error }}
-		</div>
+		<UiAlert v-else-if="error" tone="error" action-label="Try again" @action="loadIssue">{{ error }}</UiAlert>
 
 		<!-- Issue detail -->
-		<div v-else-if="issue && selectedEvent">
+		<div v-else-if="issue && selectedEvent" class="flex flex-col gap-5 max-sm:pb-20">
 			<!-- Header -->
-			<div class="mb-6">
-				<div class="flex items-center space-x-2 text-sm text-gray-500 mb-2">
-					<RouterLink :to="`/projects/${slug}/issues`" class="hover:text-gray-700">
-						Issues
-					</RouterLink>
-					<span>/</span>
-					<span>{{ issue.metadata.type }}</span>
+			<header class="flex flex-col gap-3">
+				<div class="flex flex-wrap items-center gap-2">
+					<UiBadge :level="issue.level" />
+					<UiBadge :status="issue.status" />
+					<UiTag v-if="selectedEvent.environment">{{ selectedEvent.environment }}</UiTag>
+					<UiTag v-if="selectedEvent.release">{{ selectedEvent.release }}</UiTag>
 				</div>
-
-				<h1 class="text-xl font-bold text-gray-900 dark:text-white mb-2">
-					<span :class="getLevelClass(issue.level)">{{ issue.metadata.type }}:</span>
-					{{ titleValue }}
-				</h1>
-
-				<p v-if="issue.culprit" class="text-sm text-gray-500">{{ issue.culprit }}</p>
-			</div>
-
-			<!-- Actions and stats -->
-			<div class="flex items-center justify-between mb-6">
-				<div class="flex items-center space-x-4">
-					<button
-						v-if="issue.status !== 'resolved'"
-						class="btn btn-secondary"
-						@click="updateStatus('resolved')"
-					>
-						Resolve
-					</button>
-					<button
-						v-if="issue.status !== 'ignored'"
-						class="btn btn-secondary"
-						@click="updateStatus('ignored')"
-					>
-						Ignore
-					</button>
-					<button
-						v-if="issue.status !== 'unresolved'"
-						class="btn btn-secondary"
-						@click="updateStatus('unresolved')"
-					>
-						Reopen
-					</button>
-
-					<!-- Snooze dropdown -->
-					<div ref="snoozeDropdownRef" class="relative">
-						<button
-							v-if="!isSnoozed"
-							class="btn btn-secondary"
-							@click="showSnoozeMenu = !showSnoozeMenu"
-						>
-							Snooze
-						</button>
-						<button
-							v-else
-							class="btn btn-secondary"
-							@click="unsnoozeIssue()"
-						>
-							Unsnooze
-						</button>
-						<div
-							v-if="showSnoozeMenu"
-							class="absolute left-0 mt-1 w-40 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg z-10"
-						>
-							<button
-								class="block w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-t-lg"
-								@click="snoozeIssue('1h')"
-							>
-								1 hour
-							</button>
-							<button
-								class="block w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
-								@click="snoozeIssue('1d')"
-							>
-								1 day
-							</button>
-							<button
-								class="block w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
-								@click="snoozeIssue('3d')"
-							>
-								3 days
-							</button>
-							<button
-								class="block w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-b-lg"
-								@click="snoozeIssue('1w')"
-							>
-								1 week
-							</button>
-						</div>
+				<div class="flex flex-wrap items-start gap-3">
+					<div class="min-w-0 flex-1">
+						<h1 class="text-heading-l break-words text-fg">
+							<span :class="levelText[issue.level] ?? 'text-level-info'">{{ issue.metadata.type }}:</span>
+							{{ titleValue }}
+						</h1>
+						<p v-if="issue.culprit" class="mt-1 font-mono text-body-s text-fg-subtle">{{ issue.culprit }}</p>
+					</div>
+					<!-- Actions (desktop/tablet); phones get the fixed bar below -->
+					<div class="flex flex-wrap items-center gap-2 max-sm:hidden">
+						<UiButton v-if="issue.status !== 'resolved'" variant="primary" :icon="Check" @click="updateStatus('resolved')">Resolve</UiButton>
+						<UiButton v-if="issue.status !== 'ignored'" :icon="EyeOff" @click="updateStatus('ignored')">Ignore</UiButton>
+						<UiButton v-if="issue.status !== 'unresolved'" :icon="Eye" @click="updateStatus('unresolved')">Reopen</UiButton>
+						<UiMenu v-if="!isSnoozed" label="Snooze" title="Snooze for" :items="SNOOZE_OPTIONS" @select="snoozeIssue">
+							<template #trigger="{ props: menuProps }">
+								<UiButton v-bind="menuProps" :icon="Clock">Snooze</UiButton>
+							</template>
+						</UiMenu>
+						<UiButton v-else :icon="Clock" @click="unsnoozeIssue()">Unsnooze</UiButton>
 					</div>
 				</div>
+			</header>
 
-				<div class="flex items-center space-x-6 text-sm text-gray-500">
-					<div>
-						<span class="font-medium text-gray-900 dark:text-white">{{ issue.count.toLocaleString() }}</span>
-						events
-					</div>
-					<div v-if="issue.userCount > 0">
-						<span class="font-medium text-gray-900 dark:text-white">{{ issue.userCount.toLocaleString() }}</span>
-						users
-					</div>
-					<div>
-						First seen <span class="font-medium text-gray-900 dark:text-white">{{ formatTime(issue.firstSeen) }}</span>
-					</div>
+			<!-- Numbers -->
+			<dl class="grid grid-cols-2 overflow-hidden rounded-[10px] border border-border bg-surface sm:grid-cols-4" data-numeric>
+				<div class="flex flex-col gap-1 border-border px-4 py-3 max-sm:border-b sm:border-r">
+					<dt class="text-caption text-fg-subtle">Events</dt>
+					<dd class="text-heading-m text-fg">{{ issue.count.toLocaleString() }}</dd>
 				</div>
-			</div>
+				<div class="flex flex-col gap-1 border-border px-4 py-3 max-sm:border-b max-sm:border-l sm:border-r">
+					<dt class="text-caption text-fg-subtle">Users</dt>
+					<dd class="text-heading-m text-fg">{{ issue.userCount.toLocaleString() }}</dd>
+				</div>
+				<div class="flex flex-col gap-1 border-border px-4 py-3 sm:border-r">
+					<dt class="text-caption text-fg-subtle">First seen</dt>
+					<dd class="text-heading-m text-fg" :title="formatTime(issue.firstSeen)">{{ timeAgo(issue.firstSeen) }}</dd>
+				</div>
+				<div class="flex flex-col gap-1 border-border px-4 py-3 max-sm:border-l">
+					<dt class="text-caption text-fg-subtle">Last seen</dt>
+					<dd class="text-heading-m text-fg" :title="formatTime(issue.lastSeen)">{{ timeAgo(issue.lastSeen) }}</dd>
+				</div>
+			</dl>
 
 			<!-- Snooze banner -->
-			<div
-				v-if="isSnoozed"
-				class="mb-4 flex items-center justify-between bg-warning-50 dark:bg-warning-900/20 text-warning-700 dark:text-warning-400 px-4 py-3 rounded-lg"
-			>
-				<span>Snoozed until {{ formatTime(issue.snoozedUntil!) }}</span>
-				<button
-					class="text-sm font-medium hover:underline"
-					@click="unsnoozeIssue()"
-				>
-					Unsnooze
-				</button>
-			</div>
+			<UiAlert v-if="isSnoozed" tone="warning" action-label="Unsnooze" @action="unsnoozeIssue()">
+				Snoozed until {{ formatTime(issue.snoozedUntil!) }}
+			</UiAlert>
 
 			<!-- Event selector -->
-			<div v-if="events.length > 1" class="mb-4">
-				<label class="label">Event</label>
-				<select
-					class="input w-auto"
-					:value="selectedEvent.event_id"
-					@change="selectedEvent = events.find(e => e.event_id === ($event.target as HTMLSelectElement).value) || null"
-				>
-					<option v-for="event in events" :key="event.event_id" :value="event.event_id">
-						{{ formatTime(event.timestamp) }}
-						<span v-if="event.environment"> - {{ event.environment }}</span>
-					</option>
-				</select>
+			<div v-if="events.length > 1" class="flex flex-wrap items-end gap-3">
+				<UiFormField v-slot="f" label="Event" id="event-select">
+					<UiSelect :id="f.id" v-model="selectedEventId" class="w-full sm:w-80">
+						<option v-for="event in events" :key="event.event_id" :value="event.event_id">
+							{{ formatTime(event.timestamp) }}{{ event.environment ? ` — ${event.environment}` : '' }}
+						</option>
+					</UiSelect>
+				</UiFormField>
+				<span class="pb-2.5 text-caption text-fg-subtle">{{ selectedIndex + 1 }} of {{ events.length }} loaded</span>
 			</div>
 
 			<!-- Event details -->
-			<div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-				<!-- Stack trace -->
-				<div class="lg:col-span-2 space-y-4">
+			<div class="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_340px]">
+				<div class="flex min-w-0 flex-col gap-5">
 					<!-- Message (full, rendered as markdown; the title above carries only its first 80 chars) -->
-					<div v-if="renderedMessage" class="card" data-testid="issue-message">
-						<div class="p-4 border-b border-gray-200 dark:border-gray-700">
-							<h2 class="font-semibold text-gray-900 dark:text-white">Message</h2>
-						</div>
-						<div class="p-4 markdown-body text-sm" v-html="renderedMessage"></div>
-					</div>
+					<UiCard v-if="renderedMessage" title="Message" data-testid="issue-message">
+						<UiMarkdown :html="renderedMessage" class="px-4 py-3.5" />
+					</UiCard>
 
-					<!-- Exception -->
-					<div class="card">
-						<div class="p-4 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
-							<h2 class="font-semibold text-gray-900 dark:text-white">Stack Trace</h2>
-							<div v-if="resolvedFrames.size > 0" class="flex items-center space-x-2">
-								<span class="text-xs text-gray-500">{{ showOriginal ? 'Original' : 'Minified' }}</span>
-								<button
-									class="relative inline-flex h-5 w-9 items-center rounded-full transition-colors"
-									:class="showOriginal ? 'bg-primary-600' : 'bg-gray-300 dark:bg-gray-600'"
-									@click="showOriginal = !showOriginal"
-								>
-									<span
-										class="inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform"
-										:class="showOriginal ? 'translate-x-4' : 'translate-x-0.5'"
-									/>
-								</button>
-							</div>
-							<div v-else-if="resolving" class="text-xs text-gray-400">Resolving source maps...</div>
-						</div>
-
-						<div v-if="getStackFrames().length === 0" class="p-4 text-gray-500">
-							No stack trace available
-						</div>
-
-						<div v-else class="divide-y divide-gray-200 dark:divide-gray-700">
-							<div
+					<!-- Stack trace -->
+					<UiCard title="Stack Trace">
+						<template #actions>
+							<UiSegmented
+								v-if="anyMapped"
+								v-model="sourceView"
+								label="Source"
+								:options="[
+									{ value: 'original', label: 'Original' },
+									{ value: 'minified', label: 'Minified' },
+								]"
+							/>
+							<span v-else-if="resolving" class="text-caption text-fg-subtle" aria-live="polite">Resolving source maps…</span>
+						</template>
+						<p v-if="getStackFrames().length === 0" class="px-4 py-4 text-body-s text-fg-muted">No stack trace available</p>
+						<div v-else>
+							<AppStackFrame
 								v-for="(frame, index) in getStackFrames()"
 								:key="index"
-								class="group"
-							>
-								<button
-									class="w-full p-3 text-left hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors"
-									@click="toggleFrame(index)"
-								>
-									<div class="flex items-start justify-between">
-										<div class="flex-1 min-w-0">
-											<div class="flex items-center space-x-2">
-												<span
-													v-if="frame.in_app !== false"
-													class="w-2 h-2 bg-primary-500 rounded-full"
-													title="In-app frame"
-												></span>
-												<span
-													v-else
-													class="w-2 h-2 bg-gray-300 rounded-full"
-													title="System frame"
-												></span>
-												<template v-if="showOriginal && resolvedFrames.get(index)?.resolved">
-													<code class="text-sm font-medium text-gray-900 dark:text-white truncate">
-														{{ resolvedFrames.get(index)!.originalFunction || frame.function || '(anonymous)' }}
-													</code>
-													<span class="text-xs text-green-500 ml-1" title="Resolved via source map">mapped</span>
-												</template>
-												<code v-else class="text-sm font-medium text-gray-900 dark:text-white truncate">
-													{{ frame.function || '(anonymous)' }}
-												</code>
-											</div>
-											<template v-if="showOriginal && resolvedFrames.get(index)?.resolved">
-												<p class="text-xs text-gray-500 mt-1 truncate">
-													<span class="text-primary-500">{{ resolvedFrames.get(index)!.originalFilename }}</span>
-													<span v-if="resolvedFrames.get(index)!.originalLineno">:{{ resolvedFrames.get(index)!.originalLineno }}</span>
-													<span v-if="resolvedFrames.get(index)!.originalColno">:{{ resolvedFrames.get(index)!.originalColno }}</span>
-												</p>
-											</template>
-											<p v-else class="text-xs text-gray-500 mt-1 truncate">
-												{{ frame.filename }}
-												<span v-if="frame.lineno">:{{ frame.lineno }}</span>
-												<span v-if="frame.colno">:{{ frame.colno }}</span>
-											</p>
-										</div>
-										<svg
-											class="w-5 h-5 text-gray-400 transition-transform"
-											:class="{ 'rotate-180': expandedFrames.has(index) }"
-											fill="none"
-											stroke="currentColor"
-											viewBox="0 0 24 24"
-										>
-											<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
-										</svg>
-									</div>
-								</button>
-
-								<!-- Context -->
-								<div v-if="expandedFrames.has(index) && (frame.context_line || frame.pre_context || frame.post_context)" class="bg-gray-900 p-4">
-									<pre class="text-xs font-mono overflow-x-auto"><template v-if="frame.pre_context"><code v-for="(line, i) in frame.pre_context" :key="'pre-'+i" class="block text-gray-500">{{ (frame.lineno || 0) - frame.pre_context.length + i }} {{ line }}</code></template><code v-if="frame.context_line" class="block text-white bg-error-900/50 -mx-4 px-4">{{ frame.lineno }} {{ frame.context_line }}</code><template v-if="frame.post_context"><code v-for="(line, i) in frame.post_context" :key="'post-'+i" class="block text-gray-500">{{ (frame.lineno || 0) + i + 1 }} {{ line }}</code></template></pre>
-								</div>
-							</div>
+								:frame="frame"
+								:resolved="resolvedFrames.get(index)"
+								:show-original="showOriginal"
+								:expanded="expandedFrames.has(index)"
+								@toggle="toggleFrame(index)"
+							/>
 						</div>
-					</div>
+					</UiCard>
 
 					<!-- Attachments (per selected event) -->
-					<div v-if="selectedEvent.event_id" class="card">
-						<div class="p-4 border-b border-gray-200 dark:border-gray-700">
-							<h2 class="font-semibold text-gray-900 dark:text-white">Attachments</h2>
-						</div>
-						<div class="p-4">
-							<AttachmentList :slug="slug" :event-id="selectedEvent.event_id" />
-						</div>
-					</div>
+					<AttachmentList v-if="selectedEvent.event_id" :slug="slug" :event-id="selectedEvent.event_id" />
 
 					<!-- Breadcrumbs -->
-					<div v-if="selectedEvent.breadcrumbs?.length" class="card">
-						<div class="p-4 border-b border-gray-200 dark:border-gray-700">
-							<h2 class="font-semibold text-gray-900 dark:text-white">Breadcrumbs</h2>
-						</div>
-						<div class="divide-y divide-gray-200 dark:divide-gray-700 max-h-96 overflow-y-auto">
-							<div
+					<UiCard
+						v-if="selectedEvent.breadcrumbs?.length"
+						title="Breadcrumbs"
+						:meta="`${selectedEvent.breadcrumbs.length} entries`"
+					>
+						<ol class="max-h-96 overflow-y-auto">
+							<li
 								v-for="(crumb, index) in selectedEvent.breadcrumbs"
 								:key="index"
-								class="p-3 text-sm"
+								class="flex items-center gap-3 border-b border-border px-4 py-2.5 text-body-s last:border-b-0"
 							>
-								<div class="flex items-center justify-between">
-									<div class="flex items-center space-x-2">
-										<span class="badge badge-info">{{ crumb.category || crumb.type || 'default' }}</span>
-										<span class="text-gray-900 dark:text-white">{{ crumb.message }}</span>
-									</div>
-									<span v-if="crumb.timestamp" class="text-xs text-gray-400">
-										{{ new Date(crumb.timestamp).toLocaleTimeString() }}
-									</span>
-								</div>
-							</div>
-						</div>
-					</div>
+								<span
+									class="size-1.5 shrink-0 rounded-full"
+									:class="{
+										'bg-level-error': crumb.level === 'error' || crumb.level === 'fatal',
+										'bg-level-warning': crumb.level === 'warning',
+										'bg-level-debug': crumb.level === 'debug',
+										'bg-level-info': !crumb.level || crumb.level === 'info',
+									}"
+									aria-hidden="true"
+								/>
+								<span v-if="crumb.timestamp" class="shrink-0 font-mono text-caption text-fg-subtle">
+									{{ new Date(crumb.timestamp).toLocaleTimeString() }}
+								</span>
+								<span class="w-24 shrink-0 truncate text-caption text-fg-muted">{{ crumb.category || crumb.type || 'default' }}</span>
+								<span class="min-w-0 flex-1 break-words text-fg">{{ crumb.message }}</span>
+							</li>
+						</ol>
+					</UiCard>
 
 					<!-- Activity -->
-					<div class="card">
-						<div class="p-4 border-b border-gray-200 dark:border-gray-700">
-							<h2 class="font-semibold text-gray-900 dark:text-white">Activity</h2>
-						</div>
-
-						<!-- Comment form -->
-						<div class="p-4 border-b border-gray-200 dark:border-gray-700">
-							<textarea
+					<UiCard title="Activity">
+						<form class="flex flex-col gap-2 border-b border-border p-4" @submit.prevent="addComment">
+							<label for="new-comment" class="sr-only">Comment</label>
+							<UiInput
+								id="new-comment"
 								v-model="newComment"
-								class="input w-full"
+								multiline
 								rows="3"
-								placeholder="Leave a comment..."
+								placeholder="Leave a comment… (Markdown, ⌘↵ to post)"
 								:disabled="submittingComment"
 								@keydown.meta.enter="addComment"
 								@keydown.ctrl.enter="addComment"
-							></textarea>
-							<div class="flex justify-end mt-2">
-								<button
-									class="btn btn-primary"
-									:disabled="!newComment.trim() || submittingComment"
-									@click="addComment"
-								>
+							/>
+							<div class="flex justify-end">
+								<UiButton type="submit" variant="primary" size="sm" :loading="submittingComment" :disabled="!newComment.trim()">
 									{{ submittingComment ? 'Posting...' : 'Comment' }}
-								</button>
+								</UiButton>
 							</div>
-						</div>
+						</form>
 
-						<!-- Activity timeline -->
-						<div v-if="activity.length === 0" class="p-4 text-sm text-gray-500">
-							No activity yet
-						</div>
-						<div v-else class="divide-y divide-gray-200 dark:divide-gray-700">
-							<div
-								v-for="entry in activity"
-								:key="entry.id"
-								class="p-4 text-sm"
-							>
-								<!-- Status change -->
-								<div v-if="entry.type === 'status_change'" class="flex items-center space-x-2 text-gray-500">
-									<svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-										<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4" />
-									</svg>
-									<span>
-										<span class="font-medium text-gray-900 dark:text-white">{{ entry.userName }}</span>
+						<p v-if="activity.length === 0" class="px-4 py-4 text-body-s text-fg-muted">No activity yet</p>
+						<ol v-else>
+							<li v-for="entry in activity" :key="entry.id" class="flex gap-3 border-b border-border px-4 py-3 text-body-s last:border-b-0">
+								<UiAvatar :name="entry.userName" size="sm" />
+								<div class="min-w-0 flex-1">
+									<!-- Status change -->
+									<p v-if="entry.type === 'status_change'" class="text-fg-muted">
+										<span class="font-medium text-fg">{{ entry.userName }}</span>
 										changed status from
-										<span class="font-medium">{{ entry.data.from }}</span>
+										<span class="font-medium text-fg">{{ entry.data.from }}</span>
 										to
-										<span class="font-medium">{{ entry.data.to }}</span>
-									</span>
-									<span class="text-xs text-gray-400 flex-shrink-0">{{ formatTime(entry.createdAt) }}</span>
-								</div>
-
-								<!-- Comment -->
-								<div v-else-if="entry.type === 'comment'">
-									<div class="flex items-center justify-between mb-1">
-										<div class="flex items-center space-x-2">
-											<span class="font-medium text-gray-900 dark:text-white">{{ entry.userName }}</span>
-											<span class="text-xs text-gray-400">{{ formatTime(entry.createdAt) }}</span>
+										<span class="font-medium text-fg">{{ entry.data.to }}</span>
+										<span class="ml-1 text-caption text-fg-subtle">{{ formatTime(entry.createdAt) }}</span>
+									</p>
+									<!-- Comment -->
+									<template v-else-if="entry.type === 'comment'">
+										<div class="flex items-center gap-2">
+											<span class="font-medium text-fg">{{ entry.userName }}</span>
+											<span class="text-caption text-fg-subtle">{{ formatTime(entry.createdAt) }}</span>
+											<span class="flex-1" />
+											<UiButton
+												v-if="authStore.user && entry.userId === authStore.user.id"
+												size="icon-sm"
+												variant="ghost"
+												:icon="Trash2"
+												:aria-label="`Delete comment from ${formatTime(entry.createdAt)}`"
+												@click="deleteComment(entry.data.commentId)"
+											/>
 										</div>
-										<button
-											v-if="authStore.user && entry.userId === authStore.user.id"
-											class="text-xs text-gray-400 hover:text-error-600 dark:hover:text-error-400"
-											@click="deleteComment(entry.data.commentId)"
-										>
-											Delete
-										</button>
-									</div>
-									<p class="text-gray-700 dark:text-gray-300 whitespace-pre-wrap">{{ entry.data.body }}</p>
+										<p class="mt-1 whitespace-pre-wrap text-fg">{{ entry.data.body }}</p>
+									</template>
 								</div>
-							</div>
-						</div>
-					</div>
+							</li>
+						</ol>
+					</UiCard>
 				</div>
 
-				<!-- Sidebar -->
-				<div class="space-y-4">
-					<!-- Event info -->
-					<div class="card p-4">
-						<h3 class="font-semibold text-gray-900 dark:text-white mb-3">Event Info</h3>
-						<dl class="space-y-2 text-sm">
-							<div>
-								<dt class="text-gray-500">Event ID</dt>
-								<dd class="text-gray-900 dark:text-white font-mono text-xs">{{ selectedEvent.event_id }}</dd>
-							</div>
-							<div>
-								<dt class="text-gray-500">Timestamp</dt>
-								<dd class="text-gray-900 dark:text-white">{{ formatTime(selectedEvent.timestamp) }}</dd>
-							</div>
-							<div v-if="selectedEvent.environment">
-								<dt class="text-gray-500">Environment</dt>
-								<dd class="text-gray-900 dark:text-white">{{ selectedEvent.environment }}</dd>
-							</div>
-							<div v-if="selectedEvent.release">
-								<dt class="text-gray-500">Release</dt>
-								<dd class="text-gray-900 dark:text-white font-mono text-xs">{{ selectedEvent.release }}</dd>
-							</div>
-						</dl>
-					</div>
-
-					<!-- User -->
-					<div v-if="selectedEvent.user" class="card p-4">
-						<h3 class="font-semibold text-gray-900 dark:text-white mb-3">User</h3>
-						<dl class="space-y-2 text-sm">
-							<div v-if="selectedEvent.user.id">
-								<dt class="text-gray-500">ID</dt>
-								<dd class="text-gray-900 dark:text-white font-mono text-xs">{{ selectedEvent.user.id }}</dd>
-							</div>
-							<div v-if="selectedEvent.user.email">
-								<dt class="text-gray-500">Email</dt>
-								<dd class="text-gray-900 dark:text-white">{{ selectedEvent.user.email }}</dd>
-							</div>
-							<div v-if="selectedEvent.user.ip_address">
-								<dt class="text-gray-500">IP Address</dt>
-								<dd class="text-gray-900 dark:text-white font-mono">{{ selectedEvent.user.ip_address }}</dd>
-							</div>
-						</dl>
-					</div>
-
-					<!-- Tags -->
-					<div v-if="selectedEvent.tags && Object.keys(selectedEvent.tags).length > 0" class="card p-4">
-						<h3 class="font-semibold text-gray-900 dark:text-white mb-3">Tags</h3>
-						<div class="flex flex-wrap gap-2">
-							<span
-								v-for="(value, key) in selectedEvent.tags"
-								:key="key"
-								class="inline-flex items-center px-2 py-1 bg-gray-100 dark:bg-gray-700 rounded text-xs"
-							>
-								<span class="text-gray-500">{{ key }}:</span>
-								<span class="ml-1 text-gray-900 dark:text-white">{{ value }}</span>
-							</span>
+				<!-- Side column -->
+				<aside class="flex min-w-0 flex-col gap-5" aria-label="Event context">
+					<UiCard title="Event Info" :heading-level="3">
+						<UiDescriptionList :items="eventInfo" />
+					</UiCard>
+					<UiCard v-if="userInfo.length" title="User" :heading-level="3">
+						<UiDescriptionList :items="userInfo" />
+					</UiCard>
+					<UiCard v-if="selectedEvent.tags && Object.keys(selectedEvent.tags).length > 0" title="Tags" :heading-level="3">
+						<div class="flex flex-wrap gap-1.5 px-4 py-3.5">
+							<UiTag v-for="(value, key) in selectedEvent.tags" :key="key">
+								<span class="text-fg-subtle">{{ key }}:</span>{{ value }}
+							</UiTag>
 						</div>
-					</div>
-				</div>
+					</UiCard>
+				</aside>
+			</div>
+
+			<!-- Phones: actions in a fixed bottom bar -->
+			<div
+				class="fixed inset-x-0 bottom-0 z-30 flex items-center gap-2 border-t border-border bg-raised px-4 pt-2.5 pb-[max(0.625rem,env(safe-area-inset-bottom))] sm:hidden"
+				data-testid="issue-mobile-actions"
+			>
+				<UiButton v-if="issue.status !== 'resolved'" variant="primary" class="flex-1" :icon="Check" @click="updateStatus('resolved')">Resolve</UiButton>
+				<UiButton v-else class="flex-1" :icon="Eye" @click="updateStatus('unresolved')">Reopen</UiButton>
+				<UiButton v-if="issue.status !== 'ignored'" class="flex-1" :icon="EyeOff" @click="updateStatus('ignored')">Ignore</UiButton>
+				<UiMenu v-if="!isSnoozed" label="Snooze" title="Snooze for" placement="top" :items="SNOOZE_OPTIONS" @select="snoozeIssue">
+					<template #trigger="{ props: menuProps }">
+						<UiButton v-bind="menuProps" :icon="Clock">Snooze</UiButton>
+					</template>
+				</UiMenu>
+				<UiButton v-else :icon="Clock" @click="unsnoozeIssue()">Unsnooze</UiButton>
 			</div>
 		</div>
 	</div>
 </template>
-
-<style scoped>
-/*
- * Rendered markdown (the event Message box). The v-html content does not
- * receive the scoped attribute, hence the :deep() selectors. Sizes are
- * deliberately modest — this is a message inside a card, not a document.
- *
- * The base color is explicit in both themes: nothing in the ancestor
- * chain (body / .card) sets a text color, and without a declared
- * `color-scheme` the UA default stays black even under a dark
- * prefers-color-scheme — black on the card's dark background.
- */
-.markdown-body {
-	color: #111827;
-}
-.markdown-body :deep(p),
-.markdown-body :deep(ul),
-.markdown-body :deep(ol),
-.markdown-body :deep(blockquote),
-.markdown-body :deep(table),
-.markdown-body :deep(pre) {
-	margin: 0.5rem 0;
-}
-.markdown-body :deep(:first-child) {
-	margin-top: 0;
-}
-.markdown-body :deep(:last-child) {
-	margin-bottom: 0;
-}
-.markdown-body :deep(h1),
-.markdown-body :deep(h2),
-.markdown-body :deep(h3),
-.markdown-body :deep(h4),
-.markdown-body :deep(h5),
-.markdown-body :deep(h6) {
-	font-size: 0.95rem;
-	font-weight: 600;
-	margin: 0.75rem 0 0.35rem;
-}
-.markdown-body :deep(ul) {
-	list-style: disc;
-	padding-left: 1.25rem;
-}
-.markdown-body :deep(ol) {
-	list-style: decimal;
-	padding-left: 1.25rem;
-}
-.markdown-body :deep(li) {
-	margin: 0.2rem 0;
-}
-.markdown-body :deep(code) {
-	font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-	font-size: 0.8rem;
-	background: rgb(0 0 0 / 0.06);
-	padding: 0.1rem 0.3rem;
-	border-radius: 0.25rem;
-}
-.markdown-body :deep(pre) {
-	background: #1f2937;
-	color: #f3f4f6;
-	padding: 0.75rem 1rem;
-	border-radius: 0.5rem;
-	overflow-x: auto;
-}
-.markdown-body :deep(pre code) {
-	background: transparent;
-	padding: 0;
-	font-size: 0.75rem;
-}
-.markdown-body :deep(blockquote) {
-	border-left: 3px solid rgb(156 163 175 / 0.5);
-	padding-left: 0.75rem;
-	color: #6b7280;
-}
-.markdown-body :deep(a) {
-	color: #0284c7;
-	text-decoration: underline;
-}
-.markdown-body :deep(table) {
-	border-collapse: collapse;
-}
-.markdown-body :deep(th),
-.markdown-body :deep(td) {
-	border: 1px solid rgb(209 213 219 / 0.5);
-	padding: 0.25rem 0.5rem;
-	text-align: left;
-}
-.markdown-body :deep(hr) {
-	border-color: rgb(209 213 219 / 0.5);
-	margin: 0.75rem 0;
-}
-@media (prefers-color-scheme: dark) {
-	.markdown-body {
-		color: #f3f4f6;
-	}
-	.markdown-body :deep(code) {
-		background: rgb(255 255 255 / 0.1);
-	}
-	.markdown-body :deep(blockquote) {
-		color: #9ca3af;
-	}
-	.markdown-body :deep(a) {
-		color: #38bdf8;
-	}
-	.markdown-body :deep(th),
-	.markdown-body :deep(td),
-	.markdown-body :deep(hr) {
-		border-color: rgb(75 85 99 / 0.5);
-	}
-}
-</style>
