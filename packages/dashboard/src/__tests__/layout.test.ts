@@ -219,8 +219,11 @@ describe('Connect page', () => {
 			'select[data-testid="connect-platform-select"]',
 		);
 		expect(platforms.element.value).toBe('ios');
-		expect(wrapper.text()).toContain('https://github.com/getsentry/sentry-cocoa.git');
-		expect(wrapper.text()).toContain('options.dsn = "https://key@host/p1"');
+		expect(wrapper.text()).toContain('https://github.com/didisouzacosta/sentinel-ios');
+		expect(wrapper.text()).toContain('Sentinel.start(dsn:');
+		expect(wrapper.text()).toContain('Sentinel.grantConsent()');
+		expect(wrapper.text()).not.toContain('sentry-cocoa');
+		expect(wrapper.text()).toContain('Sentinel.start(dsn: "https://key@host/p1")');
 
 		await router.replace({ query: { project: 'android-app' } });
 		await flushPromises();

@@ -72,6 +72,9 @@ export function ingestOrigin(dsn?: string): string {
 	}
 }
 
+/** Sentinel's own iOS SDK. Until its first tag (0.1.0) the guide installs the `main` branch. */
+const SENTINELKIT_URL = 'https://github.com/didisouzacosta/sentinel-ios';
+
 // Latest on Maven Central when this was written; Gradle needs an explicit version.
 const ANDROID_SDK_VERSION = '8.65.1';
 
@@ -310,28 +313,44 @@ export const PLATFORMS: readonly PlatformGuide[] = [
 	{
 		id: 'ios',
 		name: 'iOS',
-		summary: 'Swift / SwiftUI apps with sentry-cocoa.',
+		summary: 'Swift / SwiftUI apps with SentinelKit (Swift Package Manager, iOS 15+, Swift 6+).',
 		projectPlatform: 'cocoa',
 		support: 'verified',
-		verifiedBy: 'lab/native-test.mjs (simulated crashes) and SentinelIOS',
+		verifiedBy:
+			'SentinelKit contract envelope (Tests/SentinelKitTests/Fixtures/handled-error.envelope) accepted by the worker',
 		browser: false,
 		notes: [
-			'Sentinel does not process dSYM files yet: crashes from release builds may show addresses instead of function names.',
+			'Requires iOS 15+ and Swift 6.0+ (Xcode 16+). The app itself may stay in the Swift 5 language mode.',
+			'Nothing is sent until Sentinel.grantConsent() (GDPR default). Use options.consent = .notRequired if your app relies on another legal basis.',
+			'Native crashes arrive through MetricKit on a later launch, on real devices only. Sentinel does not symbolicate dSYMs yet, so those frames show binary and address.',
 		],
 		steps: ({ dsn = DSN_PLACEHOLDER }) => [
 			{
-				title: 'Add the SDK with Swift Package Manager',
+				title: 'Add SentinelKit with Swift Package Manager',
 				description:
-					'In Xcode: File → Add Package Dependencies…, paste this URL and pick "Up to Next Major Version".',
+					'In Xcode: File → Add Package Dependencies…, paste this URL, set Dependency Rule to Branch "main" and add the SentinelKit library to your app target.',
 				language: 'Package URL',
-				code: 'https://github.com/getsentry/sentry-cocoa.git',
+				code: SENTINELKIT_URL,
 			},
 			{
 				title: 'Start it when the app launches',
 				description:
-					'Sentinel does not process dSYM files yet: crashes from release builds may show addresses instead of function names.',
+					'Call it once. Swift Package projects use the dependency below instead of the Xcode menu.',
 				language: 'MyApp.swift',
-				code: `import Sentry\nimport SwiftUI\n\n@main\nstruct MyApp: App {\n  init() {\n    SentrySDK.start { options in\n      options.dsn = "${dsn}"\n    }\n  }\n\n  var body: some Scene {\n    WindowGroup { ContentView() }\n  }\n}`,
+				code: `import SentinelKit\nimport SwiftUI\n\n@main\nstruct MyApp: App {\n  init() {\n    Sentinel.start(dsn: "${dsn}") { options in\n      options.environment = "production"\n    }\n  }\n\n  var body: some Scene {\n    WindowGroup { ContentView() }\n  }\n}\n\n// Package.swift:\n// .package(url: "${SENTINELKIT_URL}", branch: "main")\n// .product(name: "SentinelKit", package: "sentinel-ios")`,
+			},
+			{
+				title: 'Grant consent after informing the user',
+				description:
+					'By default nothing leaves the device until this call; events wait locally (up to 10) and are sent right after it.',
+				language: 'Swift',
+				code: 'Sentinel.grantConsent()',
+			},
+			{
+				title: 'Send a test event',
+				description: 'It shows up under Issues in a few seconds.',
+				language: 'Swift',
+				code: 'Sentinel.capture(message: "Hello from SentinelKit", level: .info)\n\n// In your catch blocks:\nSentinel.capture(error)',
 			},
 		],
 	},

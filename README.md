@@ -187,7 +187,7 @@ Step-by-step guides with your DSN filled in live in the dashboard (**Connect →
 | Bun | `bun` | `@sentry/bun` | Sentry protocol, not run here yet |
 | Python | `python` | `sentry-sdk` | Sentry protocol, not run here yet |
 | PHP | `php` | `sentry/sentry` | ✅ tested (`lab/php`, `^4`) |
-| iOS | `cocoa` | `sentry-cocoa` (SPM) | ✅ tested (`lab/native-test.mjs`, SentinelIOS) — no dSYM symbolication yet |
+| iOS | `cocoa` | [SentinelKit](https://github.com/didisouzacosta/sentinel-ios) (SPM, iOS 15+, Swift 6+) | ✅ tested (SentinelKit contract envelope accepted by the worker) — consent required by default; no dSYM symbolication yet |
 | Android | `android` | `io.sentry:sentry-android` | ✅ tested (`lab/native-test.mjs`) — no R8/ProGuard mapping yet |
 | No SDK (envelope) | `envelope` | — (one `fetch`) | ✅ tested (`test/ingestion-envelope-dsn.test.ts`) |
 | Other (Go, Ruby, .NET, Rust…) | `other` | that language's Sentry SDK | Sentry protocol, not run here yet |
