@@ -34,8 +34,6 @@ export interface KaneoIntegration {
 	minLevel: string;
 	environments: string[];
 	apiKey: string | null;
-	accessClientId: string | null;
-	hasAccessToken: boolean;
 	credentialsReadable: boolean;
 	lastError: string | null;
 	lastErrorAt: string | null;
@@ -66,8 +64,6 @@ const integration = ref<KaneoIntegration | null>(null);
 // Form state
 const baseUrl = ref('');
 const apiKey = ref('');
-const accessClientId = ref('');
-const accessClientSecret = ref('');
 const workspaceId = ref('');
 const kaneoProjectId = ref('');
 const createColumn = ref('');
@@ -100,10 +96,6 @@ function message(err: unknown, fallback: string) {
 function credentialBody() {
 	const body: Record<string, unknown> = { baseUrl: baseUrl.value };
 	if (apiKey.value) body.apiKey = apiKey.value;
-	if (accessClientId.value || accessClientSecret.value) {
-		body.accessClientId = accessClientId.value;
-		body.accessClientSecret = accessClientSecret.value;
-	}
 	return body;
 }
 
@@ -118,8 +110,6 @@ function fillForm(value: KaneoIntegration) {
 	minLevel.value = value.minLevel;
 	environments.value = value.environments.join(', ');
 	apiKey.value = '';
-	accessClientId.value = '';
-	accessClientSecret.value = '';
 	// The saved project shows even before the pickers load.
 	projects.value = [
 		{ id: value.kaneoProjectId, name: value.kaneoProjectName, slug: value.kaneoProjectSlug },
@@ -288,7 +278,7 @@ onMounted(load);
 				Last delivery failed: {{ integration.lastError }}
 			</UiAlert>
 			<UiAlert v-if="integration && !integration.credentialsReadable" tone="warning">
-				The saved credentials can no longer be read. Enter the API key and Access token again.
+				The saved credentials can no longer be read. Enter the API key again.
 			</UiAlert>
 
 			<div class="grid gap-3 sm:grid-cols-2">
@@ -315,22 +305,6 @@ onMounted(load);
 						type="password"
 						autocomplete="off"
 						:placeholder="integration?.apiKey ?? ''"
-					/>
-				</UiFormField>
-				<UiFormField
-					v-slot="f"
-					label="Access client ID"
-					:help="integration?.hasAccessToken ? `Saved (${integration.accessClientId}).` : 'Only if Kaneo sits behind Cloudflare Access.'"
-				>
-					<UiInput :id="f.id" v-model="accessClientId" :aria-describedby="f.describedBy" autocomplete="off" />
-				</UiFormField>
-				<UiFormField v-slot="f" label="Access client secret">
-					<UiInput
-						:id="f.id"
-						v-model="accessClientSecret"
-						:aria-describedby="f.describedBy"
-						type="password"
-						autocomplete="off"
 					/>
 				</UiFormField>
 			</div>

@@ -1,8 +1,10 @@
 /**
  * Project integrations — Kaneo first (docs/plano-mcp-e-tenho-horario.md,
- * "Fase 4"). Configuration is per project and owner/admin only; the Kaneo
- * API key and Access service token are sealed with INTEGRATIONS_KEY
- * (lib/secret-box.ts) and only ever leave this module masked.
+ * "Fase 4"). Configuration is per project and owner/admin only; the only
+ * credential is the Kaneo API key, sealed with INTEGRATIONS_KEY
+ * (lib/secret-box.ts), which only ever leaves this module masked. A Kaneo
+ * behind Cloudflare Access is reached through the KANEO service binding
+ * (lib/kaneo.ts kaneoFetcher), never with an Access service token.
  *
  *   GET    /api/projects/:slug/integrations/kaneo           current config (masked)
  *   POST   /api/projects/:slug/integrations/kaneo/discover  list workspaces/projects/columns
@@ -21,6 +23,7 @@ import {
 	type KaneoColumn,
 	type KaneoCredentials,
 	KaneoError,
+	kaneoFetcher,
 	normalizeKaneoBaseUrl,
 } from '../lib/kaneo';
 import {
@@ -113,7 +116,9 @@ export async function openKaneoCredentials(
 		projectId,
 		integration.secretCipher,
 	);
-	return JSON.parse(plaintext) as KaneoCredentials;
+	// Older rows may also hold an Access service token; only the key is used.
+	const { apiKey } = JSON.parse(plaintext) as KaneoCredentials;
+	return { apiKey };
 }
 
 /** The project's identity and dashboard origin, as seen from this request. */
@@ -207,8 +212,6 @@ export function kaneoView(integration: StoredIntegration, credentials: KaneoCred
 		minLevel: config.minLevel,
 		environments: config.environments,
 		apiKey: maskSecret(credentials?.apiKey),
-		accessClientId: maskSecret(credentials?.accessClientId),
-		hasAccessToken: Boolean(credentials?.accessClientId && credentials?.accessClientSecret),
 		credentialsReadable: credentials !== null,
 		lastError: integration.lastError,
 		lastErrorAt: integration.lastErrorAt,
@@ -224,9 +227,6 @@ export function kaneoView(integration: StoredIntegration, credentials: KaneoCred
 type CredentialPatch = {
 	baseUrl?: string;
 	apiKey?: string;
-	/** null clears the Access service token. */
-	accessClientId?: string | null;
-	accessClientSecret?: string | null;
 };
 
 function optionalString(value: unknown, field: string, max = 512): string | undefined | Error {
@@ -245,40 +245,17 @@ function parseCredentialPatch(body: Record<string, unknown>): CredentialPatch | 
 		if (value instanceof Error) return value;
 		if (value !== undefined) patch[field] = value;
 	}
-	for (const field of ['accessClientId', 'accessClientSecret'] as const) {
-		if (body[field] === null) {
-			patch[field] = null;
-			continue;
-		}
-		const value = optionalString(body[field], field);
-		if (value instanceof Error) return value;
-		if (value !== undefined) patch[field] = value;
-	}
 	return patch;
 }
 
-/** Merge a patch over stored credentials; the Access id and secret go together. */
+/** The typed key, or the stored one when the form leaves it blank. */
 function mergeCredentials(
 	stored: KaneoCredentials | null,
 	patch: CredentialPatch,
 ): KaneoCredentials | Error {
 	const apiKey = patch.apiKey ?? stored?.apiKey;
 	if (!apiKey) return new Error('apiKey is required');
-	let accessClientId = stored?.accessClientId ?? null;
-	let accessClientSecret = stored?.accessClientSecret ?? null;
-	if (patch.accessClientId !== undefined || patch.accessClientSecret !== undefined) {
-		if (patch.accessClientId === null || patch.accessClientSecret === null) {
-			accessClientId = null;
-			accessClientSecret = null;
-		} else {
-			accessClientId = patch.accessClientId ?? accessClientId;
-			accessClientSecret = patch.accessClientSecret ?? accessClientSecret;
-		}
-	}
-	if (Boolean(accessClientId) !== Boolean(accessClientSecret)) {
-		return new Error('The Access service token needs both the client id and the client secret');
-	}
-	return { apiKey, accessClientId, accessClientSecret };
+	return { apiKey };
 }
 
 function pickColumn(columns: KaneoColumn[], requested: unknown, fallback: string): string | Error {
@@ -385,7 +362,7 @@ integrationRoutes.post('/:slug/integrations/kaneo/discover', async (c) => {
 	if (kaneoProjectId instanceof Error) return badRequest(c, kaneoProjectId);
 
 	try {
-		const client = createKaneoClient(baseUrl, credentials);
+		const client = createKaneoClient(baseUrl, credentials, kaneoFetcher(c.env, baseUrl));
 		const workspaces = await client.listWorkspaces();
 		const projects = workspaceId ? await client.listProjects(workspaceId) : undefined;
 		const columns = kaneoProjectId ? await client.listColumns(kaneoProjectId) : undefined;
@@ -465,7 +442,7 @@ integrationRoutes.put('/:slug/integrations/kaneo', async (c) => {
 	let kaneoProject: Awaited<ReturnType<KaneoClient['getProject']>>;
 	let columns: KaneoColumn[];
 	try {
-		client = createKaneoClient(base.origin, credentials);
+		client = createKaneoClient(base.origin, credentials, kaneoFetcher(c.env, base.origin));
 		kaneoProject = await client.getProject(targetProjectId);
 		columns = await client.listColumns(targetProjectId);
 	} catch (error) {
@@ -516,11 +493,12 @@ integrationRoutes.put('/:slug/integrations/kaneo', async (c) => {
 		sentinelOrigin: new URL(c.req.url).origin,
 	};
 
+	// Re-seal when the key changed, and once for rows that still carry an
+	// Access service token, so it stops being stored.
 	const credentialsChanged =
 		!storedCredentials ||
 		storedCredentials.apiKey !== credentials.apiKey ||
-		(storedCredentials.accessClientId ?? null) !== (credentials.accessClientId ?? null) ||
-		(storedCredentials.accessClientSecret ?? null) !== (credentials.accessClientSecret ?? null);
+		patch.apiKey !== undefined;
 	const secretCipher = credentialsChanged
 		? await sealSecret(
 				c.env.INTEGRATIONS_KEY as string,
@@ -590,7 +568,11 @@ integrationRoutes.post('/:slug/integrations/kaneo/test', async (c) => {
 	const config = integration.config as unknown as KaneoConfig;
 	try {
 		const credentials = await openKaneoCredentials(c.env, ctx.project.id, integration);
-		const client = createKaneoClient(config.baseUrl, credentials);
+		const client = createKaneoClient(
+			config.baseUrl,
+			credentials,
+			kaneoFetcher(c.env, config.baseUrl),
+		);
 		const project = await client.getProject(config.kaneoProjectId);
 		const columns = await client.listColumns(config.kaneoProjectId);
 		const missing = [config.createColumn, config.doneColumn, config.reopenColumn].filter(

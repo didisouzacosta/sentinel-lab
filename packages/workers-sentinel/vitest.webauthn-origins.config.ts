@@ -9,6 +9,13 @@ export default defineConfig({
 		cloudflareTest({
 			wrangler: { configPath: './wrangler.jsonc' },
 			miniflare: {
+				// wrangler.jsonc binds KANEO to the production Kaneo Worker, which
+				// does not exist here; tests reach their fake Kaneo over HTTPS
+				// (test/kaneo-fake.ts), so the binding only has to exist.
+				serviceBindings: {
+					KANEO: () =>
+						Response.json({ message: 'KANEO binding is not connected in tests' }, { status: 503 }),
+				},
 				bindings: {
 					SETUP_TOKEN: 'test-setup-token',
 					WEBAUTHN_ORIGINS: 'http://localhost:5173',

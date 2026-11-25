@@ -11,6 +11,7 @@ import {
 	createKaneoClient,
 	type KaneoCredentials,
 	KaneoError,
+	kaneoFetcher,
 	kaneoTaskUrl,
 	kaneoTicketKey,
 } from '../lib/kaneo';
@@ -3857,10 +3858,11 @@ export class ProjectState extends DurableObject<Env> {
 				'Open the Kaneo settings of this project and save them again',
 			);
 		}
-		const credentials = JSON.parse(
+		// Older rows may also hold an Access service token; only the key is used.
+		const { apiKey } = JSON.parse(
 			await openSecret(key, config.sentinelProjectId, kaneo.secretCipher),
 		) as KaneoCredentials;
-		return createKaneoClient(config.baseUrl, credentials);
+		return createKaneoClient(config.baseUrl, { apiKey }, kaneoFetcher(this.env, config.baseUrl));
 	}
 
 	private issuePermalink(config: KaneoRuntimeConfig, issueId: string): string {

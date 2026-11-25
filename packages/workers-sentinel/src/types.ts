@@ -32,6 +32,15 @@ export interface Env {
 	 * `503 integrations_unconfigured`. Set with `wrangler secret put`.
 	 */
 	INTEGRATIONS_KEY?: string;
+	/**
+	 * Optional service binding to a Kaneo Worker in the same Cloudflare
+	 * account (its `KaneoApi` entrypoint). Calls to `KANEO_BINDING_ORIGIN`
+	 * then go through it instead of the internet, so a Kaneo behind
+	 * Cloudflare Access only needs the API key (lib/kaneo.ts kaneoFetcher).
+	 */
+	KANEO?: Fetcher;
+	/** The Kaneo URL served by the KANEO binding, e.g. https://kaneo.example.com. */
+	KANEO_BINDING_ORIGIN?: string;
 	ASSETS?: Fetcher;
 }
 

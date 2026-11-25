@@ -1,7 +1,11 @@
 /**
  * Thin client for the Kaneo REST API (https://kaneo.app), used by the Kaneo
- * integration. Every call carries the user's Kaneo API key and, when the
- * instance sits behind Cloudflare Access, the Access service token.
+ * integration. The only credential is the user's Kaneo API key.
+ *
+ * Transport: plain HTTPS, or — for the Kaneo instance this Worker is bound
+ * to (`KANEO` service binding to the Kaneo Worker's `KaneoApi` entrypoint,
+ * `KANEO_BINDING_ORIGIN` = its URL) — the binding, which stays inside the
+ * Cloudflare account and never crosses Cloudflare Access (`kaneoFetcher`).
  *
  * Outbound hygiene mirrors lib/webhook.ts: https only, no private hosts,
  * redirects never followed (an Access login redirect surfaces as
@@ -16,8 +20,26 @@ const MAX_ERROR_MESSAGE = 160;
 
 export interface KaneoCredentials {
 	apiKey: string;
-	accessClientId?: string | null;
-	accessClientSecret?: string | null;
+}
+
+/** The bindings that route calls to a Kaneo Worker in the same account. */
+export interface KaneoBindingEnv {
+	KANEO?: Fetcher;
+	KANEO_BINDING_ORIGIN?: string;
+}
+
+/**
+ * The fetch to use for a Kaneo origin: the `KANEO` service binding when the
+ * origin is the bound instance, otherwise the global fetch (undefined).
+ */
+export function kaneoFetcher(env: KaneoBindingEnv, origin: string): typeof fetch | undefined {
+	const binding = env.KANEO;
+	if (!binding || !env.KANEO_BINDING_ORIGIN) return undefined;
+	const target = normalizeKaneoBaseUrl(origin);
+	const bound = normalizeKaneoBaseUrl(env.KANEO_BINDING_ORIGIN);
+	if (!target.ok || !bound.ok || target.origin !== bound.origin) return undefined;
+	return ((input: RequestInfo | URL, init?: RequestInit) =>
+		binding.fetch(input, init)) as typeof fetch;
 }
 
 export type KaneoErrorCode =
@@ -120,8 +142,9 @@ function statusCode(status: number): KaneoErrorCode {
 export function createKaneoClient(
 	origin: string,
 	credentials: KaneoCredentials,
-	fetcher: typeof fetch = fetch,
+	fetcher?: typeof fetch,
 ) {
+	const send = fetcher ?? fetch;
 	const normalized = normalizeKaneoBaseUrl(origin);
 	if (!normalized.ok) {
 		throw new KaneoError('invalid_url', normalized.reason);
@@ -133,15 +156,11 @@ export function createKaneoClient(
 			Accept: 'application/json',
 			Authorization: `Bearer ${credentials.apiKey}`,
 		};
-		if (credentials.accessClientId && credentials.accessClientSecret) {
-			headers['CF-Access-Client-Id'] = credentials.accessClientId;
-			headers['CF-Access-Client-Secret'] = credentials.accessClientSecret;
-		}
 		if (body !== undefined) headers['Content-Type'] = 'application/json';
 
 		let response: Response;
 		try {
-			response = await fetcher(`${apiBase}${path}`, {
+			response = await send(`${apiBase}${path}`, {
 				method,
 				headers,
 				body: body === undefined ? undefined : JSON.stringify(body),
@@ -162,7 +181,7 @@ export function createKaneoClient(
 			await response.body?.cancel();
 			throw new KaneoError(
 				'access_denied',
-				'Cloudflare Access refused the request: check the Access service token',
+				'Kaneo is behind Cloudflare Access: reach it through the KANEO service binding',
 				response.status,
 			);
 		}
@@ -185,7 +204,7 @@ export function createKaneoClient(
 					// Access answers with its own HTML page, Kaneo with JSON.
 					throw new KaneoError(
 						'access_denied',
-						'Cloudflare Access refused the request: check the Access service token',
+						'Kaneo is behind Cloudflare Access: reach it through the KANEO service binding',
 						response.status,
 					);
 				}
