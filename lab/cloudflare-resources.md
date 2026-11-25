@@ -18,8 +18,10 @@ Todo recurso criado por este projeto começa com **`sentinel-lab`** / **`Sentine
 
 ## Proteção (Access)
 
-- O app protege **todo** o domínio: painel, cadastro/login, APIs do painel e `/api/0`. Login pelo Access (PIN por e-mail), sessão de 7 dias.
-- Públicos por override (os SDKs não fazem login; já exigem a chave do DSN): `/api/*/envelope`, `/api/*/envelope/`, `/api/*/store`, `/api/*/store/`, `/api/health`.
+- O app protege o domínio: painel, cadastro/login e APIs do painel. Login pelo Access (PIN por e-mail), sessão de 7 dias.
+- Públicos por override (clientes que não fazem login no Access e que o Sentinel já autentica):
+  - ingestão dos SDKs, que exige a chave do DSN: `/api/*/envelope`, `/api/*/envelope/`, `/api/*/store`, `/api/*/store/`, e `/api/health`;
+  - `/api/0/*` (desde 25/11/2026), a API no formato do Sentry usada pelo MCP do Sentry e por agentes: exige token `wst_` ou sessão, e sem credencial responde 401.
 - `workers.dev` e preview URLs desligados: não existe caminho até o Worker sem passar pelo Access.
 - Ferramentas de CI que usarem a API do painel (ex.: upload de source maps/dSYM no futuro) vão precisar de um **Service Token** do Access.
 
@@ -27,7 +29,8 @@ Todo recurso criado por este projeto começa com **`sentinel-lab`** / **`Sentine
 
 | Requisição | Resultado |
 |---|---|
-| `/`, `/register`, `/api/projects`, `/api/auth/register`, `/api/0/projects/` | 302 → login do Access |
+| `/`, `/register`, `/api/projects`, `/api/auth/register` | 302 → login do Access |
+| `/api/0/organizations/` sem token ou com token inválido (25/11/2026) | 401 do Sentinel (`{"detail": …}`) |
 | `/api/health` | 200 |
 | `POST /api/1/envelope/` e `/store/` com chave falsa | 401 `invalid_auth` (chega ao Sentinel) |
 | `OPTIONS /api/1/envelope/` (CORS do SDK de navegador) | 204 |

@@ -9,9 +9,12 @@
 // CLOUDFLARE_ACCOUNT_ID. SENTINEL_ADMIN_EMAILS (vírgulas) define quem entra
 // no painel.
 //
-// Desenho: um único app protege o domínio inteiro (painel, APIs do painel,
-// /api/0). Só os endpoints de ingestão dos SDKs ficam públicos, por override:
-// SDKs não fazem login no Access, e esses endpoints já exigem a chave do DSN.
+// Desenho: um único app protege o domínio inteiro (painel e APIs do painel).
+// Ficam públicos, por override, só os caminhos de clientes que não fazem login
+// no Access e que o próprio Sentinel já autentica:
+// - ingestão dos SDKs (exige a chave do DSN);
+// - /api/0, a API no formato do Sentry usada pelo MCP do Sentry e por agentes
+//   (exige token de API `wst_` ou sessão; sem credencial responde 401).
 
 const HOST = 'sentinel.adrianosouzacosta.com.br';
 const APP_NAME = 'Sentinel Lab · painel';
@@ -22,6 +25,7 @@ export const PUBLIC_PATHS = [
 	'/api/*/store',
 	'/api/*/store/',
 	'/api/health',
+	'/api/0/*',
 ];
 
 const token = process.env.CLOUDFLARE_API_TOKEN;
