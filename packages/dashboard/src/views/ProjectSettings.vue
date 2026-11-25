@@ -55,6 +55,8 @@ const projectsStore = useProjectsStore();
 const toast = useToast();
 const askConfirm = useConfirm();
 const slug = computed(() => route.params.slug as string);
+// Deleting source maps is for project owners and admins (the server enforces it).
+const canDeleteSourceMaps = computed(() => projectsStore.canManage(slug.value));
 
 const SECTIONS: SectionNavItem[] = [
 	{ id: 'dsn', label: 'Client keys (DSN)' },
@@ -556,6 +558,7 @@ onMounted(() => {
 								</p>
 							</div>
 							<UiButton
+								v-if="canDeleteSourceMaps"
 								variant="ghost"
 								size="icon-sm"
 								:icon="Trash2"

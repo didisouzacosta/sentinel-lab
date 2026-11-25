@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryHistory, createRouter } from 'vue-router';
 import { confirmState, settleConfirm } from '../composables/useConfirm';
 import { useToast } from '../composables/useToast';
+import { type ProjectRole, useProjectsStore } from '../stores/projects';
 import ProjectFilters from '../views/ProjectFilters.vue';
 import ProjectSettings from '../views/ProjectSettings.vue';
 import { seedAuth } from './helpers';
@@ -14,8 +15,21 @@ vi.mock('../api/client', () =>
 
 const BASE = '/api/projects/web-frontend';
 
-async function mountAt(component: typeof ProjectFilters | typeof ProjectSettings, path: string) {
+async function mountAt(
+	component: typeof ProjectFilters | typeof ProjectSettings,
+	path: string,
+	role: ProjectRole = 'owner',
+) {
 	const { pinia } = seedAuth({});
+	useProjectsStore(pinia).projects = [
+		{
+			id: 'proj-1',
+			name: 'Web Frontend',
+			slug: 'web-frontend',
+			platform: 'javascript',
+			memberRole: role,
+		},
+	];
 	const router = createRouter({
 		history: createMemoryHistory(),
 		routes: [
@@ -241,6 +255,24 @@ describe('project settings', () => {
 			mockApi.calls.some((c) => c.method === 'delete' && c.url === `${BASE}/sourcemaps/sm1`),
 		).toBe(true);
 		expect(wrapper.findAll('[data-testid="sourcemap-row"]')).toHaveLength(0);
+		wrapper.unmount();
+	});
+
+	it('hides source map deletion from plain members', async () => {
+		mockProject({
+			sourceMaps: [
+				{
+					id: 'sm1',
+					release: 'web@2.14.0',
+					fileUrl: 'https://x/main.js',
+					createdAt: '2026-11-24T00:00:00Z',
+					size: 421888,
+				},
+			],
+		});
+		const { wrapper } = await mountAt(ProjectSettings, '/projects/web-frontend/settings', 'member');
+		const row = wrapper.get('[data-testid="sourcemap-row"]');
+		expect(row.find('button[aria-label^="Delete source map"]').exists()).toBe(false);
 		wrapper.unmount();
 	});
 

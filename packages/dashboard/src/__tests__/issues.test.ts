@@ -2,6 +2,7 @@ import { flushPromises, mount } from '@vue/test-utils';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { confirmState, settleConfirm } from '../composables/useConfirm';
 import { useToast } from '../composables/useToast';
+import { type ProjectRole, useProjectsStore } from '../stores/projects';
 import Issues from '../views/Issues.vue';
 import { atRoute, seedAuth, testRouter } from './helpers';
 import { MockApiError, mockApi, onGet, onPatch, onPost } from './mocks';
@@ -47,8 +48,17 @@ function mockLists(
 	}));
 }
 
-async function mountIssues(path = '/projects/web-frontend/issues') {
+async function mountIssues(path = '/projects/web-frontend/issues', role: ProjectRole = 'owner') {
 	const { pinia } = seedAuth({});
+	useProjectsStore(pinia).projects = [
+		{
+			id: 'p1',
+			name: 'Web Frontend',
+			slug: 'web-frontend',
+			platform: 'javascript',
+			memberRole: role,
+		},
+	];
 	const router = testRouter();
 	await atRoute(router, path);
 	const wrapper = mount(Issues, { attachTo: document.body, global: { plugins: [pinia, router] } });
@@ -145,6 +155,16 @@ describe('issues list', () => {
 		expect(call?.body).toEqual({ issueIds: ['i1', 'i2'], action: 'delete' });
 		expect(wrapper.findAll('[data-testid="issue-row"]')).toHaveLength(1);
 		expect(useToast().toasts.at(-1)?.message).toBe('2 issues deleted');
+		wrapper.unmount();
+	});
+
+	it('plain members triage in bulk but get no Delete', async () => {
+		mockLists();
+		const { wrapper } = await mountIssues('/projects/web-frontend/issues', 'member');
+		await selectRows(wrapper, [0]);
+		const bar = wrapper.get('[data-testid="bulk-bar"]');
+		expect(bar.find('[data-testid="bulk-delete"]').exists()).toBe(false);
+		expect(bar.findAll('button').some((b) => b.text() === 'Resolve')).toBe(true);
 		wrapper.unmount();
 	});
 

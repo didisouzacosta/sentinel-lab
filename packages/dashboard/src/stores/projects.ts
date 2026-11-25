@@ -2,11 +2,15 @@ import { defineStore } from 'pinia';
 import { ref } from 'vue';
 import { api } from '../api/client';
 
+export type ProjectRole = 'owner' | 'admin' | 'member';
+
 export interface Project {
 	id: string;
 	name: string;
 	slug: string;
 	platform: string;
+	/** The signed-in user's role in this project (from GET /api/projects). */
+	memberRole?: ProjectRole;
 }
 
 export const useProjectsStore = defineStore('projects', () => {
@@ -27,6 +31,16 @@ export const useProjectsStore = defineStore('projects', () => {
 		}
 	}
 
+	/**
+	 * Owners and project admins may delete issues and source maps (and change
+	 * security settings). Mirrors the worker's `canManageProject`; the server
+	 * enforces it, this only hides controls a member could not use.
+	 */
+	function canManage(slug: string): boolean {
+		const role = projects.value.find((p) => p.slug === slug)?.memberRole;
+		return role === 'owner' || role === 'admin';
+	}
+
 	function removeProject(slug: string) {
 		projects.value = projects.value.filter((p) => p.slug !== slug);
 	}
@@ -41,6 +55,7 @@ export const useProjectsStore = defineStore('projects', () => {
 		loading,
 		initialized,
 		loadProjects,
+		canManage,
 		removeProject,
 		reset,
 	};

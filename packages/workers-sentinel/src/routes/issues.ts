@@ -1,4 +1,5 @@
 import { type Context, Hono } from 'hono';
+import { requireProjectManager } from '../lib/project-access';
 import type { AuthContext, Env, Project } from '../types';
 
 type Variables = {
@@ -13,7 +14,7 @@ export const issueRoutes = new Hono<{ Bindings: Env; Variables: Variables }>();
 async function getProjectWithAccess(
 	c: AppContext,
 	slug: string,
-): Promise<{ project: Project } | Response> {
+): Promise<{ project: Project; memberRole?: string } | Response> {
 	const auth = c.get('auth');
 	if (!auth) {
 		return c.json({ error: 'unauthorized' }, 401);
@@ -147,12 +148,16 @@ issueRoutes.patch('/:slug/issues/bulk', async (c) => {
 		return projectResult;
 	}
 
-	const { project } = projectResult;
+	const { project, memberRole } = projectResult;
 	const body = await c.req.json<{
 		issueIds: string[];
 		status?: string;
 		action?: 'delete';
 	}>();
+	if (body.action === 'delete') {
+		const denied = requireProjectManager(c, memberRole, 'delete issues');
+		if (denied) return denied;
+	}
 
 	const projectStateId = c.env.PROJECT_STATE.idFromName(project.id);
 	const projectState = c.env.PROJECT_STATE.get(projectStateId);
@@ -256,7 +261,9 @@ issueRoutes.delete('/:slug/issues/:issueId', async (c) => {
 		return projectResult;
 	}
 
-	const { project } = projectResult;
+	const { project, memberRole } = projectResult;
+	const denied = requireProjectManager(c, memberRole, 'delete issues');
+	if (denied) return denied;
 
 	const projectStateId = c.env.PROJECT_STATE.idFromName(project.id);
 	const projectState = c.env.PROJECT_STATE.get(projectStateId);

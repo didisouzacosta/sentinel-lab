@@ -42,6 +42,28 @@ export async function getProjectWithAccess(
 }
 
 /**
+ * Project roles that may run destructive or security-relevant project
+ * actions: change security settings and filters, rotate the DSN key, and
+ * delete issues or source maps. Plain `member`s triage, comment and upload.
+ */
+export function canManageProject(memberRole: string | null | undefined): boolean {
+	return memberRole === 'owner' || memberRole === 'admin';
+}
+
+/** 403 unless the caller is the project's owner or an admin; null otherwise. */
+export function requireProjectManager(
+	c: Context,
+	memberRole: string | null | undefined,
+	action: string,
+): Response | null {
+	if (canManageProject(memberRole)) return null;
+	return c.json(
+		{ error: 'forbidden', message: `Only project owners and admins can ${action}` },
+		403,
+	);
+}
+
+/**
  * Whether a DSN/URL project id refers to `project`. Accepts the numeric
  * ingest id (what current DSNs carry, since Sentry SDKs require numeric
  * project ids) and the legacy UUID (DSNs issued before ingest ids existed).

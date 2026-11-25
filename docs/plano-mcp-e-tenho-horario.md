@@ -161,7 +161,8 @@ O que cada um pode hoje (conferido no código):
 | Ação | Quem pode |
 |---|---|
 | Ver projeto, DSN, issues, eventos, anexos, releases, membros | qualquer membro do projeto (token `read`) |
-| Resolver/ignorar/adiar, juntar e **apagar** issue; comentar; subir/apagar source map | qualquer membro (token `write`) |
+| Resolver/ignorar/adiar e juntar issues; comentar; subir source map | qualquer membro (token `write`) |
+| Apagar issue (avulsa, em lote ou pelo `/api/0`) e apagar source map | `owner` ou `admin` do projeto (token `write`) — desde 25/11/2026 |
 | Apagar comentário | só quem escreveu |
 | Webhook (ver, mudar, testar), limite por hora, retenção, cabeçalhos escondidos, orçamento de anexos, filtros, nome e plataforma | `owner` ou `admin` do projeto (token `write`); para `member` o webhook nem aparece |
 | Trocar a chave do DSN | `owner` ou `admin` do projeto (token `projects`) |
@@ -186,9 +187,8 @@ Como o MCP garante isso:
   slug repetido em `confirm`.
 - **Auditoria** com `via: api_token` e o prefixo do token (já na fase 2).
 
-Achado para decidir (não muda nada agora): hoje **qualquer membro** de um projeto pode apagar issues, juntar issues e
-apagar source maps. Pelo MCP, isso vale para um token `write` de um membro comum. Se quiser, apagar issue e apagar
-source map passam a exigir `owner`/`admin` — vale para painel, API e MCP ao mesmo tempo.
+Decidido em 25/11/2026: apagar issue e apagar source map passaram a exigir `owner`/`admin` — no painel, na API e,
+por consequência, no MCP. Membro comum continua triando, comentando e subindo source map.
 
 ### Fase 4 — Integrações (tudo configurável pelo MCP)
 

@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { createMiddleware } from 'hono/factory';
-import type { AppContext } from '../lib/project-access';
+import { type AppContext, canManageProject } from '../lib/project-access';
 import { serializeEventEntries } from '../lib/sentry-entries';
 import type { AuthContext, Env, Project } from '../types';
 import { contentDisposition, safeContentType } from './attachments';
@@ -816,6 +816,9 @@ async function handleIssueDelete(c: AppContext) {
 	const resolved = await resolveIssue(c, issueId);
 	if (!resolved) {
 		return c.json({ detail: 'not found' }, 404);
+	}
+	if (!canManageProject(resolved.project.memberRole)) {
+		return c.json({ detail: 'Only project owners and admins can delete issues' }, 403);
 	}
 	const response = await projectStateFetch(c, resolved.project.id, '/issue/delete', { issueId });
 	if (!response.ok) {

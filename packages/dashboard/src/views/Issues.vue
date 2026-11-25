@@ -30,6 +30,7 @@ import {
 import { useConfirm } from '../composables/useConfirm';
 import { useToast } from '../composables/useToast';
 import { formatNumber, timeAgo } from '../lib/format';
+import { useProjectsStore } from '../stores/projects';
 
 interface Issue {
 	id: string;
@@ -53,6 +54,9 @@ const route = useRoute();
 const toast = useToast();
 const askConfirm = useConfirm();
 const slug = computed(() => route.params.slug as string);
+const projectsStore = useProjectsStore();
+// Deleting issues is for project owners and admins (the server enforces it).
+const canDelete = computed(() => projectsStore.canManage(slug.value));
 
 /** Status values the route query may seed (empty = all). */
 const QUERY_STATUSES = new Set(['', 'unresolved', 'resolved', 'ignored', 'snoozed']);
@@ -480,7 +484,17 @@ watch(
 				>
 					{{ merging ? 'Merging...' : 'Merge' }}
 				</UiButton>
-				<UiButton size="sm" variant="danger" :icon="Trash2" :disabled="bulkLoading" @click="bulkDelete">Delete</UiButton>
+				<UiButton
+					v-if="canDelete"
+					size="sm"
+					variant="danger"
+					:icon="Trash2"
+					:disabled="bulkLoading"
+					data-testid="bulk-delete"
+					@click="bulkDelete"
+				>
+					Delete
+				</UiButton>
 				<UiButton size="sm" variant="ghost" @click="clearSelection">Clear</UiButton>
 			</div>
 

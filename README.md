@@ -339,9 +339,11 @@ Workers Sentinel supports sharing projects with other registered users through r
 
 ### Roles
 
-- **Owner** — The project creator. Full access, cannot be removed or changed.
-- **Admin** — Can manage members (add, remove, change roles) and update project settings.
-- **Member** — Can view the project, its issues, and events.
+- **Owner** — Full access to the project; the only one who can delete it. Cannot be removed or changed.
+- **Admin** — Updates project settings (webhook, rate limit, retention, filters, name, platform), rotates the DSN key, and deletes issues and source maps.
+- **Member** — Views the project, its issues and events; triages issues (resolve, ignore, snooze, merge), comments, and uploads source maps. Cannot delete issues or source maps.
+
+Project membership itself is managed by instance administrators in the admin area. API tokens and the MCP act with the token owner's role, narrowed by the token's scopes.
 
 ### Adding Members
 
