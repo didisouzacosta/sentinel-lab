@@ -13,6 +13,8 @@ concurrency:
 jobs:
   ci:
     name: Lint, Typecheck & Test
+    # Upstream only: the Sentinel Lab fork runs lab-deploy.yml on main instead.
+    if: ${{ github.repository_owner == 'G4brym' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

@@ -3,7 +3,7 @@
 **Produção:** https://sentinel.adrianosouzacosta.com.br — painel atrás do Cloudflare Access; só a ingestão dos SDKs é pública.
 
 Experimento: rastreamento de erros compatível com os SDKs do Sentry rodando **só na Cloudflare**, com o objetivo de chegar à simbolização de **dSYM (iOS)** e **ProGuard/R8 (Android)**.
-Base: fork MIT do [workers-sentinel](https://github.com/G4brym/workers-sentinel) (branch `lab/main`). Avaliação inicial: [RELATORIO.md](RELATORIO.md).
+Base: fork MIT do [workers-sentinel](https://github.com/G4brym/workers-sentinel) (branch `main`). Avaliação inicial: [RELATORIO.md](RELATORIO.md).
 
 ## Isolamento (fácil de apagar)
 

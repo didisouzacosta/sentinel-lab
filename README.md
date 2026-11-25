@@ -148,7 +148,7 @@ pnpm install
 pnpm deploy
 ```
 
-> **Sentinel Lab fork:** `lab/main` deploys itself to sentinel.adrianosouzacosta.com.br through GitHub Actions
+> **Sentinel Lab fork:** `main` deploys itself to sentinel.adrianosouzacosta.com.br through GitHub Actions
 > (lint → tests → deploy → smoke checks, with automatic rollback). See "Continuous deployment" in
 > [AGENTS.md](AGENTS.md).
 

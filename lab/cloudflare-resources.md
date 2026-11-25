@@ -20,8 +20,8 @@ Todo recurso criado por este projeto começa com **`sentinel-lab`** / **`Sentine
 
 ## Deploy automático (desde 25/11/2026)
 
-- Todo push ou merge em `lab/main` roda `.github/workflows/lab-deploy.yml`: lint → testes → `wrangler deploy` → `lab/smoke-production.sh` → rollback automático se o smoke falhar. Detalhes em `AGENTS.md` ("Continuous deployment").
-- O token fica só no GitHub (environment `production`, liberado só para `lab/main`). O `teardown.sh` não apaga o token; como ele é compartilhado com o Tenho Horário, ao desmontar o Sentinel tire só o segredo do GitHub (ou troque o token no Tenho Horário antes de revogá-lo).
+- Todo push ou merge em `main` roda `.github/workflows/lab-deploy.yml`: lint → testes → `wrangler deploy` → `lab/smoke-production.sh` → rollback automático se o smoke falhar. Detalhes em `AGENTS.md` ("Continuous deployment").
+- O token fica só no GitHub (environment `production`, liberado só para `main`). O `teardown.sh` não apaga o token; como ele é compartilhado com o Tenho Horário, ao desmontar o Sentinel tire só o segredo do GitHub (ou troque o token no Tenho Horário antes de revogá-lo).
 
 ## Proteção (Access)
 
