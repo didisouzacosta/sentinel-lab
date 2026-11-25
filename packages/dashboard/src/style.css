@@ -78,6 +78,10 @@
 }
 
 @theme inline {
+	/* Only design-system colors exist: Tailwind's default palette is switched off,
+	   so raw classes such as bg-gray-500 generate nothing. */
+	--color-*: initial;
+	--color-white: #fff;
 	/* Semantic colors (use these in new code) */
 	--color-canvas: var(--sn-canvas);
 	--color-surface: var(--sn-surface);
@@ -150,50 +154,17 @@
 			opacity: 0.45;
 		}
 	}
-
-	/* Legacy palettes — still used by screens not migrated yet (removed in stage 11) */
-	--color-primary-50: #f0f9ff;
-	--color-primary-100: #e0f2fe;
-	--color-primary-200: #bae6fd;
-	--color-primary-300: #7dd3fc;
-	--color-primary-400: #38bdf8;
-	--color-primary-500: #0ea5e9;
-	--color-primary-600: #0284c7;
-	--color-primary-700: #0369a1;
-	--color-primary-800: #075985;
-	--color-primary-900: #0c4a6e;
-	--color-primary-950: #082f49;
-	--color-error-50: #fef2f2;
-	--color-error-100: #fee2e2;
-	--color-error-200: #fecaca;
-	--color-error-300: #fca5a5;
-	--color-error-400: #f87171;
-	--color-error-500: #ef4444;
-	--color-error-600: #dc2626;
-	--color-error-700: #b91c1c;
-	--color-error-800: #991b1b;
-	--color-error-900: #7f1d1d;
-	--color-warning-50: #fffbeb;
-	--color-warning-100: #fef3c7;
-	--color-warning-200: #fde68a;
-	--color-warning-300: #fcd34d;
-	--color-warning-400: #fbbf24;
-	--color-warning-500: #f59e0b;
-	--color-warning-600: #d97706;
-	--color-warning-700: #b45309;
-	--color-warning-800: #92400e;
-	--color-warning-900: #78350f;
 }
 
 @layer base {
-	/* Tailwind v3 compatibility: v4 defaults borders to currentColor, buttons to
-	   cursor:default and placeholders to 50% currentColor. */
+	/* Defaults: borders and placeholders use the tokens (v4 would use
+	   currentColor), buttons get the pointer cursor. */
 	*,
 	::after,
 	::before,
 	::backdrop,
 	::file-selector-button {
-		border-color: var(--color-gray-200, currentcolor);
+		border-color: var(--color-border, currentcolor);
 	}
 	button:not(:disabled),
 	[role="button"]:not(:disabled) {
@@ -201,7 +172,7 @@
 	}
 	input::placeholder,
 	textarea::placeholder {
-		color: var(--color-gray-400);
+		color: var(--color-fg-subtle);
 	}
 
 	html {
@@ -239,59 +210,5 @@
 	}
 	dialog::backdrop {
 		background: var(--color-backdrop);
-	}
-}
-
-/*
- * Legacy aliases — kept unchanged so screens not yet migrated look the same.
- * New code uses the Ui* components instead. Removed in stage 11.
- */
-@layer components {
-	.btn {
-		@apply inline-flex items-center justify-center px-4 py-2 text-sm font-medium rounded-lg transition-colors focus:outline-hidden focus:ring-2 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed;
-	}
-
-	.btn-primary {
-		@apply bg-primary-600 text-white hover:bg-primary-700 focus:ring-primary-500;
-	}
-
-	.btn-secondary {
-		@apply bg-gray-100 text-gray-700 hover:bg-gray-200 focus:ring-gray-500 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600;
-	}
-
-	.btn-danger {
-		@apply bg-error-600 text-white hover:bg-error-700 focus:ring-error-500;
-	}
-
-	.input {
-		@apply block w-full px-3 py-2 border border-gray-300 rounded-lg shadow-xs placeholder-gray-400 focus:outline-hidden focus:ring-primary-500 focus:border-primary-500 text-sm dark:bg-gray-800 dark:border-gray-600 dark:text-white;
-	}
-
-	.label {
-		@apply block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1;
-	}
-
-	.card {
-		@apply bg-white rounded-lg shadow-xs border border-gray-200 dark:bg-gray-800 dark:border-gray-700;
-	}
-
-	.badge {
-		@apply inline-flex items-center px-2 py-0.5 rounded-sm text-xs font-medium;
-	}
-
-	.badge-error {
-		@apply bg-error-100 text-error-800 dark:bg-error-900 dark:text-error-200;
-	}
-
-	.badge-warning {
-		@apply bg-warning-100 text-warning-800 dark:bg-warning-900 dark:text-warning-200;
-	}
-
-	.badge-info {
-		@apply bg-primary-100 text-primary-800 dark:bg-primary-900 dark:text-primary-200;
-	}
-
-	.badge-success {
-		@apply bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200;
 	}
 }

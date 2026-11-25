@@ -40,6 +40,9 @@ onBeforeUnmount(() => clearTimeout(timer));
 				{{ copied ? 'Copied' : 'Copy' }}
 			</button>
 		</figcaption>
-		<pre class="overflow-x-auto px-3.5 py-3 text-body-s leading-5 text-fg"><code>{{ code }}</code></pre>
+		<!-- Focusable scroll region: long lines scroll sideways, keyboard users included -->
+		<div class="overflow-x-auto" tabindex="0" role="region" :aria-label="`${language ?? 'Code'} snippet`">
+			<pre class="w-max min-w-full px-3.5 py-3 text-body-s leading-5 text-fg"><code>{{ code }}</code></pre>
+		</div>
 	</figure>
 </template>

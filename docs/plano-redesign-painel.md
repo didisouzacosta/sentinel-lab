@@ -73,7 +73,7 @@ Regra: se aparece em mais de um lugar ou tem comportamento, é componente. Nome 
 | App | `App/FilterRow`, `App/SuggestionRow`, `App/SourceMapRow` | marcação em `ProjectFilters.vue` / `ProjectSettings.vue` com `UiTag`, `UiSwitch`, `UiButton` | dados da tela |
 
 Como garantir:
-- **Teste de padronização** (etapa 0): um teste do vitest varre `src/views/**` e falha se encontrar paleta crua (`gray-`, `sky-`, `red-`…, hex), `fixed inset-0`, `confirm(`, `alert(` ou `<svg` inline. Começa com uma lista de exceções (as telas ainda não migradas) que encolhe a cada etapa e termina vazia na etapa 11.
+- **Teste de padronização** (etapa 0): um teste do vitest varre `src/views/**` e falha se encontrar paleta crua (`gray-`, `sky-`, `red-`…, hex), `fixed inset-0`, `confirm(`, `alert(` ou `<svg` inline. Começa com uma lista de exceções (as telas ainda não migradas) que encolhe a cada etapa; ficou vazia na etapa 10. Na etapa 11 o `style.css` passou a desligar a paleta padrão do Tailwind (`--color-*: initial`), então uma classe crua como `bg-gray-500` nem gera CSS, e o teste também confere que o arquivo não tem paletas nem aliases antigos.
 - **Code Connect** (opcional, etapa 11): ligar cada componente do Figma ao `.vue` correspondente.
 
 ## 4. Direção visual
@@ -139,7 +139,7 @@ Cada etapa segue o mesmo ciclo: **Figma aprovado → implementação (visual + t
 | 8b | **Connect: SDKs e MCP** (nova, de acesso fácil) | `views/Connect.vue` (rota global `/setup`, com `?project=` e `?tab=mcp`; `projects/:slug/setup` redireciona), `router/index.ts`, atalho fixo na barra lateral, item no menu do usuário, link no estado vazio de `Issues.vue` | Aba **SDKs** (escolhe o projeto): DSN copiável, escolha da plataforma (Browser, Node.js, Cloudflare Workers via RPC, Python, iOS, Android, outros SDKs Sentry) e passos com o DSN já preenchido. Aba **MCP**: criar token de API, comando pronto para o Claude Code e JSON para outros clientes, apontando o MCP do Sentry (0.51.0, fixado) para o `/api/0` desta instância; aviso lista só o que funciona (ver `docs/compat-mcp-sentry.md`) |
 | 9 | **Conta** (Settings já migrada em 25/11/2026: os cartões estavam sem espaçamento interno) | `Settings.vue`, `ApiTokens.vue` | Perfil, senha, passkeys, tokens; `useConfirm` ao apagar passkey e revogar token; token novo mostrado uma vez em `UiDialog` com cópia |
 | 10 | **Administração** | `admin/*.vue` | Tabelas (cartões no celular), os 10 modais de admin em `UiDialog`, confirmações em `UiConfirm` |
-| 11 | **Limpeza** | `style.css`, testes | Remove aliases antigos; varredura final: nenhum `confirm(`/`alert(`/`fixed inset-0` restante, axe sem erros, contraste, teclado e 375/768/1440px em todas as telas |
+| 11 | **Limpeza** | `style.css`, testes | Remove aliases antigos; varredura final: nenhum `confirm(`/`alert(`/`fixed inset-0` restante, axe sem erros, contraste, teclado e 375/768/1440px em todas as telas. **Feito (25/11/2026):** aliases (`.btn`, `.card`, `.input`, `.label`, `.badge-*`) e paletas `primary/error/warning` removidos, paleta padrão desligada (o CSS gerado só perdeu as classes antigas), borda e placeholder padrão nos tokens; axe-core 4.14 (WCAG 2.2 AA) sem violações nas telas de projeto, conta e Connect, claro e escuro, com modal e menu abertos; blocos de código roláveis agora recebem foco pelo teclado. Ficaram de fora: login/cadastro e administração no axe (exigem sair da sessão ou passkey) e o Code Connect (opcional) |
 
 ## 7. Figma
 

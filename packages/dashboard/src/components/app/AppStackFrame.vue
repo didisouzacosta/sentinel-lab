@@ -89,7 +89,14 @@ const inApp = computed(() => props.frame.in_app !== false);
 			<UiTag v-if="inApp">in-app</UiTag>
 		</button>
 		<!-- Context lines: scroll horizontally inside the card, never the page -->
-		<div v-if="expanded && hasContext" :id="contextId" class="overflow-x-auto bg-canvas py-1.5">
+		<div
+			v-if="expanded && hasContext"
+			:id="contextId"
+			class="overflow-x-auto bg-canvas py-1.5"
+			tabindex="0"
+			role="region"
+			:aria-label="`Source around ${file}${position}`"
+		>
 			<pre class="min-w-max font-mono text-body-s leading-5"><code
 				v-for="line in lines"
 				:key="line.n"

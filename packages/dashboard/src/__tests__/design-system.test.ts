@@ -67,3 +67,16 @@ describe('design-system standardization guard', () => {
 		expect(missing, 'remove deleted files from LEGACY').toEqual([]);
 	});
 });
+
+describe('style.css only defines design-system colors', () => {
+	const css = readFileSync(join(SRC, 'style.css'), 'utf8');
+
+	it('switches off the default Tailwind palette', () => {
+		expect(css).toMatch(/--color-\*:\s*initial;/);
+	});
+
+	it('has no legacy palettes or alias classes', () => {
+		expect(css).not.toMatch(/--color-(?:primary|error|warning|gray|sky)-\d/);
+		expect(css).not.toMatch(/^\s*\.(?:btn|card|input|label|badge)[\w-]*\s*\{/m);
+	});
+});
