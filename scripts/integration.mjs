@@ -6,7 +6,7 @@
 //
 // Usage: node scripts/integration.mjs
 // Exit code: the node --test exit code (non-zero on any failure).
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { mkdtemp, open, rm } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -87,14 +87,18 @@ Object.assign(env, {
 	SETUP_TOKEN,
 });
 
+// Local machines with mise pin pnpm through it (mise.toml); CI and machines
+// without mise use the pnpm already on PATH (the repo's packageManager).
+const hasMise = spawnSync('mise', ['--version'], { stdio: 'ignore' }).status === 0;
+const [command, prefix] = hasMise
+	? ['mise', ['exec', 'npm:pnpm@10.24.0', '--', 'pnpm']]
+	: ['pnpm', []];
+
 const isAlive = { exited: null };
 const wrangler = spawn(
-	'mise',
+	command,
 	[
-		'exec',
-		'npm:pnpm@10.24.0',
-		'--',
-		'pnpm',
+		...prefix,
 		'--dir',
 		'packages/workers-sentinel',
 		'exec',

@@ -769,15 +769,18 @@ test('gate rejects password-session admin with passkey_required', async () => {
 	assert.equal(allowed.status, 200);
 });
 
-test('removed project-creation route answers 404 authenticated', async () => {
+// POST /api/projects came back in 6626da3 with the admin area's bar: an admin
+// in a passkey session (or a token with the `projects` scope). A password
+// session, even the first admin's, is refused.
+test('project creation refuses an admin password session (passkey required)', async () => {
 	const token = await firstUserPasswordToken();
 	const response = await api('/api/projects', {
 		method: 'POST',
 		token,
-		body: { name: `Removed ${runId}`, platform: 'node' },
+		body: { name: `Password ${runId}`, platform: 'node' },
 	});
-	assert.equal(response.status, 404);
-	assert.equal(response.data.error, 'not_found');
+	assert.equal(response.status, 403);
+	assert.equal(response.data.error, 'passkey_required');
 });
 
 test('must-change flag on first login of an admin-created user', async () => {
