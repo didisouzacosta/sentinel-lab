@@ -222,6 +222,8 @@ describe('Connect page', () => {
 		expect(wrapper.text()).toContain('https://github.com/didisouzacosta/sentinel-ios');
 		expect(wrapper.text()).toContain('Sentinel.start(dsn:');
 		expect(wrapper.text()).toContain('Sentinel.grantConsent()');
+		expect(wrapper.text()).toContain('from: "0.1.0"');
+		expect(wrapper.text()).not.toContain('branch: "main"');
 		expect(wrapper.text()).not.toContain('sentry-cocoa');
 		expect(wrapper.text()).toContain('Sentinel.start(dsn: "https://key@host/p1")');
 

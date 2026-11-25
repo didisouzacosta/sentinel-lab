@@ -72,7 +72,7 @@ export function ingestOrigin(dsn?: string): string {
 	}
 }
 
-/** Sentinel's own iOS SDK. Until its first tag (0.1.0) the guide installs the `main` branch. */
+/** Sentinel's own iOS SDK, installed by SPM from its tags (first release: 0.1.0). */
 const SENTINELKIT_URL = 'https://github.com/didisouzacosta/sentinel-ios';
 
 // Latest on Maven Central when this was written; Gradle needs an explicit version.
@@ -328,7 +328,7 @@ export const PLATFORMS: readonly PlatformGuide[] = [
 			{
 				title: 'Add SentinelKit with Swift Package Manager',
 				description:
-					'In Xcode: File → Add Package Dependencies…, paste this URL, set Dependency Rule to Branch "main" and add the SentinelKit library to your app target.',
+					'In Xcode: File → Add Package Dependencies…, paste this URL, keep Dependency Rule "Up to Next Major Version" from 0.1.0 and add the SentinelKit library to your app target.',
 				language: 'Package URL',
 				code: SENTINELKIT_URL,
 			},
@@ -337,7 +337,7 @@ export const PLATFORMS: readonly PlatformGuide[] = [
 				description:
 					'Call it once. Swift Package projects use the dependency below instead of the Xcode menu.',
 				language: 'MyApp.swift',
-				code: `import SentinelKit\nimport SwiftUI\n\n@main\nstruct MyApp: App {\n  init() {\n    Sentinel.start(dsn: "${dsn}") { options in\n      options.environment = "production"\n    }\n  }\n\n  var body: some Scene {\n    WindowGroup { ContentView() }\n  }\n}\n\n// Package.swift:\n// .package(url: "${SENTINELKIT_URL}", branch: "main")\n// .product(name: "SentinelKit", package: "sentinel-ios")`,
+				code: `import SentinelKit\nimport SwiftUI\n\n@main\nstruct MyApp: App {\n  init() {\n    Sentinel.start(dsn: "${dsn}") { options in\n      options.environment = "production"\n    }\n  }\n\n  var body: some Scene {\n    WindowGroup { ContentView() }\n  }\n}\n\n// Package.swift:\n// .package(url: "${SENTINELKIT_URL}", from: "0.1.0")\n// .product(name: "SentinelKit", package: "sentinel-ios")`,
 			},
 			{
 				title: 'Grant consent after informing the user',
