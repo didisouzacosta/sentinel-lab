@@ -16,7 +16,6 @@ const LEGACY = new Set([
 	'views/ApiTokens.vue',
 	'views/EventDetail.vue',
 	'views/IssueDetail.vue',
-	'views/Issues.vue',
 	'views/ProjectFilters.vue',
 	'views/ProjectSettings.vue',
 	'views/ReleaseDetail.vue',
