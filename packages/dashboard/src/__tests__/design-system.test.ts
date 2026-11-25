@@ -18,7 +18,6 @@ const LEGACY = new Set([
 	'views/IssueDetail.vue',
 	'views/Issues.vue',
 	'views/ProjectFilters.vue',
-	'views/ProjectOverview.vue',
 	'views/ProjectSettings.vue',
 	'views/ReleaseDetail.vue',
 	'views/Releases.vue',
@@ -34,7 +33,8 @@ const RULES: [string, RegExp][] = [
 		/\b(?:bg|text|border|ring|divide|from|to|via|fill|stroke|outline|placeholder|accent|decoration)-(?:gray|slate|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose|primary|error|warning)-\d{2,3}\b/,
 	],
 	['hex color (use a token)', /#[0-9a-fA-F]{6}\b|#[0-9a-fA-F]{3}\b(?![0-9a-zA-Z])/],
-	['inline <svg> (use a lucide-vue-next icon)', /<svg[\s>]/],
+	// Charts draw SVG on purpose and opt out with data-chart; icons must come from lucide.
+	['inline <svg> icon (use a lucide-vue-next icon)', /<svg(?![^>]*\bdata-chart\b)[\s>]/],
 	['hand-rolled overlay (use UiDialog / UiDrawer)', /fixed inset-0/],
 	['window.confirm() (use useConfirm)', /(?<![\w.])confirm\(/],
 	['window.alert() (use useToast)', /(?<![\w.])alert\(/],
