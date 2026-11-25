@@ -1,7 +1,10 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
+import { CircleCheck } from 'lucide-vue-next';
+import { computed, onMounted, ref, watch } from 'vue';
 import { RouterLink, useRoute } from 'vue-router';
 import { api } from '../api/client';
+import { UiAlert, UiBadge, UiCard, UiEmptyState, UiSkeleton } from '../components/ui';
+import { formatNumber, timeAgo } from '../lib/format';
 
 interface Release {
 	version: string;
@@ -63,136 +66,109 @@ function formatTime(dateString: string): string {
 	return new Date(dateString).toLocaleString();
 }
 
-function formatTimeAgo(dateString: string): string {
-	const date = new Date(dateString);
-	const now = new Date();
-	const seconds = Math.floor((now.getTime() - date.getTime()) / 1000);
-
-	if (seconds < 60) return 'just now';
-	if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
-	if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
-	if (seconds < 604800) return `${Math.floor(seconds / 86400)}d ago`;
-	return date.toLocaleDateString();
-}
-
-function getLevelBadgeClass(level: string): string {
-	switch (level) {
-		case 'fatal':
-		case 'error':
-			return 'badge-error';
-		case 'warning':
-			return 'badge-warning';
-		default:
-			return 'badge-info';
-	}
-}
-
 onMounted(() => loadRelease());
+watch(version, () => loadRelease());
 </script>
 
 <template>
-	<div>
+	<div class="flex flex-col gap-5">
 		<!-- Loading -->
-		<div v-if="loading" class="text-center py-12">
-			<div class="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-600 mx-auto"></div>
+		<div v-if="loading" class="flex flex-col gap-5" data-testid="release-loading">
+			<UiSkeleton variant="line" :count="2" label="Loading release" class="max-w-md" />
+			<UiSkeleton variant="block" label="Loading numbers" class="h-[70px]" />
+			<UiCard><UiSkeleton :count="4" label="Loading issues" /></UiCard>
 		</div>
 
 		<!-- Error -->
-		<div v-else-if="error" class="bg-error-50 dark:bg-error-900/20 text-error-700 dark:text-error-400 px-4 py-3 rounded-lg">
-			{{ error }}
-		</div>
+		<UiAlert v-else-if="error" tone="error" action-label="Try again" @action="loadRelease">{{ error }}</UiAlert>
 
 		<!-- Release detail -->
-		<div v-else-if="release">
-			<!-- Breadcrumb -->
-			<div class="flex items-center space-x-2 text-sm text-gray-500 mb-2">
-				<RouterLink :to="`/projects/${slug}/releases`" class="hover:text-gray-700">
-					Releases
-				</RouterLink>
-				<span>/</span>
-				<span class="font-mono">{{ release.version }}</span>
-			</div>
-
-			<!-- Header -->
-			<div class="mb-6">
-				<h1 class="text-xl font-bold text-gray-900 dark:text-white font-mono mb-4">
-					{{ release.version }}
-				</h1>
-
-				<div class="flex items-center space-x-6 text-sm text-gray-500">
-					<div>
-						<span class="font-medium text-gray-900 dark:text-white">{{ release.eventCount.toLocaleString() }}</span>
-						events
-					</div>
-					<div>
-						<span class="font-medium text-gray-900 dark:text-white">{{ release.issueCount.toLocaleString() }}</span>
-						issues
-					</div>
-					<div v-if="release.newIssueCount > 0">
-						<span class="badge badge-warning">{{ release.newIssueCount }} new issues</span>
-					</div>
-					<div>
-						First seen <span class="font-medium text-gray-900 dark:text-white">{{ formatTime(release.firstSeen) }}</span>
-					</div>
-					<div>
-						Last seen <span class="font-medium text-gray-900 dark:text-white">{{ formatTime(release.lastSeen) }}</span>
-					</div>
+		<template v-else-if="release">
+			<header class="flex flex-col gap-2">
+				<div class="flex flex-wrap items-center gap-2.5">
+					<h1 class="font-mono text-heading-l break-all text-fg">{{ release.version }}</h1>
+					<span
+						v-if="release.newIssueCount > 0"
+						class="inline-flex h-[22px] items-center rounded-full bg-level-warning-bg px-2 text-caption font-medium text-level-warning"
+					>
+						{{ release.newIssueCount }} new issues
+					</span>
 				</div>
-			</div>
+				<p class="text-body-s text-fg-muted">
+					First seen {{ formatTime(release.firstSeen) }} · last seen {{ timeAgo(release.lastSeen) }}
+				</p>
+			</header>
 
-			<!-- Issues list -->
-			<div v-if="issues.length > 0" class="card divide-y divide-gray-200 dark:divide-gray-700">
-				<div class="p-4 border-b border-gray-200 dark:border-gray-700">
-					<h2 class="font-semibold text-gray-900 dark:text-white">Issues in this release</h2>
+			<dl class="grid grid-cols-2 overflow-hidden rounded-[10px] border border-border bg-surface sm:grid-cols-4" data-numeric>
+				<div class="flex flex-col gap-1 border-border px-4 py-3 max-sm:border-b sm:border-r">
+					<dt class="text-caption text-fg-subtle">Events</dt>
+					<dd class="text-heading-m text-fg">{{ formatNumber(release.eventCount) }}</dd>
 				</div>
+				<div class="flex flex-col gap-1 border-border px-4 py-3 max-sm:border-b max-sm:border-l sm:border-r">
+					<dt class="text-caption text-fg-subtle">Issues</dt>
+					<dd class="text-heading-m text-fg">{{ formatNumber(release.issueCount) }}</dd>
+				</div>
+				<div class="flex flex-col gap-1 border-border px-4 py-3 sm:border-r">
+					<dt class="text-caption text-fg-subtle">New issues</dt>
+					<dd class="text-heading-m text-fg">{{ formatNumber(release.newIssueCount) }}</dd>
+				</div>
+				<div class="flex flex-col gap-1 border-border px-4 py-3 max-sm:border-l">
+					<dt class="text-caption text-fg-subtle">Last seen</dt>
+					<dd class="text-heading-m text-fg" :title="formatTime(release.lastSeen)">{{ timeAgo(release.lastSeen) }}</dd>
+				</div>
+			</dl>
 
-				<RouterLink
-					v-for="issue in issues"
-					:key="issue.id"
-					:to="`/projects/${slug}/issues/${issue.id}`"
-					class="block p-4 hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors"
-				>
-					<div class="flex items-start justify-between">
-						<div class="flex-1 min-w-0">
-							<div class="flex items-center space-x-2">
-								<span :class="['badge', getLevelBadgeClass(issue.level)]">
-									{{ issue.level }}
+			<UiCard title="Issues in this release" :meta="issues.length ? `${issues.length} issue${issues.length === 1 ? '' : 's'}` : undefined">
+				<UiEmptyState v-if="issues.length === 0" :icon="CircleCheck" title="No issues found in this release." />
+				<table v-else class="w-full border-collapse text-left max-sm:block sm:table-fixed">
+					<caption class="sr-only">Issues in {{ release.version }}</caption>
+					<thead class="max-sm:sr-only">
+						<tr class="border-b border-border bg-raised text-overline text-fg-subtle uppercase">
+							<th scope="col" class="py-2 pl-4 font-semibold">Issue</th>
+							<th scope="col" class="w-36 py-2 pr-4 text-right font-semibold">First in release</th>
+							<th scope="col" class="w-28 py-2 pr-4 text-right font-semibold">In release</th>
+							<th scope="col" class="w-24 py-2 pr-4 text-right font-semibold">Total</th>
+						</tr>
+					</thead>
+					<tbody class="max-sm:block">
+						<tr
+							v-for="issue in issues"
+							:key="issue.id"
+							class="relative border-b border-border align-top transition-colors last:border-b-0 hover:bg-raised max-sm:flex max-sm:flex-wrap max-sm:gap-x-3 max-sm:gap-y-1 max-sm:px-4 max-sm:py-3"
+							data-testid="release-issue-row"
+						>
+							<td class="min-w-0 py-3 pl-4 max-sm:basis-full max-sm:p-0">
+								<span class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+									<UiBadge :level="issue.level" />
+									<RouterLink
+										:to="`/projects/${slug}/issues/${issue.id}`"
+										class="text-body font-medium text-fg outline-none after:absolute after:inset-0 after:content-[''] focus-visible:after:ring-3 focus-visible:after:ring-accent/40"
+									>
+										{{ issue.metadata.type }}
+									</RouterLink>
+									<span
+										v-if="issue.firstSeen === issue.firstSeenInRelease"
+										class="inline-flex h-5 items-center rounded-full bg-level-warning-bg px-2 text-caption font-medium text-level-warning"
+									>
+										new
+									</span>
+									<span class="min-w-0 truncate text-body text-fg-muted max-sm:basis-full">{{ issue.metadata.value || issue.title }}</span>
 								</span>
-								<h3 class="text-sm font-medium text-gray-900 dark:text-white truncate">
-									{{ issue.metadata.type }}
-								</h3>
-								<span
-									v-if="issue.firstSeen === issue.firstSeenInRelease"
-									class="badge badge-warning"
-								>
-									new
-								</span>
-							</div>
-							<p class="mt-1 text-sm text-gray-600 dark:text-gray-300 truncate">
-								{{ issue.metadata.value || issue.title }}
-							</p>
-							<p v-if="issue.culprit" class="mt-1 text-xs text-gray-400 truncate">
-								{{ issue.culprit }}
-							</p>
-						</div>
-
-						<div class="ml-4 flex flex-col items-end text-sm">
-							<div class="flex items-center space-x-4 text-gray-500">
-								<span title="Events in this release">{{ issue.releaseEventCount.toLocaleString() }} in release</span>
-								<span title="Total events" class="text-gray-400">{{ issue.count.toLocaleString() }} total</span>
-							</div>
-							<p class="text-xs text-gray-400 mt-1">
-								{{ formatTimeAgo(issue.firstSeenInRelease) }}
-							</p>
-						</div>
-					</div>
-				</RouterLink>
-			</div>
-
-			<!-- No issues -->
-			<div v-else class="text-center py-8 text-gray-500">
-				No issues found in this release.
-			</div>
-		</div>
+								<span v-if="issue.culprit" class="mt-1 block truncate font-mono text-caption text-fg-subtle">{{ issue.culprit }}</span>
+							</td>
+							<td class="py-3 pr-4 text-right text-body-s text-fg-subtle max-sm:p-0 max-sm:text-left max-sm:text-caption" data-numeric>
+								<span class="sm:hidden">First in release </span>{{ timeAgo(issue.firstSeenInRelease) }}
+							</td>
+							<td class="py-3 pr-4 text-right text-body-s font-medium text-fg max-sm:inline max-sm:p-0 max-sm:text-left max-sm:text-caption" data-numeric :title="'Events in this release'">
+								{{ formatNumber(issue.releaseEventCount) }}<span class="font-normal text-fg-subtle sm:hidden"> in release</span>
+							</td>
+							<td class="py-3 pr-4 text-right text-body-s text-fg-subtle max-sm:inline max-sm:p-0 max-sm:text-left max-sm:text-caption" data-numeric :title="'Total events'">
+								{{ formatNumber(issue.count) }}<span class="sm:hidden"> total</span>
+							</td>
+						</tr>
+					</tbody>
+				</table>
+			</UiCard>
+		</template>
 	</div>
 </template>

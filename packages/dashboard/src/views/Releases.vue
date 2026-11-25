@@ -1,7 +1,11 @@
 <script setup lang="ts">
+import { Package } from 'lucide-vue-next';
 import { computed, onMounted, ref, watch } from 'vue';
 import { RouterLink, useRoute } from 'vue-router';
 import { api } from '../api/client';
+import AppPageHeader from '../components/app/AppPageHeader.vue';
+import { UiAlert, UiButton, UiCard, UiEmptyState, UiSkeleton } from '../components/ui';
+import { formatNumber, timeAgo } from '../lib/format';
 
 interface Release {
 	version: string;
@@ -17,14 +21,14 @@ const slug = computed(() => route.params.slug as string);
 
 const releases = ref<Release[]>([]);
 const loading = ref(true);
+const loadingMore = ref(false);
 const error = ref<string | null>(null);
 const hasMore = ref(false);
 const nextCursor = ref<string | undefined>();
 
 async function loadReleases(append = false) {
-	if (!append) {
-		loading.value = true;
-	}
+	if (append) loadingMore.value = true;
+	else loading.value = true;
 	error.value = null;
 
 	try {
@@ -50,101 +54,98 @@ async function loadReleases(append = false) {
 		error.value = err instanceof Error ? err.message : 'Failed to load releases';
 	} finally {
 		loading.value = false;
+		loadingMore.value = false;
 	}
 }
 
-function formatTimeAgo(dateString: string): string {
-	const date = new Date(dateString);
-	const now = new Date();
-	const seconds = Math.floor((now.getTime() - date.getTime()) / 1000);
-
-	if (seconds < 60) return 'just now';
-	if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
-	if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
-	if (seconds < 604800) return `${Math.floor(seconds / 86400)}d ago`;
-	return date.toLocaleDateString();
-}
+const releaseLink = (version: string) =>
+	`/projects/${slug.value}/releases/${encodeURIComponent(version)}`;
 
 onMounted(() => loadReleases());
 watch(slug, () => loadReleases());
 </script>
 
 <template>
-	<div>
+	<div class="flex flex-col gap-5">
+		<AppPageHeader title="Releases" subtitle="Versions reported by your SDKs (the release option)" />
+
 		<!-- Loading -->
-		<div v-if="loading && releases.length === 0" class="text-center py-12">
-			<div class="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-600 mx-auto"></div>
-			<p class="mt-4 text-gray-500">Loading releases...</p>
-		</div>
+		<UiCard v-if="loading && releases.length === 0">
+			<UiSkeleton :count="5" label="Loading releases" />
+		</UiCard>
 
 		<!-- Error -->
-		<div v-else-if="error" class="bg-error-50 dark:bg-error-900/20 text-error-700 dark:text-error-400 px-4 py-3 rounded-lg">
-			{{ error }}
-		</div>
+		<UiAlert v-else-if="error" tone="error" action-label="Try again" @action="loadReleases()">{{ error }}</UiAlert>
 
 		<!-- Empty state -->
-		<div v-else-if="releases.length === 0" class="text-center py-12">
-			<svg class="mx-auto h-12 w-12 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-				<path
-					stroke-linecap="round"
-					stroke-linejoin="round"
-					stroke-width="2"
-					d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z"
-				/>
-			</svg>
-			<h3 class="mt-2 text-lg font-medium text-gray-900 dark:text-white">No releases yet</h3>
-			<p class="mt-1 text-sm text-gray-500">
-				Releases will appear here once you configure the <code class="text-xs bg-gray-200 dark:bg-gray-600 px-1 rounded-sm">release</code> option in your Sentry SDK.
-			</p>
-		</div>
-
-		<!-- Releases list -->
-		<div v-else class="card divide-y divide-gray-200 dark:divide-gray-700">
-			<RouterLink
-				v-for="release in releases"
-				:key="release.version"
-				:to="`/projects/${slug}/releases/${encodeURIComponent(release.version)}`"
-				class="block p-4 hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors"
+		<UiCard v-else-if="releases.length === 0">
+			<UiEmptyState
+				:icon="Package"
+				title="No releases yet"
+				description="Releases appear here once you set the release option in your Sentry SDK."
 			>
-				<div class="flex items-start justify-between">
-					<div class="flex-1 min-w-0">
-						<h3 class="text-sm font-medium text-gray-900 dark:text-white font-mono">
-							{{ release.version }}
-						</h3>
-						<p class="mt-1 text-xs text-gray-500">
-							First seen {{ formatTimeAgo(release.firstSeen) }}
-							&middot;
-							Last seen {{ formatTimeAgo(release.lastSeen) }}
-						</p>
-					</div>
+				<UiButton :to="`/setup?project=${slug}`" size="sm">Open SDK setup</UiButton>
+			</UiEmptyState>
+		</UiCard>
 
-					<div class="ml-4 flex items-center space-x-4 text-sm">
-						<div class="text-right">
-							<span class="font-medium text-gray-900 dark:text-white">{{ release.eventCount.toLocaleString() }}</span>
-							<span class="text-gray-500 ml-1">events</span>
-						</div>
-						<div class="text-right">
-							<span class="font-medium text-gray-900 dark:text-white">{{ release.issueCount.toLocaleString() }}</span>
-							<span class="text-gray-500 ml-1">issues</span>
-						</div>
-						<div v-if="release.newIssueCount > 0" class="text-right">
-							<span class="badge badge-warning">{{ release.newIssueCount }} new</span>
-						</div>
-					</div>
-				</div>
-			</RouterLink>
-		</div>
+		<!-- Releases -->
+		<UiCard v-else>
+			<table class="w-full border-collapse text-left max-sm:block sm:table-fixed">
+				<caption class="sr-only">Releases</caption>
+				<thead class="max-sm:sr-only">
+					<tr class="border-b border-border bg-raised text-overline text-fg-subtle uppercase">
+						<th scope="col" class="py-2 pl-4 font-semibold">Version</th>
+						<th scope="col" class="w-32 py-2 pr-4 text-right font-semibold">First seen</th>
+						<th scope="col" class="w-32 py-2 pr-4 text-right font-semibold">Last seen</th>
+						<th scope="col" class="w-24 py-2 pr-4 text-right font-semibold">Events</th>
+						<th scope="col" class="w-20 py-2 pr-4 text-right font-semibold">Issues</th>
+					</tr>
+				</thead>
+				<tbody class="max-sm:block">
+					<tr
+						v-for="release in releases"
+						:key="release.version"
+						class="relative border-b border-border transition-colors last:border-b-0 hover:bg-raised max-sm:flex max-sm:flex-wrap max-sm:gap-x-3 max-sm:gap-y-1 max-sm:px-4 max-sm:py-3"
+						data-testid="release-row"
+					>
+						<td class="min-w-0 py-3 pl-4 max-sm:basis-full max-sm:p-0">
+							<span class="flex min-w-0 items-center gap-2.5">
+								<!-- Stretched link: the whole row opens the release -->
+								<RouterLink
+									:to="releaseLink(release.version)"
+									class="min-w-0 truncate font-mono text-body text-fg outline-none after:absolute after:inset-0 after:content-[''] focus-visible:after:ring-3 focus-visible:after:ring-accent/40"
+								>
+									{{ release.version }}
+								</RouterLink>
+								<span
+									v-if="release.newIssueCount > 0"
+									class="inline-flex h-5 shrink-0 items-center rounded-full bg-level-warning-bg px-2 text-caption font-medium text-level-warning"
+								>
+									{{ release.newIssueCount }} new
+								</span>
+							</span>
+						</td>
+						<td class="py-3 pr-4 text-right text-body-s text-fg-subtle max-sm:p-0 max-sm:text-left max-sm:text-caption" data-numeric>
+							<span class="sm:hidden">First seen </span>{{ timeAgo(release.firstSeen) }}
+						</td>
+						<td class="py-3 pr-4 text-right text-body-s text-fg-subtle max-sm:hidden" data-numeric>{{ timeAgo(release.lastSeen) }}</td>
+						<td class="py-3 pr-4 text-right text-body-s font-medium text-fg max-sm:inline max-sm:p-0 max-sm:text-left max-sm:text-caption" data-numeric>
+							{{ formatNumber(release.eventCount) }}<span class="font-normal text-fg-subtle sm:hidden"> events</span>
+						</td>
+						<td class="py-3 pr-4 text-right text-body-s font-medium text-fg max-sm:inline max-sm:p-0 max-sm:text-left max-sm:text-caption" data-numeric>
+							{{ formatNumber(release.issueCount) }}<span class="font-normal text-fg-subtle sm:hidden"> issues</span>
+						</td>
+					</tr>
+				</tbody>
+			</table>
+		</UiCard>
 
 		<!-- Load more -->
-		<div v-if="hasMore" class="mt-4 text-center">
-			<button
-				class="btn btn-secondary"
-				:disabled="loading"
-				@click="loadReleases(true)"
-			>
-				<span v-if="loading">Loading...</span>
-				<span v-else>Load More</span>
-			</button>
+		<div v-if="hasMore && releases.length > 0" class="flex items-center justify-between gap-3">
+			<span class="text-caption text-fg-subtle">Showing {{ releases.length }}</span>
+			<UiButton size="sm" :loading="loadingMore" @click="loadReleases(true)">
+				{{ loadingMore ? 'Loading...' : 'Load More' }}
+			</UiButton>
 		</div>
 	</div>
 </template>
