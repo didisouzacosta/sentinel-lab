@@ -1,17 +1,18 @@
-# Sentinel Lab: every push or merge to lab/main is linted, tested and, only if
+# Sentinel Lab: every push or merge to main is linted, tested and, only if
 # both pass, deployed to Cloudflare (sentinel.adrianosouzacosta.com.br), then
 # checked against production and rolled back automatically if a check fails.
-# Pull requests to lab/main run lint and tests only, never the deploy.
+# Pull requests to main run lint and tests only, never the deploy.
 #
-# The upstream workflows (ci.yml, release.yml, changeset-check.yml) only react
-# to `main` and are left untouched so upstream merges stay clean.
+# The upstream workflows (ci.yml, release.yml, changeset-check.yml) also react
+# to `main`; each one only runs in the upstream repository (a job-level `if`
+# on the repository owner), so here this workflow is the only one that runs.
 name: Lab · lint, test and deploy
 
 on:
   push:
-    branches: [lab/main]
+    branches: [main]
   pull_request:
-    branches: [lab/main]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -75,7 +76,7 @@ jobs:
   deploy:
     name: Deploy to Cloudflare
     needs: test
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/lab/main'
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment:
