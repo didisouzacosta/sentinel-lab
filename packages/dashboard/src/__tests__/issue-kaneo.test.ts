@@ -141,3 +141,45 @@ describe('issue Kaneo card', () => {
 		wrapper.unmount();
 	});
 });
+
+describe('issue Slack card', () => {
+	const SLACK_LINK = {
+		integrationId: 'int-slack',
+		type: 'slack',
+		externalId: 'C0ERRORS:1700000000.000001',
+		externalUrl: 'https://acme.slack.com/archives/C0ERRORS/p1700000000000001',
+		externalKey: '#errors',
+		createdAt: '2026-11-25T12:00:00.000Z',
+	};
+
+	it('is absent without a Slack connection', async () => {
+		const wrapper = await mountIssue({ links: [], availableIntegrations: ['kaneo'] });
+		expect(wrapper.find('[data-testid="issue-slack"]').exists()).toBe(false);
+		wrapper.unmount();
+	});
+
+	it('links to the message, next to the Kaneo task', async () => {
+		const wrapper = await mountIssue({
+			links: [LINK, SLACK_LINK],
+			availableIntegrations: ['kaneo', 'slack'],
+		});
+		const link = wrapper.get('[data-testid="issue-slack"] a');
+		expect(link.text()).toBe('#errors');
+		expect(link.attributes('href')).toBe(SLACK_LINK.externalUrl);
+		expect(link.attributes('target')).toBe('_blank');
+		expect(wrapper.get('[data-testid="issue-kaneo"] a').text()).toBe('SNT-12');
+		wrapper.unmount();
+	});
+
+	it('posts the issue on demand', async () => {
+		onPost(`${ISSUE_URL}/links/slack`, () => ({ link: SLACK_LINK, created: true }));
+		const wrapper = await mountIssue({ links: [], availableIntegrations: ['slack'] });
+		const card = wrapper.get('[data-testid="issue-slack"]');
+		expect(card.text()).toContain('Not posted');
+		await card.get('button').trigger('click');
+		await flushPromises();
+		expect(wrapper.get('[data-testid="issue-slack"] a').text()).toBe('#errors');
+		expect(useToast().toasts.at(-1)?.message).toBe('Posted to #errors');
+		wrapper.unmount();
+	});
+});

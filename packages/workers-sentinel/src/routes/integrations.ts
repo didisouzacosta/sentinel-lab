@@ -1,6 +1,6 @@
 /**
- * Project integrations — Kaneo first (docs/plano-mcp-e-tenho-horario.md,
- * "Fase 4"). Configuration is per project and owner/admin only; the only
+ * Project integrations — Kaneo here, Slack in routes/integrations-slack.ts
+ * (docs/plano-mcp-e-tenho-horario.md, "Fase 4"). Configuration is per project and owner/admin only; the only
  * credential is the Kaneo API key, sealed with INTEGRATIONS_KEY
  * (lib/secret-box.ts), which only ever leaves this module masked. A Kaneo
  * behind Cloudflare Access is reached through the KANEO service binding
@@ -86,7 +86,7 @@ export interface StoredIntegration {
 // Shared helpers (also used by the issue-link and hook routes)
 // ---------------------------------------------------------------------------
 
-function projectState(env: Env, projectId: string) {
+export function projectState(env: Env, projectId: string) {
 	return env.PROJECT_STATE.get(env.PROJECT_STATE.idFromName(projectId));
 }
 
@@ -123,7 +123,12 @@ export async function openKaneoCredentials(
 
 /** The project's identity and dashboard origin, as seen from this request. */
 export function integrationContext(c: Ctx, project: Project) {
-	return { projectId: project.id, slug: project.slug, origin: new URL(c.req.url).origin };
+	return {
+		projectId: project.id,
+		slug: project.slug,
+		name: project.name,
+		origin: new URL(c.req.url).origin,
+	};
 }
 
 /** Map a Kaneo failure to the response the caller sees. */
@@ -145,7 +150,7 @@ export function kaneoFailure(c: Ctx, error: unknown): Response {
 	throw error;
 }
 
-function integrationsUnconfigured(c: Ctx): Response | null {
+export function integrationsUnconfigured(c: Ctx): Response | null {
 	if (c.env.INTEGRATIONS_KEY && c.env.INTEGRATIONS_KEY.length >= 32) return null;
 	return c.json(
 		{
@@ -156,7 +161,7 @@ function integrationsUnconfigured(c: Ctx): Response | null {
 	);
 }
 
-async function managedProject(
+export async function managedProject(
 	c: Ctx,
 	action: string,
 ): Promise<{ project: Project; auth: AuthContext } | Response> {
@@ -169,7 +174,7 @@ async function managedProject(
 	return { project: access.project, auth };
 }
 
-async function writeAudit(
+export async function writeAudit(
 	env: Env,
 	auth: AuthContext,
 	action: string,
@@ -229,7 +234,11 @@ type CredentialPatch = {
 	apiKey?: string;
 };
 
-function optionalString(value: unknown, field: string, max = 512): string | undefined | Error {
+export function optionalString(
+	value: unknown,
+	field: string,
+	max = 512,
+): string | undefined | Error {
 	if (value === undefined) return undefined;
 	if (typeof value !== 'string') return new Error(`${field} must be a string`);
 	const trimmed = value.trim();
@@ -279,7 +288,7 @@ function defaultColumns(columns: KaneoColumn[]): { open: string; done: string } 
 	return { open: open.slug, done: done.slug };
 }
 
-function parseEnvironments(value: unknown, fallback: string[]): string[] | Error {
+export function parseEnvironments(value: unknown, fallback: string[]): string[] | Error {
 	if (value === undefined) return fallback;
 	if (!Array.isArray(value)) return new Error('environments must be a list of names');
 	const names = value
@@ -292,7 +301,7 @@ function parseEnvironments(value: unknown, fallback: string[]): string[] | Error
 	return [...new Set(names)];
 }
 
-function badRequest(c: Ctx, error: Error): Response {
+export function badRequest(c: Ctx, error: Error): Response {
 	return c.json({ error: 'invalid_integration', message: error.message }, 400);
 }
 

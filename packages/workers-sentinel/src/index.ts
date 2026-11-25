@@ -11,6 +11,7 @@ import { eventRoutes } from './routes/events';
 import { filterRoutes } from './routes/filters';
 import { ingestionRoutes } from './routes/ingestion';
 import { integrationRoutes } from './routes/integrations';
+import { slackIntegrationRoutes } from './routes/integrations-slack';
 import { issueRoutes } from './routes/issues';
 import { memberRoutes } from './routes/members';
 import { projectRoutes } from './routes/projects';
@@ -115,6 +116,7 @@ app.route('/api/projects', sourcemapRoutes);
 app.route('/api/projects', debugFileRoutes);
 app.route('/api/projects', filterRoutes);
 app.route('/api/projects', integrationRoutes);
+app.route('/api/projects', slackIntegrationRoutes);
 
 // Admin routes (session auth required)
 app.use('/api/admin/*', authMiddleware);

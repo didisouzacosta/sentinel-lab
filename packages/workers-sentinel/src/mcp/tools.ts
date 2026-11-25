@@ -114,6 +114,25 @@ function apiError(result: ApiResult, what: string): ToolResult {
 
 const ok = (r: ApiResult) => r.status >= 200 && r.status < 300;
 
+/** Slack failures carry an actionable message; a missing integration points at the settings. */
+function slackToolError(
+	ctx: ToolContext,
+	result: ApiResult,
+	slug: string,
+	what: string,
+): ToolResult {
+	const data = (result.data ?? {}) as { error?: string; message?: string };
+	if (data.error === 'no_integration') {
+		return toolError(
+			`Slack is not connected to "${slug}": the user connects it at ${ctx.origin}/projects/${encodeURIComponent(slug)}/settings#slack.`,
+		);
+	}
+	if (data.error === 'slack_failed' || data.error === 'invalid_integration') {
+		return toolError(`Slack refused (${what}): ${data.message ?? data.error}.`);
+	}
+	return apiError(result, what);
+}
+
 // ---------------------------------------------------------------------------
 // Argument validation (the subset of JSON Schema the tools use)
 // ---------------------------------------------------------------------------
@@ -511,7 +530,7 @@ export const TOOLS: Tool[] = [
 			name: 'get_issue',
 			title: 'Get an issue',
 			description:
-				'One issue with its latest event summarized: exception type and message, stack frames (innermost first, app frames marked [app]), tags, environment, release and the last breadcrumbs.',
+				'One issue with its latest event summarized: exception type and message, stack frames (innermost first, app frames marked [app]), tags, environment, release and the last breadcrumbs; plus the Kaneo task and Slack message linked to it.',
 			inputSchema: {
 				type: 'object',
 				properties: { project: PROJECT_ARG, issue_id: ISSUE_ARG },
@@ -535,6 +554,8 @@ export const TOOLS: Tool[] = [
 			const data = detail.data as { issue?: Record<string, unknown> } & Record<string, unknown>;
 			return toolJson({
 				issue: data.issue ?? data,
+				/** Kaneo tasks and Slack messages linked to the issue. */
+				links: Array.isArray(data.links) ? data.links : [],
 				latestEvent: latest ? summarizeEvent(latest) : null,
 				dashboard: dashboardLink(ctx, `/projects/${slug}/issues/${issueId}`),
 			});
@@ -781,6 +802,192 @@ export const TOOLS: Tool[] = [
 			);
 			if (!ok(result)) return apiError(result, `testing the webhook of "${args.project}"`);
 			return toolJson(result.data);
+		},
+	},
+
+	// --- integrations -------------------------------------------------------
+	{
+		scope: 'read',
+		definition: {
+			name: 'get_integrations',
+			title: 'Get the integrations',
+			description:
+				"The project's integrations (Kaneo, Slack): what is connected, its filters, the last delivery error and the settings page. Secrets come back masked. Owners and admins.",
+			inputSchema: {
+				type: 'object',
+				properties: { project: PROJECT_ARG },
+				required: ['project'],
+				additionalProperties: false,
+			},
+			annotations: readOnly('Get the integrations'),
+		},
+		async run(args, ctx) {
+			const slug = args.project as string;
+			const [kaneo, slack] = await Promise.all([
+				ctx.callApi('GET', `/api/projects/${enc(slug)}/integrations/kaneo`),
+				ctx.callApi('GET', `/api/projects/${enc(slug)}/integrations/slack`),
+			]);
+			if (!ok(kaneo)) return apiError(kaneo, `the integrations of "${slug}"`);
+			if (!ok(slack)) return apiError(slack, `the integrations of "${slug}"`);
+			const kaneoData = kaneo.data as { configured: boolean; integration: unknown };
+			const slackData = slack.data as { integration: unknown };
+			return toolJson({
+				integrationsAvailable: kaneoData.configured,
+				kaneo: kaneoData.integration,
+				slack: slackData.integration,
+				settings: dashboardLink(ctx, `/projects/${enc(slug)}/settings`),
+			});
+		},
+	},
+	{
+		scope: 'write',
+		definition: {
+			name: 'list_slack_channels',
+			title: 'List Slack channels',
+			description:
+				'Slack channels the connected Slack app can post to (public channels, and private ones the bot was invited to). Uses the token stored in the project settings. Owners and admins.',
+			inputSchema: {
+				type: 'object',
+				properties: { project: PROJECT_ARG },
+				required: ['project'],
+				additionalProperties: false,
+			},
+			annotations: readOnly('List Slack channels'),
+		},
+		async run(args, ctx) {
+			const slug = args.project as string;
+			const result = await ctx.callApi(
+				'POST',
+				`/api/projects/${enc(slug)}/integrations/slack/discover`,
+				{},
+			);
+			if (!ok(result)) return slackToolError(ctx, result, slug, 'listing the Slack channels');
+			return toolJson(result.data);
+		},
+	},
+	{
+		scope: 'write',
+		definition: {
+			name: 'configure_slack',
+			title: 'Configure Slack',
+			description:
+				"Points the project's Slack integration at a channel and sets its filters: a message per new issue at or above min_level (in the given environments, when set), a thread reply when a resolved issue comes back, and the message marked resolved when the issue is resolved. The Slack bot token is never passed here: if none is stored yet, the user pastes it on the settings page this tool links to. Ask the user before calling. Owners and admins.",
+			inputSchema: {
+				type: 'object',
+				properties: {
+					project: PROJECT_ARG,
+					channel: {
+						type: 'string',
+						maxLength: 128,
+						description:
+							'Channel name (#errors or errors) or id. Optional once configured (keeps the current one).',
+					},
+					min_level: {
+						type: 'string',
+						enum: ['debug', 'info', 'warning', 'error', 'fatal'],
+						description: 'Lowest level that posts a message. Default: error.',
+					},
+					environments: {
+						type: 'array',
+						items: { type: 'string', maxLength: 64 },
+						description: 'Only these environments (empty list: all).',
+					},
+					notify_regression: {
+						type: 'boolean',
+						description: 'Reply when a resolved issue comes back. Default: true.',
+					},
+					notify_resolved: {
+						type: 'boolean',
+						description: 'Mark the message resolved when the issue is resolved. Default: true.',
+					},
+					enabled: { type: 'boolean', description: 'Pause (false) or resume (true) deliveries.' },
+				},
+				required: ['project'],
+				additionalProperties: false,
+			},
+			annotations: writes('Configure Slack', { idempotent: true, openWorld: true }),
+		},
+		async run(args, ctx) {
+			const slug = args.project as string;
+			const current = await ctx.callApi('GET', `/api/projects/${enc(slug)}/integrations/slack`);
+			if (!ok(current)) return apiError(current, `the Slack integration of "${slug}"`);
+			if (!(current.data as { integration: unknown }).integration) {
+				return toolError(
+					`Slack is not connected to "${slug}" yet. The bot token is only entered in the dashboard: ask the user to open ${dashboardLink(ctx, `/projects/${enc(slug)}/settings#slack`)}, create the Slack app from the manifest shown there and paste its Bot User OAuth Token. Then call configure_slack again.`,
+				);
+			}
+			if (args.environments !== undefined && !Array.isArray(args.environments)) {
+				return toolError('"environments" must be a list of names');
+			}
+			const body: Record<string, unknown> = {};
+			if (args.channel) body.channel = args.channel;
+			if (args.min_level) body.minLevel = args.min_level;
+			if (args.environments !== undefined) body.environments = args.environments;
+			if (args.notify_regression !== undefined) body.notifyRegression = args.notify_regression;
+			if (args.notify_resolved !== undefined) body.notifyResolved = args.notify_resolved;
+			if (args.enabled !== undefined) body.enabled = args.enabled;
+			const result = await ctx.callApi(
+				'PUT',
+				`/api/projects/${enc(slug)}/integrations/slack`,
+				body,
+			);
+			if (!ok(result)) return slackToolError(ctx, result, slug, 'configuring Slack');
+			return toolJson(result.data);
+		},
+	},
+	{
+		scope: 'write',
+		definition: {
+			name: 'test_slack',
+			title: 'Test Slack',
+			description:
+				"Posts a test message to the project's Slack channel and reports the answer. Owners and admins.",
+			inputSchema: {
+				type: 'object',
+				properties: { project: PROJECT_ARG },
+				required: ['project'],
+				additionalProperties: false,
+			},
+			annotations: writes('Test Slack', { openWorld: true }),
+		},
+		async run(args, ctx) {
+			const slug = args.project as string;
+			const result = await ctx.callApi(
+				'POST',
+				`/api/projects/${enc(slug)}/integrations/slack/test`,
+			);
+			if (!ok(result)) return slackToolError(ctx, result, slug, 'testing Slack');
+			return toolJson(result.data);
+		},
+	},
+	{
+		scope: 'write',
+		definition: {
+			name: 'disconnect_slack',
+			title: 'Disconnect Slack',
+			description:
+				'Removes the Slack integration: the stored token, the links to posted messages and pending deliveries. Messages already in Slack stay. Owners and admins; needs "confirm" = the project slug.',
+			inputSchema: {
+				type: 'object',
+				properties: {
+					project: PROJECT_ARG,
+					confirm: { type: 'string', maxLength: 200, description: 'Repeat the project slug.' },
+				},
+				required: ['project', 'confirm'],
+				additionalProperties: false,
+			},
+			annotations: writes('Disconnect Slack', { destructive: true, idempotent: true }),
+		},
+		async run(args, ctx) {
+			if (args.confirm !== args.project) {
+				return toolError(
+					`Not disconnected: "confirm" must be exactly the project slug ("${args.project}").`,
+				);
+			}
+			const slug = args.project as string;
+			const result = await ctx.callApi('DELETE', `/api/projects/${enc(slug)}/integrations/slack`);
+			if (!ok(result)) return slackToolError(ctx, result, slug, 'disconnecting Slack');
+			return toolJson({ disconnected: true, project: slug });
 		},
 	},
 

@@ -8,6 +8,7 @@ import {
 	Eye,
 	EyeOff,
 	FileJson,
+	MessageSquare,
 	SquareKanban,
 	Trash2,
 } from 'lucide-vue-next';
@@ -102,7 +103,7 @@ interface Event {
 	}>;
 }
 
-/** A task in another tool (Kaneo) linked to this issue. */
+/** A Kaneo task or Slack message linked to this issue. */
 interface IssueLink {
 	integrationId: string;
 	type: string;
@@ -134,6 +135,9 @@ const links = ref<IssueLink[]>([]);
 const kaneoAvailable = ref(false);
 const creatingTask = ref(false);
 const kaneoLink = computed(() => links.value.find((link) => link.type === 'kaneo') ?? null);
+const slackAvailable = ref(false);
+const postingToSlack = ref(false);
+const slackLink = computed(() => links.value.find((link) => link.type === 'slack') ?? null);
 const events = ref<Event[]>([]);
 const selectedEvent = ref<Event | null>(null);
 const loading = ref(true);
@@ -325,6 +329,7 @@ async function loadIssue() {
 		issue.value = issueResponse.issue;
 		links.value = issueResponse.links ?? [];
 		kaneoAvailable.value = (issueResponse.availableIntegrations ?? []).includes('kaneo');
+		slackAvailable.value = (issueResponse.availableIntegrations ?? []).includes('slack');
 		events.value = eventsResponse.events;
 		selectedEvent.value = eventsResponse.events[0] || null;
 		activity.value = activityResponse.activity;
@@ -350,6 +355,22 @@ async function createKaneoTask() {
 		toast.error(err instanceof Error ? err.message : 'Failed to create the Kaneo task');
 	} finally {
 		creatingTask.value = false;
+	}
+}
+
+async function postToSlack() {
+	postingToSlack.value = true;
+	try {
+		const result = await api.post<{ link: IssueLink }>(
+			`/api/projects/${slug.value}/issues/${issueId.value}/links/slack`,
+			{},
+		);
+		links.value = [...links.value.filter((link) => link.type !== 'slack'), result.link];
+		toast.success(`Posted to ${result.link.externalKey ?? 'Slack'}`);
+	} catch (err) {
+		toast.error(err instanceof Error ? err.message : 'Failed to post to Slack');
+	} finally {
+		postingToSlack.value = false;
 	}
 }
 
@@ -707,6 +728,28 @@ onMounted(() => loadIssue());
 								<span class="text-body-s text-fg-muted">No task yet</span>
 								<UiButton size="sm" :icon="SquareKanban" :loading="creatingTask" @click="createKaneoTask">
 									Create task
+								</UiButton>
+							</template>
+						</div>
+					</UiCard>
+					<UiCard v-if="slackLink || slackAvailable" title="Slack" :heading-level="3" data-testid="issue-slack">
+						<div class="flex items-center justify-between gap-3 px-4 py-3.5">
+							<template v-if="slackLink">
+								<span class="text-body-s text-fg-muted">Message</span>
+								<a
+									:href="slackLink.externalUrl"
+									target="_blank"
+									rel="noopener noreferrer"
+									class="inline-flex items-center gap-1.5 text-body-s font-medium text-accent-text hover:underline"
+								>
+									{{ slackLink.externalKey ?? 'Open message' }}
+									<ExternalLink :size="14" aria-hidden="true" />
+								</a>
+							</template>
+							<template v-else>
+								<span class="text-body-s text-fg-muted">Not posted</span>
+								<UiButton size="sm" :icon="MessageSquare" :loading="postingToSlack" @click="postToSlack">
+									Post to Slack
 								</UiButton>
 							</template>
 						</div>

@@ -198,6 +198,11 @@ function mockProject(
 	}));
 	onGet(`${BASE}/members`, () => ({ members: [] }));
 	onGet(`${BASE}/integrations/kaneo`, () => ({ configured: true, integration: null }));
+	onGet(`${BASE}/integrations/slack`, () => ({
+		configured: true,
+		integration: null,
+		manifest: { oauth_config: { scopes: { bot: ['chat:write'] } } },
+	}));
 }
 
 describe('project settings', () => {
@@ -207,7 +212,8 @@ describe('project settings', () => {
 		expect(wrapper.get('output[aria-label="DSN"]').text()).toBe('https://pk@sentinel.local/proj-1');
 		expect(wrapper.find('button[aria-label="Copy DSN"]').exists()).toBe(true);
 		const nav = wrapper.get('nav[aria-label="Settings sections"]');
-		expect(nav.findAll('a')).toHaveLength(11);
+		expect(nav.findAll('a')).toHaveLength(12);
+		expect(nav.get('a[href="#slack"]').text()).toBe('Slack');
 		expect(nav.get('a[href="#kaneo"]').text()).toBe('Kaneo');
 		expect(nav.get('a[href="#danger"]').text()).toBe('Danger zone');
 		const usage = wrapper.get('[data-testid="rate-limit-usage"]');
@@ -277,6 +283,7 @@ describe('project settings', () => {
 		expect(row.find('button[aria-label^="Delete source map"]').exists()).toBe(false);
 		// Integrations are for owners and admins: no card, no nav entry, no request
 		expect(wrapper.find('#kaneo').exists()).toBe(false);
+		expect(wrapper.find('#slack').exists()).toBe(false);
 		expect(wrapper.find('nav[aria-label="Settings sections"] a[href="#kaneo"]').exists()).toBe(
 			false,
 		);

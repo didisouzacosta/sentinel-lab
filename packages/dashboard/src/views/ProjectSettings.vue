@@ -6,6 +6,7 @@ import { api } from '../api/client';
 import AppKaneoIntegration from '../components/app/AppKaneoIntegration.vue';
 import AppPageHeader from '../components/app/AppPageHeader.vue';
 import AppSectionNav, { type SectionNavItem } from '../components/app/AppSectionNav.vue';
+import AppSlackIntegration from '../components/app/AppSlackIntegration.vue';
 import {
 	UiAlert,
 	UiAvatar,
@@ -66,6 +67,7 @@ const ALL_SECTIONS: (SectionNavItem & { managersOnly?: boolean })[] = [
 	{ id: 'information', label: 'Project information' },
 	{ id: 'members', label: 'Team members' },
 	{ id: 'webhook', label: 'Webhook notifications' },
+	{ id: 'slack', label: 'Slack', managersOnly: true },
 	{ id: 'kaneo', label: 'Kaneo', managersOnly: true },
 	{ id: 'rate-limit', label: 'Rate limiting' },
 	{ id: 'retention', label: 'Data retention' },
@@ -409,14 +411,14 @@ onMounted(() => {
 						<UiFormField
 							v-slot="f"
 							label="Webhook URL"
-							help="Receives a POST when a new issue is detected. Works with Slack, Discord or any HTTP endpoint."
+							:help="canManage ? 'Receives a JSON POST when a new issue is detected (Discord or any HTTP endpoint). For Slack, use the Slack integration below.' : 'Receives a JSON POST when a new issue is detected (Discord or any HTTP endpoint).'"
 						>
 							<UiInput
 								:id="f.id"
 								v-model="webhookUrl"
 								:aria-describedby="f.describedBy"
 								type="url"
-								placeholder="https://hooks.slack.com/services/..."
+								placeholder="https://discord.com/api/webhooks/..."
 							/>
 						</UiFormField>
 						<div class="flex flex-wrap gap-2">
@@ -427,6 +429,8 @@ onMounted(() => {
 						</div>
 					</form>
 				</UiCard>
+
+				<AppSlackIntegration v-if="canManage" :slug="slug" />
 
 				<AppKaneoIntegration v-if="canManage" :slug="slug" />
 

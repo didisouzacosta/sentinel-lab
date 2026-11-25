@@ -77,6 +77,7 @@ async function mintToken(session: string, scopes?: string[]) {
 const READ_TOOLS = [
 	'check_debug_files',
 	'get_event',
+	'get_integrations',
 	'get_issue',
 	'get_project',
 	'get_setup_guide',
@@ -89,9 +90,13 @@ const READ_TOOLS = [
 ];
 const WRITE_TOOLS = [
 	'add_issue_note',
+	'configure_slack',
 	'delete_debug_file',
+	'disconnect_slack',
 	'get_debug_file_upload',
+	'list_slack_channels',
 	'send_test_event',
+	'test_slack',
 	'test_webhook',
 	'update_issue',
 	'update_project',
