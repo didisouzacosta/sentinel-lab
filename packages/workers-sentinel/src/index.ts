@@ -8,6 +8,7 @@ import { authRoutes, tokenRoutes } from './routes/auth';
 import { eventRoutes } from './routes/events';
 import { filterRoutes } from './routes/filters';
 import { ingestionRoutes } from './routes/ingestion';
+import { integrationRoutes } from './routes/integrations';
 import { issueRoutes } from './routes/issues';
 import { memberRoutes } from './routes/members';
 import { projectRoutes } from './routes/projects';
@@ -110,6 +111,7 @@ app.route('/api/projects', attachmentRoutes);
 app.route('/api/projects', releaseRoutes);
 app.route('/api/projects', sourcemapRoutes);
 app.route('/api/projects', filterRoutes);
+app.route('/api/projects', integrationRoutes);
 
 // Admin routes (session auth required)
 app.use('/api/admin/*', authMiddleware);

@@ -277,6 +277,17 @@ Sentinel's own MCP server (`src/mcp/`): Streamable HTTP, **stateless**, JSON res
 - **Connect**: `claude mcp add --transport http sentinel https://<host>/mcp --header "Authorization: Bearer wst_…"`.
 - Tests: `test/mcp.test.ts` (protocol, scope visibility, roles, end-to-end connect flow). Verified with the official `@modelcontextprotocol/sdk` client 1.32.2 against `wrangler dev` on 2026-11-25.
 
+## Kaneo integration (`routes/integrations.ts`)
+
+Per-project link to a Kaneo board (plan: `docs/plano-mcp-e-tenho-horario.md`, "Fase 4"; delivered in steps — this first step is the configuration surface).
+
+- **Storage** (ProjectState): `integrations` (one row per type, `config` JSON + `secret_cipher`/`webhook_secret_cipher`), `issue_links` (one external task per issue, `UNIQUE(issue_id, integration_id)`), `integration_outbox` (alarm-driven retries). Internal endpoints `/integrations/get|save|delete` store only sealed ciphertexts.
+- **Secrets**: `lib/secret-box.ts` — AES-256-GCM, key derived by HKDF from the `INTEGRATIONS_KEY` Worker secret with the project id as HKDF info and GCM AAD (a ciphertext copied to another project does not decrypt). Without the secret (or shorter than 32 chars) the integration routes answer `503 integrations_unconfigured`. Secrets only ever leave the worker masked (`abcd…wxyz`); rotating `INTEGRATIONS_KEY` makes stored credentials unreadable (`credentialsReadable: false`, `409 integration_secret_unreadable`) until they are entered again.
+- **Client**: `lib/kaneo.ts` sends `Authorization: Bearer <api key>` plus `CF-Access-Client-Id/Secret` when the instance sits behind Cloudflare Access; https and public hosts only (reuses `validateWebhookUrl`), redirects never followed (an Access login redirect or Access HTML 401/403 → `access_denied`), 10 s timeout, response bodies never logged. Kaneo failures surface as `502 {error: "kaneo_failed", code, message}`.
+- **Routes** (owner/admin via `requireProjectManager`; writes need the `write` scope): `GET /api/projects/:slug/integrations/kaneo` (`{configured, integration}` masked), `POST …/discover` (workspaces, projects of `workspaceId`, columns of `kaneoProjectId`, with typed or stored credentials), `PUT …` (validates against Kaneo before storing; default columns `to-do` / first `isFinal` column; `autoCreate` off by default, `minLevel` `error`, `environments` empty = all), `POST …/test`, `DELETE …`. Changes write `integration.created|updated|key_changed|deleted` audit rows through AuthState's internal `/audit/append` (accepts only the `integration.*` family).
+- **Dashboard**: `components/app/AppKaneoIntegration.vue`, the "Kaneo" section of project settings, shown to owners/admins only.
+- **Tests**: `test/integrations-kaneo.test.ts` fakes Kaneo by spying on `globalThis.fetch` (tests, worker and Durable Objects share one isolate). Local `wrangler dev` reads `INTEGRATIONS_KEY` from the gitignored `packages/workers-sentinel/.dev.vars`.
+
 ## The `/api/0` API (Sentry-shaped)
 
 The Sentry-compatible API under `/api/0` — the primary surface for agentic consumers (triage bots, the feedback skill). Wire contract follows docs.sentry.io/api: Bearer auth (session and `wst_` API tokens both work; DSN keys never), `Link`-header cursor pagination, bare-array list responses, and `{"detail": …}` error bodies. The native dashboard API (`/api/projects/*`) remains unchanged alongside it. Org path segments accept any non-empty value (single tenant; `GET /api/0/organizations/` reports the synthetic `sentinel` org).
@@ -358,7 +369,7 @@ Full remediation of the findings in `security-analysis/reports/` (see INDEX.md).
 - **Webhooks**: https-only, no credentials-in-URL, private/loopback hosts rejected, redirects refused, 10s timeout, target response bodies never logged; webhook URLs hidden from plain members.
 - **Route hygiene**: `/api/projects/:slug/events/latest` registered before `/:eventId` (was shadowed); auth header parsing case-insensitive and trim-tolerant; attacker-controlled content is not logged.
 
-Env vars: `SETUP_TOKEN` (first-registration gate), `CORS_ORIGINS` (dashboard API allowlist), `WEBAUTHN_ORIGINS` (extra trusted WebAuthn ceremony origins — dev only; same-origin always trusted). Set them as wrangler secrets/vars in production.
+Env vars: `SETUP_TOKEN` (first-registration gate), `CORS_ORIGINS` (dashboard API allowlist), `WEBAUTHN_ORIGINS` (extra trusted WebAuthn ceremony origins — dev only; same-origin always trusted), `INTEGRATIONS_KEY` (encrypts integration credentials at rest; integrations answer 503 without it). Set them as wrangler secrets/vars in production.
 
 Known accepted limitations: the DO `http://internal/*` surface remains a zero-auth trust boundary (reachable only via service bindings, mitigated by uniform route-level checks); session tokens still live in localStorage (XSS-verified-negative + CSP backstop); no email infrastructure, so no self-service password reset (admin reset + forced change at next sign-in is the workflow); the audit log has no retention policy yet (low volume; a prune can be added later without migration pain).
 
