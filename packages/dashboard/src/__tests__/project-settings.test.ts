@@ -197,6 +197,7 @@ function mockProject(
 		isLimited: false,
 	}));
 	onGet(`${BASE}/members`, () => ({ members: [] }));
+	onGet(`${BASE}/integrations/kaneo`, () => ({ configured: true, integration: null }));
 }
 
 describe('project settings', () => {
@@ -206,12 +207,13 @@ describe('project settings', () => {
 		expect(wrapper.get('output[aria-label="DSN"]').text()).toBe('https://pk@sentinel.local/proj-1');
 		expect(wrapper.find('button[aria-label="Copy DSN"]').exists()).toBe(true);
 		const nav = wrapper.get('nav[aria-label="Settings sections"]');
-		expect(nav.findAll('a')).toHaveLength(10);
+		expect(nav.findAll('a')).toHaveLength(11);
+		expect(nav.get('a[href="#kaneo"]').text()).toBe('Kaneo');
 		expect(nav.get('a[href="#danger"]').text()).toBe('Danger zone');
 		const usage = wrapper.get('[data-testid="rate-limit-usage"]');
 		expect(usage.text()).toContain('4,912 / 5,000');
 		expect(usage.get('[role="meter"]').attributes('aria-valuenow')).toBe('4912');
-		expect((wrapper.find('select').element as HTMLSelectElement).value).toBe('90');
+		expect((wrapper.get('#retention select').element as HTMLSelectElement).value).toBe('90');
 		wrapper.unmount();
 	});
 
@@ -273,6 +275,12 @@ describe('project settings', () => {
 		const { wrapper } = await mountAt(ProjectSettings, '/projects/web-frontend/settings', 'member');
 		const row = wrapper.get('[data-testid="sourcemap-row"]');
 		expect(row.find('button[aria-label^="Delete source map"]').exists()).toBe(false);
+		// Integrations are for owners and admins: no card, no nav entry, no request
+		expect(wrapper.find('#kaneo').exists()).toBe(false);
+		expect(wrapper.find('nav[aria-label="Settings sections"] a[href="#kaneo"]').exists()).toBe(
+			false,
+		);
+		expect(mockApi.calls.some((c) => c.url.includes('/integrations/'))).toBe(false);
 		wrapper.unmount();
 	});
 

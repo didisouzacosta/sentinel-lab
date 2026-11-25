@@ -26,6 +26,12 @@ export interface Env {
 	 * production — the mechanism is inert without it.
 	 */
 	WEBAUTHN_TEST_HOOKS?: string;
+	/**
+	 * Secret (≥32 chars) that encrypts integration credentials at rest
+	 * (lib/secret-box.ts). Without it the integration routes answer
+	 * `503 integrations_unconfigured`. Set with `wrangler secret put`.
+	 */
+	INTEGRATIONS_KEY?: string;
 	ASSETS?: Fetcher;
 }
 

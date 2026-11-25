@@ -16,6 +16,8 @@ export default defineConfig({
 					// Test-only WebAuthn hooks (backdate ceremonies,
 					// inspect the challenge table). Same inertness rule.
 					WEBAUTHN_TEST_HOOKS: 'enabled',
+					// Encrypts integration credentials (lib/secret-box.ts).
+					INTEGRATIONS_KEY: 'test-integrations-key-0123456789abcdef',
 				},
 			},
 		}),

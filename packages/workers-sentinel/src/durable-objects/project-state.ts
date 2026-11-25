@@ -262,6 +262,47 @@ const MIGRATIONS = [
   id INTEGER PRIMARY KEY CHECK (id = 1),
   bytes INTEGER NOT NULL DEFAULT 0
 );`,
+	// Integrations (Kaneo first): per-project config with credentials sealed
+	// by lib/secret-box.ts; one external task per issue; a retry outbox
+	// drained by the alarm.
+	`CREATE TABLE IF NOT EXISTS integrations (
+  id TEXT PRIMARY KEY,
+  type TEXT NOT NULL UNIQUE,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  config TEXT NOT NULL,
+  secret_cipher TEXT NOT NULL,
+  webhook_secret_cipher TEXT,
+  last_error TEXT,
+  last_error_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);`,
+	`CREATE TABLE IF NOT EXISTS issue_links (
+  issue_id TEXT NOT NULL,
+  integration_id TEXT NOT NULL,
+  external_id TEXT NOT NULL,
+  external_url TEXT NOT NULL,
+  external_key TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (issue_id, integration_id),
+  FOREIGN KEY (issue_id) REFERENCES issues(id) ON DELETE CASCADE,
+  FOREIGN KEY (integration_id) REFERENCES integrations(id) ON DELETE CASCADE
+);`,
+	'CREATE INDEX IF NOT EXISTS idx_issue_links_external ON issue_links(integration_id, external_id);',
+	`CREATE TABLE IF NOT EXISTS integration_outbox (
+  id TEXT PRIMARY KEY,
+  integration_id TEXT NOT NULL,
+  issue_id TEXT NOT NULL,
+  action TEXT NOT NULL,
+  payload TEXT,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  next_attempt_at TEXT NOT NULL,
+  last_error TEXT,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (issue_id) REFERENCES issues(id) ON DELETE CASCADE,
+  FOREIGN KEY (integration_id) REFERENCES integrations(id) ON DELETE CASCADE
+);`,
+	'CREATE INDEX IF NOT EXISTS idx_integration_outbox_due ON integration_outbox(next_attempt_at);',
 ];
 
 /** Terminal states of the transactional ingest sequence. */
@@ -411,6 +452,12 @@ export class ProjectState extends DurableObject<Env> {
 					return this.handleMergeIssues(request);
 				case '/purge':
 					return this.handlePurge(request);
+				case '/integrations/get':
+					return this.handleGetIntegration(request);
+				case '/integrations/save':
+					return this.handleSaveIntegration(request);
+				case '/integrations/delete':
+					return this.handleDeleteIntegration(request);
 				case '/attachment/r2-probe':
 					// Test-only DO↔R2 binding probe (inert without the test
 					// fault-injection binding)
@@ -3374,6 +3421,112 @@ export class ProjectState extends DurableObject<Env> {
 			issue: updatedIssue ? this.rowToIssue(updatedIssue) : null,
 			mergedCount: secondaryIds.length,
 		});
+	}
+
+	// ============================================
+	// Integrations (Kaneo)
+	// ============================================
+	// Internal storage only: the route layer (routes/integrations.ts) checks
+	// roles, seals and opens secrets, and talks to the external service.
+	// Rows returned here carry the sealed ciphertexts, never plaintext.
+
+	private integrationRow(type: string): Record<string, SqlStorageValue> | null {
+		const rows = this.sql.exec('SELECT * FROM integrations WHERE type = ?', type).toArray();
+		return rows[0] ?? null;
+	}
+
+	private rowToIntegration(row: Record<string, SqlStorageValue>) {
+		return {
+			id: row.id as string,
+			type: row.type as string,
+			enabled: (row.enabled as number) === 1,
+			config: JSON.parse(row.config as string) as Record<string, unknown>,
+			secretCipher: row.secret_cipher as string,
+			webhookSecretCipher: (row.webhook_secret_cipher as string | null) ?? null,
+			lastError: (row.last_error as string | null) ?? null,
+			lastErrorAt: (row.last_error_at as string | null) ?? null,
+			createdAt: row.created_at as string,
+			updatedAt: row.updated_at as string,
+		};
+	}
+
+	private async handleGetIntegration(request: Request): Promise<Response> {
+		const { type } = (await request.json()) as { type?: string };
+		if (!type) return this.jsonResponse({ error: 'missing_type' }, 400);
+		const row = this.integrationRow(type);
+		return this.jsonResponse({ integration: row ? this.rowToIntegration(row) : null });
+	}
+
+	/**
+	 * Create or replace the integration of `type`. `secretCipher` is required
+	 * on create; on update an omitted cipher keeps the stored one. Saving
+	 * clears the last delivery error (the new config deserves a fresh start).
+	 */
+	private async handleSaveIntegration(request: Request): Promise<Response> {
+		const body = (await request.json()) as {
+			type?: string;
+			enabled?: boolean;
+			config?: Record<string, unknown>;
+			secretCipher?: string;
+			webhookSecretCipher?: string | null;
+		};
+		if (!body.type || !body.config) {
+			return this.jsonResponse({ error: 'missing_fields' }, 400);
+		}
+		const now = new Date().toISOString();
+		const existing = this.integrationRow(body.type);
+		if (!existing) {
+			if (!body.secretCipher) {
+				return this.jsonResponse({ error: 'missing_secret' }, 400);
+			}
+			this.sql.exec(
+				`INSERT INTO integrations
+				 (id, type, enabled, config, secret_cipher, webhook_secret_cipher, created_at, updated_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				crypto.randomUUID(),
+				body.type,
+				body.enabled === false ? 0 : 1,
+				JSON.stringify(body.config),
+				body.secretCipher,
+				body.webhookSecretCipher ?? null,
+				now,
+				now,
+			);
+		} else {
+			this.sql.exec(
+				`UPDATE integrations
+				 SET enabled = ?, config = ?, secret_cipher = ?, webhook_secret_cipher = ?,
+				     last_error = NULL, last_error_at = NULL, updated_at = ?
+				 WHERE id = ?`,
+				body.enabled === false ? 0 : 1,
+				JSON.stringify(body.config),
+				body.secretCipher ?? (existing.secret_cipher as string),
+				body.webhookSecretCipher === undefined
+					? ((existing.webhook_secret_cipher as string | null) ?? null)
+					: body.webhookSecretCipher,
+				now,
+				existing.id as string,
+			);
+		}
+		const row = this.integrationRow(body.type);
+		return this.jsonResponse(
+			{ integration: row ? this.rowToIntegration(row) : null, created: !existing },
+			existing ? 200 : 201,
+		);
+	}
+
+	/** Remove the integration with its issue links and pending deliveries. */
+	private async handleDeleteIntegration(request: Request): Promise<Response> {
+		const { type } = (await request.json()) as { type?: string };
+		if (!type) return this.jsonResponse({ error: 'missing_type' }, 400);
+		const row = this.integrationRow(type);
+		if (!row) return this.jsonResponse({ deleted: false });
+		this.ctx.storage.transactionSync(() => {
+			this.sql.exec('DELETE FROM integration_outbox WHERE integration_id = ?', row.id);
+			this.sql.exec('DELETE FROM issue_links WHERE integration_id = ?', row.id);
+			this.sql.exec('DELETE FROM integrations WHERE id = ?', row.id);
+		});
+		return this.jsonResponse({ deleted: true, integration: this.rowToIntegration(row) });
 	}
 
 	private jsonResponse(data: unknown, status = 200): Response {

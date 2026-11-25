@@ -3,6 +3,7 @@ import { Funnel, KeyRound, Send, Trash2, Upload } from 'lucide-vue-next';
 import { computed, onMounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { api } from '../api/client';
+import AppKaneoIntegration from '../components/app/AppKaneoIntegration.vue';
 import AppPageHeader from '../components/app/AppPageHeader.vue';
 import AppSectionNav, { type SectionNavItem } from '../components/app/AppSectionNav.vue';
 import {
@@ -58,11 +59,14 @@ const slug = computed(() => route.params.slug as string);
 // Deleting source maps is for project owners and admins (the server enforces it).
 const canDeleteSourceMaps = computed(() => projectsStore.canManage(slug.value));
 
-const SECTIONS: SectionNavItem[] = [
+const canManage = computed(() => projectsStore.canManage(slug.value));
+
+const ALL_SECTIONS: (SectionNavItem & { managersOnly?: boolean })[] = [
 	{ id: 'dsn', label: 'Client keys (DSN)' },
 	{ id: 'information', label: 'Project information' },
 	{ id: 'members', label: 'Team members' },
 	{ id: 'webhook', label: 'Webhook notifications' },
+	{ id: 'kaneo', label: 'Kaneo', managersOnly: true },
 	{ id: 'rate-limit', label: 'Rate limiting' },
 	{ id: 'retention', label: 'Data retention' },
 	{ id: 'api-tokens', label: 'API tokens' },
@@ -70,6 +74,11 @@ const SECTIONS: SectionNavItem[] = [
 	{ id: 'inbound-filters', label: 'Inbound filters' },
 	{ id: 'danger', label: 'Danger zone', danger: true },
 ];
+const SECTIONS = computed<SectionNavItem[]>(() =>
+	ALL_SECTIONS.filter((section) => !section.managersOnly || canManage.value).map(
+		({ managersOnly: _managersOnly, ...section }) => section,
+	),
+);
 
 const RETENTION_OPTIONS = [
 	{ value: 0, label: 'Keep forever' },
@@ -418,6 +427,8 @@ onMounted(() => {
 						</div>
 					</form>
 				</UiCard>
+
+				<AppKaneoIntegration v-if="canManage" :slug="slug" />
 
 				<UiCard id="rate-limit" title="Rate limiting" meta="0 = unlimited" class="scroll-mt-20" padded>
 					<form class="flex flex-wrap items-end gap-2" @submit.prevent="saveRateLimit">

@@ -385,6 +385,8 @@ export class AuthState extends DurableObject<Env> {
 					return this.handleAdminGetUser(request);
 				case '/admin/list-audit':
 					return this.handleAdminListAudit(request);
+				case '/audit/append':
+					return this.handleAuditAppend(request);
 				case '/validate-session':
 					return this.handleValidateSession(request);
 				case '/me':
@@ -3267,6 +3269,38 @@ export class AuthState extends DurableObject<Env> {
 	 * `transactionSync` boundary as the mutation it describes, so an
 	 * audit-write failure rolls the mutation back with it.
 	 */
+	/**
+	 * Append one audit row for a change stored outside AuthState (project
+	 * integrations live in ProjectState). Internal surface: the route layer
+	 * has already authorized the change; only the `integration.*` action
+	 * family is accepted, so this cannot forge admin history.
+	 */
+	private async handleAuditAppend(request: Request): Promise<Response> {
+		const body = (await request.json()) as {
+			userId?: string;
+			action?: string;
+			targetType?: string;
+			targetId?: string | null;
+			targetLabel?: string | null;
+			details?: unknown;
+		};
+		if (!body.userId || !body.action || !body.targetType) {
+			return this.jsonResponse({ error: 'missing_fields' }, 400);
+		}
+		if (!/^integration\.[a-z_]+$/.test(body.action)) {
+			return this.jsonResponse({ error: 'invalid_action' }, 400);
+		}
+		this.audit(
+			body.userId,
+			body.action,
+			body.targetType,
+			body.targetId ?? null,
+			body.targetLabel ?? null,
+			body.details,
+		);
+		return this.jsonResponse({ ok: true });
+	}
+
 	private audit(
 		actorUserId: string | null | undefined,
 		action: string,
