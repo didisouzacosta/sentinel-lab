@@ -6,6 +6,7 @@
  * the only gate of its own is visibility (`scope`/`adminOnly`), which hides
  * tools the token could never use.
  */
+import { debugFileGuide, TOKEN_ENV } from '../lib/debug-file-guide';
 import { summarizeEvent } from '../lib/event-summary';
 import { getPlatform, PLATFORMS, type PlatformId, platformForProject } from '../lib/platforms';
 import { hasScope } from '../lib/token-scopes';
@@ -22,6 +23,13 @@ export interface ToolContext {
 	origin: string;
 	/** Calls a protected route (`/api/…`) with the caller's credential. */
 	callApi(method: string, path: string, body?: unknown): Promise<ApiResult>;
+	/** Like callApi, but sends `body` as raw bytes (debug-file uploads). */
+	callApiRaw(
+		method: string,
+		path: string,
+		body: Uint8Array,
+		headers?: Record<string, string>,
+	): Promise<ApiResult>;
 	/** Unauthenticated request into the worker (SDK ingestion by DSN). */
 	fetchInternal(path: string, init: RequestInit): Promise<Response>;
 }
@@ -172,6 +180,8 @@ function capabilities(auth: AuthContext, role: ProjectRole | undefined) {
 		triageIssues: write,
 		comment: write,
 		uploadSourceMaps: write,
+		uploadDebugFiles: write,
+		deleteDebugFiles: write && manager,
 		editSettings: write && manager,
 		deleteIssues: write && manager,
 		rotateDsnKey: projects && manager,
@@ -216,7 +226,7 @@ function renderGuide(
 		'',
 		'## Steps',
 	];
-	guide.steps({ dsn }).forEach((step, i) => {
+	guide.steps({ dsn, project: project.slug }).forEach((step, i) => {
 		lines.push('', `${i + 1}. ${step.title}`);
 		if (step.description) lines.push(`   ${step.description}`);
 		lines.push('', '```' + step.language, step.code, '```');
@@ -240,6 +250,8 @@ const PROJECT_ARG = {
 };
 const ISSUE_ARG = { type: 'string', description: 'Issue id (from list_issues).', maxLength: 64 };
 const PLATFORM_IDS = PLATFORMS.map((p) => p.id);
+/** Largest file `upload_debug_file` takes inline (base64 inflates the request by a third). */
+const MCP_UPLOAD_MAX_BYTES = 8 * 1024 * 1024;
 
 function readOnly(title: string) {
 	return {
@@ -878,6 +890,203 @@ export const TOOLS: Tool[] = [
 			const result = await ctx.callApi('DELETE', `/api/projects/${enc(args.project as string)}`);
 			if (!ok(result)) return apiError(result, `deleting project "${args.project}"`);
 			return toolJson({ deleted: true, project: args.project });
+		},
+	},
+
+	{
+		scope: 'read',
+		definition: {
+			name: 'list_debug_files',
+			title: 'List debug files',
+			description:
+				'dSYM objects and ProGuard/R8 mappings stored for a project (debug id, kind, architecture, size), newest first, plus storage used.',
+			inputSchema: {
+				type: 'object',
+				properties: {
+					project: PROJECT_ARG,
+					kind: { type: 'string', enum: ['macho', 'proguard'], description: 'Only this kind.' },
+					debugId: { type: 'string', maxLength: 64, description: 'Only this debug id / UUID.' },
+					limit: { type: 'integer', minimum: 1, maximum: 100, description: 'Page size (25).' },
+					cursor: {
+						type: 'string',
+						maxLength: 200,
+						description: 'nextCursor of the previous page.',
+					},
+				},
+				required: ['project'],
+				additionalProperties: false,
+			},
+			annotations: readOnly('List debug files'),
+		},
+		async run(args, ctx) {
+			const query = new URLSearchParams();
+			for (const key of ['kind', 'debugId', 'limit', 'cursor']) {
+				if (args[key] !== undefined && args[key] !== null) query.set(key, String(args[key]));
+			}
+			const result = await ctx.callApi(
+				'GET',
+				`/api/projects/${enc(args.project as string)}/debug-files?${query}`,
+			);
+			if (!ok(result)) return apiError(result, 'debug files');
+			return toolJson(result.data);
+		},
+	},
+	{
+		scope: 'read',
+		definition: {
+			name: 'check_debug_files',
+			title: 'Check debug files',
+			description:
+				"Which dSYMs / ProGuard mappings a crash needs (from the event's debug_meta) and whether each is stored: found, missing or processing. Pass issueId (its latest event), eventId, or debugIds. Use it after an upload to confirm, or on a crash with unreadable frames.",
+			inputSchema: {
+				type: 'object',
+				properties: {
+					project: PROJECT_ARG,
+					issueId: ISSUE_ARG,
+					eventId: { type: 'string', maxLength: 64, description: 'Event id (32 hex).' },
+					debugIds: {
+						type: 'array',
+						items: { type: 'string' },
+						description: 'Debug ids / UUIDs to look up (≤200).',
+					},
+				},
+				required: ['project'],
+				additionalProperties: false,
+			},
+			annotations: readOnly('Check debug files'),
+		},
+		async run(args, ctx) {
+			const body: Record<string, unknown> = {};
+			if (Array.isArray(args.debugIds)) {
+				if (!args.debugIds.every((id) => typeof id === 'string'))
+					return toolError('"debugIds" must be a list of strings.');
+				body.debugIds = args.debugIds;
+			} else if (args.eventId) body.eventId = args.eventId;
+			else if (args.issueId) body.issueId = args.issueId;
+			else return toolError('Pass one of issueId, eventId or debugIds.');
+			const slug = args.project as string;
+			const result = await ctx.callApi(
+				'POST',
+				`/api/projects/${enc(slug)}/debug-files/check`,
+				body,
+			);
+			if (!ok(result)) return apiError(result, 'checking debug files');
+			const data = result.data as { missing: number };
+			return toolJson({
+				...(result.data as object),
+				...(data.missing > 0
+					? {
+							nextStep: `Upload the missing files (get_debug_file_upload shows how for project "${slug}"), then check again.`,
+						}
+					: {}),
+			});
+		},
+	},
+	{
+		scope: 'write',
+		definition: {
+			name: 'get_debug_file_upload',
+			title: 'How to upload debug files',
+			description:
+				'Ready-to-use instructions to send dSYMs (iOS) and ProGuard/R8 mappings (Android) to a project: sentry-cli environment, Xcode build phase, GitHub Actions steps, Gradle plugin config and curl commands, with the server and project filled in. The token is always the placeholder $' +
+				TOKEN_ENV +
+				'.',
+			inputSchema: {
+				type: 'object',
+				properties: { project: PROJECT_ARG },
+				required: ['project'],
+				additionalProperties: false,
+			},
+			annotations: readOnly('How to upload debug files'),
+		},
+		async run(args, ctx) {
+			const loaded = await loadProject(ctx, args.project as string);
+			if (isToolResult(loaded)) return loaded;
+			return toolJson(debugFileGuide(ctx.origin, loaded.project.slug));
+		},
+	},
+	{
+		scope: 'write',
+		definition: {
+			name: 'upload_debug_file',
+			title: 'Upload a debug file',
+			description:
+				'Uploads one small debug file given as base64 (≤8 MB decoded): a dSYM DWARF object (MyApp.app.dSYM/Contents/Resources/DWARF/MyApp) or a ProGuard/R8 mapping.txt. Universal dSYMs are split per architecture. For bigger files or whole folders run sentry-cli (get_debug_file_upload).',
+			inputSchema: {
+				type: 'object',
+				properties: {
+					project: PROJECT_ARG,
+					contentBase64: { type: 'string', description: 'The file, base64-encoded.' },
+					name: { type: 'string', maxLength: 200, description: 'File name to show (MyApp).' },
+					kind: { type: 'string', enum: ['dsym', 'proguard'], description: 'Optional; detected.' },
+					debugId: {
+						type: 'string',
+						maxLength: 64,
+						description:
+							'ProGuard only: the UUID built into the app. Derived from the content if omitted.',
+					},
+				},
+				required: ['project', 'contentBase64'],
+				additionalProperties: false,
+			},
+			annotations: writes('Upload a debug file', { idempotent: true }),
+		},
+		async run(args, ctx) {
+			const encoded = (args.contentBase64 as string).replace(/\s+/g, '');
+			if (encoded.length > Math.ceil((MCP_UPLOAD_MAX_BYTES * 4) / 3) + 4) {
+				return toolError(
+					`Too big for the MCP (limit ${MCP_UPLOAD_MAX_BYTES} bytes). Use sentry-cli or the API: get_debug_file_upload.`,
+				);
+			}
+			let bytes: Uint8Array;
+			try {
+				bytes = Uint8Array.from(atob(encoded), (ch) => ch.charCodeAt(0));
+			} catch {
+				return toolError('"contentBase64" is not valid base64.');
+			}
+			const query = new URLSearchParams();
+			for (const key of ['name', 'kind', 'debugId']) {
+				if (typeof args[key] === 'string') query.set(key, args[key] as string);
+			}
+			const result = await ctx.callApiRaw(
+				'POST',
+				`/api/projects/${enc(args.project as string)}/debug-files?${query}`,
+				bytes,
+				{ 'Content-Type': 'application/octet-stream' },
+			);
+			if (!ok(result)) return apiError(result, 'uploading the debug file');
+			return toolJson(result.data);
+		},
+	},
+	{
+		scope: 'write',
+		definition: {
+			name: 'delete_debug_file',
+			title: 'Delete a debug file',
+			description:
+				'Deletes one stored debug file (crashes that need it lose their symbols). Project owners and admins only; needs "confirm" = the debug file id.',
+			inputSchema: {
+				type: 'object',
+				properties: {
+					project: PROJECT_ARG,
+					id: { type: 'string', maxLength: 64, description: 'Debug file id (list_debug_files).' },
+					confirm: { type: 'string', maxLength: 64, description: 'Repeat the id.' },
+				},
+				required: ['project', 'id', 'confirm'],
+				additionalProperties: false,
+			},
+			annotations: writes('Delete a debug file', { destructive: true, idempotent: true }),
+		},
+		async run(args, ctx) {
+			if (args.confirm !== args.id) {
+				return toolError(`Not deleted: "confirm" must be exactly the id ("${args.id}").`);
+			}
+			const result = await ctx.callApi(
+				'DELETE',
+				`/api/projects/${enc(args.project as string)}/debug-files/${enc(args.id as string)}`,
+			);
+			if (!ok(result)) return apiError(result, 'deleting the debug file');
+			return toolJson(result.data);
 		},
 	},
 ];

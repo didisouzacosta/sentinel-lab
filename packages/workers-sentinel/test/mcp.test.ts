@@ -75,10 +75,12 @@ async function mintToken(session: string, scopes?: string[]) {
 }
 
 const READ_TOOLS = [
+	'check_debug_files',
 	'get_event',
 	'get_issue',
 	'get_project',
 	'get_setup_guide',
+	'list_debug_files',
 	'list_issues',
 	'list_platforms',
 	'list_projects',
@@ -87,10 +89,13 @@ const READ_TOOLS = [
 ];
 const WRITE_TOOLS = [
 	'add_issue_note',
+	'delete_debug_file',
+	'get_debug_file_upload',
 	'send_test_event',
 	'test_webhook',
 	'update_issue',
 	'update_project',
+	'upload_debug_file',
 ];
 const PROJECT_TOOLS = ['create_project', 'delete_project', 'rotate_dsn'];
 
@@ -217,7 +222,11 @@ describe('MCP endpoint (/mcp)', () => {
 				readToken,
 				'prompts/list',
 			);
-			expect(prompts.map((p) => p.name)).toEqual(['connect_project', 'triage_issues']);
+			expect(prompts.map((p) => p.name)).toEqual([
+				'connect_project',
+				'triage_issues',
+				'upload_debug_files',
+			]);
 			const rendered = await rpcResult<{ messages: Array<{ content: { text: string } }> }>(
 				readToken,
 				'prompts/get',

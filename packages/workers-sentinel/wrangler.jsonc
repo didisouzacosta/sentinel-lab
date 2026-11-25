@@ -43,8 +43,28 @@
 			"binding": "ATTACHMENTS",
 			"bucket_name": "sentinel-lab-attachments",
 			"preview_bucket_name": "sentinel-lab-attachments"
+		},
+		// Debug files: dSYM objects, ProGuard mappings and sentry-cli upload
+		// chunks (lib/debug-files.ts). Created by lab/setup.sh with a 1-day
+		// lifecycle rule on chunks/ and staging/.
+		{
+			"binding": "DEBUG_FILES",
+			"bucket_name": "sentinel-lab-debug-files",
+			"preview_bucket_name": "sentinel-lab-debug-files"
 		}
 	],
+	// Background jobs (src/queue.ts): large sentry-cli assemblies today,
+	// symbolication next. Created by lab/setup.sh.
+	"queues": {
+		"producers": [{ "binding": "PROCESS_QUEUE", "queue": "sentinel-lab-process" }],
+		"consumers": [
+			{
+				"queue": "sentinel-lab-process",
+				"max_batch_size": 1,
+				"max_retries": 5
+			}
+		]
+	},
 	// Durable Object bindings
 	"durable_objects": {
 		"bindings": [
