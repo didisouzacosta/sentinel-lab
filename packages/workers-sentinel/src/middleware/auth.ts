@@ -15,87 +15,101 @@ export function extractBearerToken(header: string | undefined): string | null {
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
-export const authMiddleware = createMiddleware<{
-	Bindings: Env;
-	Variables: Variables;
-}>(async (c, next) => {
-	const token = extractBearerToken(c.req.header('Authorization'));
+/**
+ * Bearer auth for protected namespaces. `enforceWriteScope` applies the
+ * token scope rule (non-GET needs `write`) to the request itself; the MCP
+ * endpoint turns it off because every MCP call is a POST — its tools go
+ * through these same protected routes internally, where the rule applies
+ * per action.
+ */
+function createAuthMiddleware(options: { enforceWriteScope: boolean }) {
+	return createMiddleware<{
+		Bindings: Env;
+		Variables: Variables;
+	}>(async (c, next) => {
+		const token = extractBearerToken(c.req.header('Authorization'));
 
-	if (!token) {
-		return c.json(
-			{ error: 'unauthorized', message: 'Missing or invalid authorization header' },
-			401,
-		);
-	}
-
-	// Get the singleton AuthState Durable Object
-	const authStateId = c.env.AUTH_STATE.idFromName('global');
-	const authState = c.env.AUTH_STATE.get(authStateId);
-
-	// Choose validation endpoint based on token prefix
-	let response: Response;
-	if (token.startsWith('wst_')) {
-		// API token auth
-		response = await authState.fetch(
-			new Request('http://internal/validate-api-token', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ token }),
-			}),
-		);
-	} else {
-		// Session token auth (existing behavior)
-		response = await authState.fetch(
-			new Request('http://internal/validate-session', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ token }),
-			}),
-		);
-	}
-
-	if (!response.ok) {
-		// Surface the forced-password-change token rejection verbatim (401
-		// password_change_required); every other failure stays the generic
-		// unauthorized response.
-		let detail: { error?: string; message?: string } | null = null;
-		try {
-			detail = (await response.json()) as { error?: string; message?: string };
-		} catch {
-			detail = null;
+		if (!token) {
+			return c.json(
+				{ error: 'unauthorized', message: 'Missing or invalid authorization header' },
+				401,
+			);
 		}
-		if (detail?.error === 'password_change_required') {
-			return c.json({ error: 'password_change_required' }, 401);
+
+		// Get the singleton AuthState Durable Object
+		const authStateId = c.env.AUTH_STATE.idFromName('global');
+		const authState = c.env.AUTH_STATE.get(authStateId);
+
+		// Choose validation endpoint based on token prefix
+		let response: Response;
+		if (token.startsWith('wst_')) {
+			// API token auth
+			response = await authState.fetch(
+				new Request('http://internal/validate-api-token', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ token }),
+				}),
+			);
+		} else {
+			// Session token auth (existing behavior)
+			response = await authState.fetch(
+				new Request('http://internal/validate-session', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ token }),
+				}),
+			);
 		}
-		const message = token.startsWith('wst_')
-			? 'Invalid or expired API token'
-			: 'Invalid or expired session';
-		return c.json({ error: 'unauthorized', message }, 401);
-	}
 
-	const auth = (await response.json()) as AuthContext;
+		if (!response.ok) {
+			// Surface the forced-password-change token rejection verbatim (401
+			// password_change_required); every other failure stays the generic
+			// unauthorized response.
+			let detail: { error?: string; message?: string } | null = null;
+			try {
+				detail = (await response.json()) as { error?: string; message?: string };
+			} catch {
+				detail = null;
+			}
+			if (detail?.error === 'password_change_required') {
+				return c.json({ error: 'password_change_required' }, 401);
+			}
+			const message = token.startsWith('wst_')
+				? 'Invalid or expired API token'
+				: 'Invalid or expired session';
+			return c.json({ error: 'unauthorized', message }, 401);
+		}
 
-	// Server-side forced-password-change enforcement: a temp-password
-	// session may only reach the recovery paths (/api/auth/me,
-	// change-password, logout, logout-all — all outside this middleware).
-	// Everything it guards — /api/projects/*, tokens, passkey register/
-	// manage, /api/admin/*, /api/0/* — is off-limits until the change lands.
-	// The body carries only the machine-checkable error code so every
-	// surface (native and the /api/0 {detail} translator) reports it
-	// uniformly.
-	if (auth.mustChangePassword) {
-		return c.json({ error: 'password_change_required' }, 403);
-	}
+		const auth = (await response.json()) as AuthContext;
 
-	c.set('auth', auth);
+		// Server-side forced-password-change enforcement: a temp-password
+		// session may only reach the recovery paths (/api/auth/me,
+		// change-password, logout, logout-all — all outside this middleware).
+		// Everything it guards — /api/projects/*, tokens, passkey register/
+		// manage, /api/admin/*, /api/0/* — is off-limits until the change lands.
+		// The body carries only the machine-checkable error code so every
+		// surface (native and the /api/0 {detail} translator) reports it
+		// uniformly.
+		if (auth.mustChangePassword) {
+			return c.json({ error: 'password_change_required' }, 403);
+		}
 
-	// API token scopes (lib/token-scopes.ts): reads need `read` (every
-	// token has it); anything that is not a read needs `write`. Routes that
-	// need more (project lifecycle → `projects`) check it themselves.
-	if (auth.apiToken && !SAFE_METHODS.has(c.req.method)) {
-		const denied = requireScope(c, auth, 'write');
-		if (denied) return denied;
-	}
+		c.set('auth', auth);
 
-	return next();
-});
+		// API token scopes (lib/token-scopes.ts): reads need `read` (every
+		// token has it); anything that is not a read needs `write`. Routes that
+		// need more (project lifecycle → `projects`) check it themselves.
+		if (options.enforceWriteScope && auth.apiToken && !SAFE_METHODS.has(c.req.method)) {
+			const denied = requireScope(c, auth, 'write');
+			if (denied) return denied;
+		}
+
+		return next();
+	});
+}
+
+export const authMiddleware = createAuthMiddleware({ enforceWriteScope: true });
+
+/** For POST /mcp only: authenticates; scopes are enforced per tool action. */
+export const mcpAuthMiddleware = createAuthMiddleware({ enforceWriteScope: false });

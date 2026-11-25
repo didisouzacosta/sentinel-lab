@@ -290,6 +290,19 @@ sentry.Init(sentry.ClientOptions{
 
 The DSN is displayed when you create a project in the dashboard, or you can find it in the project settings.
 
+## MCP (AI agents)
+
+Sentinel has its own [MCP](https://modelcontextprotocol.io) server at `/mcp`. Connect it once and an agent (Claude Code, or any MCP client) can set up and manage your projects from the chat: create a project and get its DSN, read a step-by-step setup guide for the app's platform, send a test event, triage issues with their stack traces, change settings, rotate the DSN key or delete a project.
+
+```bash
+claude mcp add --transport http sentinel https://your-sentinel.example.com/mcp \
+  --header "Authorization: Bearer wst_…"
+```
+
+Other clients: `{"mcpServers": {"sentinel": {"type": "http", "url": "https://your-sentinel.example.com/mcp", "headers": {"Authorization": "Bearer wst_…"}}}}`.
+
+The agent acts **as the token's owner**: with their role in each project (owner, admin, member) and only within the token's access (Read only, Read & write, Projects — see [API Tokens](#api-tokens)). Tools the token can never use are not even listed; destructive ones (`rotate_dsn`, `delete_project`) need the project slug repeated, and MCP clients ask before running anything that changes data. Users, membership and instance settings are never reachable through it. The dashboard's **Connect → MCP** tab has the exact command for your instance. (The official Sentry MCP server also works against the `/api/0` API, for reading and triage only.)
+
 ## Webhook Notifications
 
 Workers Sentinel can send a POST request to any HTTP endpoint when a new issue is detected. This enables integration with Slack, Discord, PagerDuty, or any custom alerting system.

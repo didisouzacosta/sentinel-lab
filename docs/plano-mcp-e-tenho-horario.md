@@ -130,7 +130,17 @@ entrega DSN**. Criar projeto hoje só pela área de admin, que exige sessão de 
 - Ficou de fora (sem necessidade agora): período de carência na troca de chave e tela de renomear/trocar chave no
   painel — o MCP é a interface principal disso.
 
-### Fase 3 — Servidor MCP em `/mcp`
+### Fase 3 — Servidor MCP em `/mcp` ✅ (25/11/2026, no código; ainda não publicada)
+
+Feito: protocolo próprio sem dependência (`src/mcp/`), 17 ferramentas + 2 prompts, permissões pela própria API
+(seção abaixo), aba MCP da página Connect, `/mcp` no `run_worker_first` e no Access do lab (este ainda não aplicado ao
+vivo). Testado com o cliente oficial `@modelcontextprotocol/sdk` 1.32.2 contra o `wrangler dev`. Achados de passagem,
+corrigidos: (1) sem `/mcp` no `run_worker_first`, o `POST /mcp` morria em 405 na camada de arquivos estáticos;
+(2) evento com `message` em objeto (`{formatted}`, o `captureMessage` do Tem Horário) era aceito com 200 e perdido.
+Fica para depois: a ingestão ainda responde 200 quando a gravação no Durable Object falha (só registra no log) — foi
+o que escondeu o item 2.
+
+Desenho original:
 - Endpoint *Streamable HTTP* sem estado (cada chamada é um JSON-RPC; não precisa de Durable Object), com o SDK oficial
   de MCP em TypeScript, `Bearer wst_…`. Override público no Access para `/mcp` (`lab/access.mjs`, como foi feito com o
   `/api/0`); o Sentinel continua exigindo o token.

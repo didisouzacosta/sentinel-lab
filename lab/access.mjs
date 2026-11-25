@@ -14,7 +14,11 @@
 // no Access e que o próprio Sentinel já autentica:
 // - ingestão dos SDKs (exige a chave do DSN);
 // - /api/0, a API no formato do Sentry usada pelo MCP do Sentry e por agentes
-//   (exige token de API `wst_` ou sessão; sem credencial responde 401).
+//   (exige token de API `wst_` ou sessão; sem credencial responde 401);
+// - /mcp, o MCP do próprio Sentinel (mesma autenticação: token `wst_` ou
+//   sessão; sem credencial responde 401). As ferramentas chamam as rotas do
+//   painel por dentro do Worker, então o Access do painel continua valendo
+//   para quem acessa de fora.
 
 const HOST = 'sentinel.adrianosouzacosta.com.br';
 const APP_NAME = 'Sentinel Lab · painel';
@@ -26,6 +30,7 @@ export const PUBLIC_PATHS = [
 	'/api/*/store/',
 	'/api/health',
 	'/api/0/*',
+	'/mcp',
 ];
 
 const token = process.env.CLOUDFLARE_API_TOKEN;

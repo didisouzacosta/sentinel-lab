@@ -22,6 +22,7 @@ Todo recurso criado por este projeto começa com **`sentinel-lab`** / **`Sentine
 - Públicos por override (clientes que não fazem login no Access e que o Sentinel já autentica):
   - ingestão dos SDKs, que exige a chave do DSN: `/api/*/envelope`, `/api/*/envelope/`, `/api/*/store`, `/api/*/store/`, e `/api/health`;
   - `/api/0/*` (desde 25/11/2026), a API no formato do Sentry usada pelo MCP do Sentry e por agentes: exige token `wst_` ou sessão, e sem credencial responde 401.
+  - `/mcp` (**no código desde 25/11/2026; ainda não aplicado no app ao vivo** — rodar `lab/access.mjs apply` junto com o deploy da fase 3), o MCP do próprio Sentinel: mesma autenticação, 401 sem credencial. As ferramentas chamam as rotas do painel por dentro do Worker, sem passar de novo pelo Access.
 - `workers.dev` e preview URLs desligados: não existe caminho até o Worker sem passar pelo Access.
 - Ferramentas de CI que usarem a API do painel (ex.: upload de source maps/dSYM no futuro) vão precisar de um **Service Token** do Access.
 

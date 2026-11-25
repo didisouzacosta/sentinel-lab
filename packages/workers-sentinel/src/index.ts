@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
-import { authMiddleware } from './middleware/auth';
+import { handleMcpPost } from './mcp/server';
+import { authMiddleware, mcpAuthMiddleware } from './middleware/auth';
 import { adminRoutes } from './routes/admin';
 import { api0ErrorTranslator, api0Routes } from './routes/api0';
 import { attachmentRoutes } from './routes/attachments';
@@ -123,6 +124,52 @@ app.route('/api/admin', adminRoutes);
 app.use('/api/0/*', api0ErrorTranslator);
 app.use('/api/0/*', authMiddleware);
 app.route('/api/0', api0Routes);
+
+// Sentinel MCP server (Streamable HTTP, stateless, JSON responses). Bearer
+// auth like the API (`wst_` token or session); the write-scope rule is not
+// applied to the POST itself — each tool calls the protected routes below
+// with the caller's credential, where scopes and project roles apply per
+// action (src/mcp/tools.ts). Defined before the SPA catch-all.
+app.use('/mcp', mcpAuthMiddleware);
+app.post('/mcp', (c) => {
+	const auth = c.get('auth') as AuthContext;
+	const authorization = c.req.header('Authorization') ?? '';
+	const origin = new URL(c.req.url).origin;
+	const dispatch = async (request: Request): Promise<Response> =>
+		app.fetch(request, c.env, c.executionCtx);
+	return handleMcpPost(c.req.raw, {
+		auth,
+		origin,
+		async callApi(method, path, body) {
+			const response = await dispatch(
+				new Request(`${origin}${path}`, {
+					method,
+					headers: { Authorization: authorization, 'Content-Type': 'application/json' },
+					body: body === undefined ? undefined : JSON.stringify(body),
+				}),
+			);
+			const text = await response.text();
+			let data: unknown = null;
+			try {
+				data = text ? JSON.parse(text) : null;
+			} catch {
+				data = { error: 'non_json_response', message: text.slice(0, 200) };
+			}
+			return { status: response.status, data };
+		},
+		fetchInternal: (path, init) => dispatch(new Request(`${origin}${path}`, init)),
+	});
+});
+// No server-initiated stream and no sessions: only POST is spoken here.
+app.on(['GET', 'DELETE', 'PUT', 'PATCH'], '/mcp', (c) =>
+	c.json(
+		{ error: 'method_not_allowed', message: 'The Sentinel MCP endpoint only accepts POST' },
+		405,
+		{
+			Allow: 'POST',
+		},
+	),
+);
 
 // Unknown /api/* GETs must not fall through to the SPA: API clients get a
 // JSON 404 instead of the dashboard's HTML (served with a 200). Auth runs

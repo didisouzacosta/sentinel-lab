@@ -356,7 +356,13 @@ export interface AuthContext {
 	 */
 	mustChangePassword?: boolean;
 	/** Set only when the request authenticated with a `wst_` API token. */
-	apiToken?: { id: string; prefix: string; scopes: ApiTokenScope[] };
+	apiToken?: {
+		id: string;
+		prefix: string;
+		scopes: ApiTokenScope[];
+		/** Stored expiry; null = never expires. */
+		expiresAt: string | null;
+	};
 }
 
 /** Admin-facing user shape (counts via subqueries, newest-first lists). */

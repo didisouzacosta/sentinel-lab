@@ -2112,6 +2112,7 @@ export class AuthState extends DurableObject<Env> {
 				id: row.token_id as string,
 				prefix: row.token_prefix as string,
 				scopes: parseStoredScopes(row.scopes),
+				expiresAt,
 			},
 		} satisfies Pick<AuthContext, 'user' | 'session' | 'apiToken'>);
 	}

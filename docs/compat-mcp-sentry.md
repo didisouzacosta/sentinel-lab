@@ -1,5 +1,9 @@
 # MCP do Sentry contra o `/api/0` do Sentinel
 
+> Desde 25/11/2026 o Sentinel tem **MCP próprio** em `/mcp` (AGENTS.md, "The Sentinel MCP"), que também cria e
+> configura projetos, entrega guias de instalação e envia evento de teste. O MCP do Sentry continua funcionando contra
+> o `/api/0` para leitura e triagem; este documento registra só essa compatibilidade.
+
 Teste feito em 25/11/2026 com `@sentry/mcp-server` **0.51.0** (stdio), apontado para o worker local
 (`SENTRY_URL=http://127.0.0.1:8787`, token pessoal `wst_` do usuário demo), projeto `cli-feedback`.
 Cada ferramenta foi chamada por um cliente MCP mínimo e as rotas foram conferidas no log do worker.

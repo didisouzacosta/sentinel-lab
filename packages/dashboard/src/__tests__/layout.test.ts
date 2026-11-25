@@ -170,12 +170,29 @@ describe('Connect page', () => {
 		await wrapper.get('[data-testid="connect-tab-mcp"]').trigger('click');
 		await flushPromises();
 		expect(router.currentRoute.value.query.tab).toBe('mcp');
-		expect(wrapper.text()).toContain('claude mcp add sentinel');
-		// 0.51 reads the instance and token from the environment and runs the `mcp` subcommand
-		expect(wrapper.text()).toContain('SENTRY_URL=');
-		expect(wrapper.text()).toContain('SENTRY_AUTH_TOKEN=wst_');
-		expect(wrapper.text()).toContain('@sentry/mcp-server@0.51.0 mcp');
-		expect(wrapper.text()).not.toContain('--access-token');
+		// Sentinel's own MCP first: remote HTTP at /mcp with the wst_ token
+		const code = wrapper.get('[data-testid="mcp-code"]').text();
+		expect(code).toContain('claude mcp add --transport http sentinel');
+		expect(code).toContain(`${window.location.origin}/mcp`);
+		expect(code).toContain('Authorization: Bearer wst_');
+		expect(wrapper.get('[data-testid="mcp-intro"]').text()).toContain('Create projects');
+		await wrapper
+			.get('[role="radiogroup"][aria-label="MCP client"] [role="radio"]:last-child')
+			.trigger('click');
+		const json = JSON.parse(wrapper.get('[data-testid="mcp-code"] code').text()) as {
+			mcpServers: { sentinel: { type: string; url: string } };
+		};
+		expect(json.mcpServers.sentinel).toMatchObject({
+			type: 'http',
+			url: `${window.location.origin}/mcp`,
+		});
+		// The Sentry MCP server stays documented as the alternative (0.51 reads the
+		// instance and token from the environment and runs the `mcp` subcommand)
+		const alt = wrapper.get('[data-testid="mcp-sentry-alt"]').text();
+		expect(alt).toContain('SENTRY_URL=');
+		expect(alt).toContain('SENTRY_AUTH_TOKEN=wst_');
+		expect(alt).toContain('@sentry/mcp-server@0.51.0 mcp');
+		expect(alt).not.toContain('--access-token');
 		const note = wrapper.get('[data-testid="mcp-compat-note"]');
 		expect(note.text()).toContain('stack trace');
 		expect(note.text()).toContain('Add notes');
