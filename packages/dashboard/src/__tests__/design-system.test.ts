@@ -13,8 +13,6 @@ import { describe, expect, it } from 'vitest';
  */
 const LEGACY = new Set([
 	'views/ApiTokens.vue',
-	'views/ProjectFilters.vue',
-	'views/ProjectSettings.vue',
 	'views/admin/AdminAudit.vue',
 	'views/admin/AdminProjects.vue',
 	'views/admin/AdminSettings.vue',

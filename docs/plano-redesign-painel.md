@@ -61,6 +61,7 @@ Regra: se aparece em mais de um lugar ou tem comportamento, é componente. Nome 
 | Base | `Checkbox` | `ui/UiCheckbox.vue` | `checked`, `indeterminate` |
 | Base | `Badge/Level`, `Badge/Status`, `Tag` | `ui/UiBadge.vue`, `ui/UiTag.vue` | `level`, `status`, `mono` |
 | Base | `Tab` | `ui/UiTabs.vue` | `items`, `modelValue` |
+| Base | `Switch` | `ui/UiSwitch.vue` | `checked` (`role="switch"`, `aria-checked`), `label` |
 | Base | `Avatar` | `ui/UiAvatar.vue` | `name` |
 | Superfície | `Card`, `Card/Header`, `DL/Row` | `ui/UiCard.vue`, `ui/UiDescriptionList.vue` | `title`, `actions` (slot), `mono` |
 | Superfície | `CopyField`, `Code` | `ui/UiCopyField.vue`, `ui/UiCode.vue` | `value`, `language`, `copied` |
@@ -68,6 +69,8 @@ Regra: se aparece em mais de um lugar ou tem comportamento, é componente. Nome 
 | Sobreposição | `Dialog`, `Confirm`, `Menu` + `Menu/Item`, `Backdrop`, `Sheet` (celular) | `ui/UiDialog.vue`, `ui/UiConfirm.vue` + `useConfirm()`, `ui/UiMenu.vue`, `ui/UiDrawer.vue` | `title`, `description`, `tone`, `confirmLabel` |
 | App | `App/Sidebar`, `NavItem`, `App/TopBar`, `App/MobileTopBar`, `App/BottomActionBar` | `app/AppSidebar.vue`, `app/AppNavItem.vue`, `app/AppTopBar.vue` | `active`, `crumbs` |
 | App | `App/PageHeader`, `App/Stat`, `App/IssueRow`, `App/IssueCard` (celular), `App/ProjectCard`, `App/SetupStep` | `app/*.vue` | dados da tela |
+| App | `App/Subnav` (seções de uma página longa) | `app/AppSectionNav.vue` | `items` (`id`, `label`, `danger`); destaca a seção visível e rola até a escolhida |
+| App | `App/FilterRow`, `App/SuggestionRow`, `App/SourceMapRow` | marcação em `ProjectFilters.vue` / `ProjectSettings.vue` com `UiTag`, `UiSwitch`, `UiButton` | dados da tela |
 
 Como garantir:
 - **Teste de padronização** (etapa 0): um teste do vitest varre `src/views/**` e falha se encontrar paleta crua (`gray-`, `sky-`, `red-`…, hex), `fixed inset-0`, `confirm(`, `alert(` ou `<svg` inline. Começa com uma lista de exceções (as telas ainda não migradas) que encolhe a cada etapa e termina vazia na etapa 11.

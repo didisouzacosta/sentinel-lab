@@ -1,7 +1,26 @@
 <script setup lang="ts">
+import { Funnel, KeyRound, Send, Trash2, Upload } from 'lucide-vue-next';
 import { computed, onMounted, ref } from 'vue';
-import { RouterLink, useRoute, useRouter } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 import { api } from '../api/client';
+import AppPageHeader from '../components/app/AppPageHeader.vue';
+import AppSectionNav, { type SectionNavItem } from '../components/app/AppSectionNav.vue';
+import {
+	UiAlert,
+	UiAvatar,
+	UiButton,
+	UiCard,
+	UiCopyField,
+	UiDescriptionList,
+	UiFormField,
+	UiInput,
+	UiSelect,
+	UiSkeleton,
+	UiTag,
+} from '../components/ui';
+import { useConfirm } from '../composables/useConfirm';
+import { useToast } from '../composables/useToast';
+import { formatNumber } from '../lib/format';
 import { useProjectsStore } from '../stores/projects';
 
 interface Project {
@@ -22,51 +41,99 @@ interface ProjectMember {
 	createdAt: string;
 }
 
+interface SourceMap {
+	id: string;
+	release: string;
+	fileUrl: string;
+	createdAt: string;
+	size: number;
+}
+
 const route = useRoute();
 const router = useRouter();
 const projectsStore = useProjectsStore();
+const toast = useToast();
+const askConfirm = useConfirm();
 const slug = computed(() => route.params.slug as string);
 
-const project = ref<Project | null>(null);
-const dsn = ref<string>('');
-const loading = ref(true);
-const error = ref<string | null>(null);
-const deleting = ref(false);
-const showDeleteConfirm = ref(false);
-const webhookUrl = ref<string>('');
-const savingWebhook = ref(false);
-const webhookSaved = ref(false);
-const testingWebhook = ref(false);
-const webhookTested = ref(false);
-const maxEventsPerHour = ref<number>(0);
-const rateLimitStatus = ref<{ currentHourCount: number; isLimited: boolean } | null>(null);
-const savingConfig = ref(false);
-const configSaved = ref(false);
-const retentionDays = ref<number>(0);
-const savingRetention = ref(false);
-const retentionSaved = ref(false);
+const SECTIONS: SectionNavItem[] = [
+	{ id: 'dsn', label: 'Client keys (DSN)' },
+	{ id: 'information', label: 'Project information' },
+	{ id: 'members', label: 'Team members' },
+	{ id: 'webhook', label: 'Webhook notifications' },
+	{ id: 'rate-limit', label: 'Rate limiting' },
+	{ id: 'retention', label: 'Data retention' },
+	{ id: 'api-tokens', label: 'API tokens' },
+	{ id: 'source-maps', label: 'Source maps' },
+	{ id: 'inbound-filters', label: 'Inbound filters' },
+	{ id: 'danger', label: 'Danger zone', danger: true },
+];
 
-// Source map state
-const sourceMaps = ref<
-	Array<{ id: string; release: string; fileUrl: string; createdAt: string; size: number }>
->([]);
+const RETENTION_OPTIONS = [
+	{ value: 0, label: 'Keep forever' },
+	{ value: 7, label: '7 days' },
+	{ value: 30, label: '30 days' },
+	{ value: 90, label: '90 days' },
+	{ value: 180, label: '180 days' },
+	{ value: 365, label: '1 year' },
+];
+
+const ROLE_LABELS = { owner: 'Owner', admin: 'Admin', member: 'Member' } as const;
+
+const project = ref<Project | null>(null);
+const dsn = ref('');
+const loading = ref(true);
+const loadError = ref<string | null>(null);
+
+const webhookUrl = ref('');
+const savingWebhook = ref(false);
+const testingWebhook = ref(false);
+
+const maxEventsPerHour = ref(0);
+const rateLimitStatus = ref<{ currentHourCount: number; isLimited: boolean } | null>(null);
+const savingRateLimit = ref(false);
+
+const retentionDays = ref(0);
+const savingRetention = ref(false);
+
+const sourceMaps = ref<SourceMap[]>([]);
 const smRelease = ref('');
 const smFileUrl = ref('');
 const smContent = ref('');
+const smFile = ref<{ name: string; size: number } | null>(null);
+const smInput = ref<HTMLInputElement | null>(null);
 const uploadingSm = ref(false);
-const smError = ref('');
-const smSuccess = ref(false);
+const smError = ref<string | null>(null);
 
-// Members state (read-only roster — membership is administered centrally
-// under /admin/projects)
+// Read-only roster — membership is administered centrally under /admin/projects.
 const members = ref<ProjectMember[]>([]);
 const membersLoading = ref(false);
 const membersError = ref<string | null>(null);
 
+const usagePercent = computed(() => {
+	if (!rateLimitStatus.value || maxEventsPerHour.value <= 0) return 0;
+	return Math.min(100, (rateLimitStatus.value.currentHourCount / maxEventsPerHour.value) * 100);
+});
+
+const projectInfo = computed(() =>
+	project.value
+		? [
+				{ label: 'Name', value: project.value.name },
+				{ label: 'Slug', value: project.value.slug, mono: true },
+				{ label: 'Platform', value: project.value.platform },
+				{ label: 'Created', value: formatDate(project.value.createdAt) },
+				{ label: 'Project ID', value: project.value.id, mono: true },
+			]
+		: [],
+);
+
+function message(err: unknown, fallback: string) {
+	return err instanceof Error ? err.message : fallback;
+}
+
 async function loadProject() {
 	loading.value = true;
-	error.value = null;
-
+	loadError.value = null;
 	try {
 		const response = await api.get<{ project: Project; dsn: string }>(
 			`/api/projects/${slug.value}`,
@@ -75,13 +142,13 @@ async function loadProject() {
 		dsn.value = response.dsn;
 		webhookUrl.value = response.project.webhookUrl || '';
 
-		const settingsResponse = await api.get<{ retentionDays: number }>(
+		const settings = await api.get<{ retentionDays: number }>(
 			`/api/projects/${slug.value}/settings`,
 		);
-		retentionDays.value = settingsResponse.retentionDays;
+		retentionDays.value = settings.retentionDays;
 		loadSourceMaps();
 	} catch (err) {
-		error.value = err instanceof Error ? err.message : 'Failed to load project';
+		loadError.value = message(err, 'Failed to load project');
 	} finally {
 		loading.value = false;
 	}
@@ -89,129 +156,27 @@ async function loadProject() {
 
 async function loadSourceMaps() {
 	try {
-		const response = await api.get<{ sourceMaps: typeof sourceMaps.value }>(
+		const response = await api.get<{ sourceMaps: SourceMap[] }>(
 			`/api/projects/${slug.value}/sourcemaps`,
 		);
 		sourceMaps.value = response.sourceMaps;
 	} catch {
-		// Non-critical — just show empty list
+		// Non-critical — the list just stays empty.
 	}
-}
-
-function handleSourceMapFile(event: Event) {
-	const file = (event.target as HTMLInputElement).files?.[0];
-	if (!file) return;
-	const reader = new FileReader();
-	reader.onload = () => {
-		smContent.value = reader.result as string;
-	};
-	reader.readAsText(file);
-}
-
-async function uploadSourceMap() {
-	uploadingSm.value = true;
-	smError.value = '';
-	smSuccess.value = false;
-
-	try {
-		await api.post(`/api/projects/${slug.value}/sourcemaps`, {
-			release: smRelease.value,
-			fileUrl: smFileUrl.value,
-			content: smContent.value,
-		});
-		smSuccess.value = true;
-		smRelease.value = '';
-		smFileUrl.value = '';
-		smContent.value = '';
-		loadSourceMaps();
-	} catch (err) {
-		smError.value = err instanceof Error ? err.message : 'Upload failed';
-	} finally {
-		uploadingSm.value = false;
-	}
-}
-
-async function deleteSourceMap(id: string) {
-	try {
-		await api.delete(`/api/projects/${slug.value}/sourcemaps/${id}`);
-		sourceMaps.value = sourceMaps.value.filter((sm) => sm.id !== id);
-	} catch (err) {
-		console.error('Failed to delete source map:', err);
-	}
-}
-
-function formatSize(bytes: number): string {
-	if (bytes < 1024) return `${bytes} B`;
-	if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-	return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 async function loadMembers() {
 	membersLoading.value = true;
 	membersError.value = null;
-
 	try {
 		const response = await api.get<{ members: ProjectMember[] }>(
 			`/api/projects/${slug.value}/members`,
 		);
 		members.value = response.members;
 	} catch (err) {
-		membersError.value = err instanceof Error ? err.message : 'Failed to load members';
+		membersError.value = message(err, 'Failed to load members');
 	} finally {
 		membersLoading.value = false;
-	}
-}
-
-async function deleteProject() {
-	if (!project.value) return;
-
-	deleting.value = true;
-	try {
-		await api.delete(`/api/projects/${slug.value}`);
-		// Remove project from store so sidebar updates
-		projectsStore.removeProject(slug.value);
-		router.push('/projects');
-	} catch (err) {
-		error.value = err instanceof Error ? err.message : 'Failed to delete project';
-		deleting.value = false;
-	}
-}
-
-async function saveWebhook() {
-	savingWebhook.value = true;
-	webhookSaved.value = false;
-	try {
-		await api.patch(`/api/projects/${slug.value}`, {
-			webhookUrl: webhookUrl.value || null,
-		});
-		webhookSaved.value = true;
-		setTimeout(() => {
-			webhookSaved.value = false;
-		}, 3000);
-	} catch (err) {
-		error.value = err instanceof Error ? err.message : 'Failed to save webhook';
-	} finally {
-		savingWebhook.value = false;
-	}
-}
-
-async function testWebhook() {
-	if (!webhookUrl.value) return;
-	testingWebhook.value = true;
-	webhookTested.value = false;
-	try {
-		await api.post(`/api/projects/${slug.value}/test-webhook`, {});
-		webhookTested.value = true;
-		setTimeout(() => {
-			webhookTested.value = false;
-		}, 3000);
-	} catch (err) {
-		error.value =
-			err instanceof Error
-				? err.message
-				: 'Failed to send test webhook. Check the URL and try again.';
-	} finally {
-		testingWebhook.value = false;
 	}
 }
 
@@ -225,58 +190,144 @@ async function loadRateLimitStatus() {
 		maxEventsPerHour.value = response.maxEventsPerHour;
 		rateLimitStatus.value = response;
 	} catch {
-		/* ignore */
+		/* the usage line is optional */
+	}
+}
+
+async function saveWebhook() {
+	savingWebhook.value = true;
+	try {
+		await api.patch(`/api/projects/${slug.value}`, { webhookUrl: webhookUrl.value || null });
+		toast.success(webhookUrl.value ? 'Webhook saved' : 'Webhook removed');
+	} catch (err) {
+		toast.error(message(err, 'Failed to save webhook'));
+	} finally {
+		savingWebhook.value = false;
+	}
+}
+
+async function testWebhook() {
+	if (!webhookUrl.value) return;
+	testingWebhook.value = true;
+	try {
+		await api.post(`/api/projects/${slug.value}/test-webhook`, {});
+		toast.success('Test notification sent');
+	} catch (err) {
+		toast.error(message(err, 'Failed to send test webhook. Check the URL and try again.'));
+	} finally {
+		testingWebhook.value = false;
 	}
 }
 
 async function saveRateLimit() {
-	savingConfig.value = true;
-	configSaved.value = false;
+	savingRateLimit.value = true;
 	try {
-		await api.patch(`/api/projects/${slug.value}`, {
-			maxEventsPerHour: maxEventsPerHour.value,
-		});
-		configSaved.value = true;
+		await api.patch(`/api/projects/${slug.value}`, { maxEventsPerHour: maxEventsPerHour.value });
+		toast.success('Rate limit saved');
 		await loadRateLimitStatus();
-		setTimeout(() => {
-			configSaved.value = false;
-		}, 3000);
 	} catch (err) {
-		error.value = err instanceof Error ? err.message : 'Failed to save';
+		toast.error(message(err, 'Failed to save'));
 	} finally {
-		savingConfig.value = false;
+		savingRateLimit.value = false;
 	}
 }
 
 async function saveRetention() {
 	savingRetention.value = true;
-	retentionSaved.value = false;
 	try {
-		await api.patch(`/api/projects/${slug.value}`, {
-			retentionDays: retentionDays.value,
-		});
-		retentionSaved.value = true;
-		setTimeout(() => {
-			retentionSaved.value = false;
-		}, 3000);
+		await api.patch(`/api/projects/${slug.value}`, { retentionDays: retentionDays.value });
+		toast.success('Retention saved');
 	} catch (err) {
-		error.value = err instanceof Error ? err.message : 'Failed to save settings';
+		toast.error(message(err, 'Failed to save settings'));
 	} finally {
 		savingRetention.value = false;
 	}
 }
 
-function copyDsn() {
-	navigator.clipboard.writeText(dsn.value);
+function handleSourceMapFile(event: Event) {
+	const file = (event.target as HTMLInputElement).files?.[0];
+	if (!file) return;
+	smFile.value = { name: file.name, size: file.size };
+	const reader = new FileReader();
+	reader.onload = () => {
+		smContent.value = reader.result as string;
+	};
+	reader.readAsText(file);
+}
+
+async function uploadSourceMap() {
+	uploadingSm.value = true;
+	smError.value = null;
+	try {
+		await api.post(`/api/projects/${slug.value}/sourcemaps`, {
+			release: smRelease.value,
+			fileUrl: smFileUrl.value,
+			content: smContent.value,
+		});
+		toast.success('Source map uploaded');
+		smRelease.value = '';
+		smFileUrl.value = '';
+		smContent.value = '';
+		smFile.value = null;
+		if (smInput.value) smInput.value.value = '';
+		loadSourceMaps();
+	} catch (err) {
+		smError.value = message(err, 'Upload failed');
+	} finally {
+		uploadingSm.value = false;
+	}
+}
+
+async function deleteSourceMap(sm: SourceMap) {
+	const ok = await askConfirm({
+		title: 'Delete this source map?',
+		description: 'Stack traces for this file will show minified code again.',
+		items: [`${sm.release} · ${sm.fileUrl}`],
+		confirmLabel: 'Delete source map',
+		tone: 'danger',
+	});
+	if (!ok) return;
+	try {
+		await api.delete(`/api/projects/${slug.value}/sourcemaps/${sm.id}`);
+		sourceMaps.value = sourceMaps.value.filter((s) => s.id !== sm.id);
+		toast.success('Source map deleted');
+	} catch (err) {
+		toast.error(message(err, 'Failed to delete source map'));
+	}
+}
+
+async function deleteProject() {
+	if (!project.value) return;
+	const ok = await askConfirm({
+		title: `Delete "${project.value.name}"?`,
+		description:
+			'This cannot be undone. All issues, events and settings of this project will be permanently deleted.',
+		confirmLabel: 'Delete project',
+		tone: 'danger',
+		requireText: project.value.name,
+	});
+	if (!ok) return;
+	try {
+		await api.delete(`/api/projects/${slug.value}`);
+		projectsStore.removeProject(slug.value); // so the sidebar updates
+		toast.success(`Project "${project.value.name}" deleted`);
+		router.push('/projects');
+	} catch (err) {
+		toast.error(message(err, 'Failed to delete project'));
+	}
+}
+
+function formatSize(bytes: number): string {
+	if (bytes < 1024) return `${bytes} B`;
+	if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+	return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function formatDate(dateString: string): string {
 	return new Date(dateString).toLocaleDateString('en-US', {
 		year: 'numeric',
-		month: 'long',
+		month: 'short',
 		day: 'numeric',
-		hour: '2-digit',
-		minute: '2-digit',
 	});
 }
 
@@ -288,376 +339,257 @@ onMounted(() => {
 </script>
 
 <template>
-	<div class="mx-auto max-w-2xl">
-		<!-- Loading -->
-		<div v-if="loading" class="text-center py-12">
-			<div class="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-600 mx-auto"></div>
-		</div>
+	<div class="mx-auto flex max-w-[960px] flex-col gap-5">
+		<AppPageHeader title="Project settings" :subtitle="project?.name ?? slug" />
 
-		<!-- Error -->
-		<div v-else-if="error" class="bg-error-50 dark:bg-error-900/20 text-error-700 dark:text-error-400 px-4 py-3 rounded-lg">
-			{{ error }}
-		</div>
+		<UiSkeleton v-if="loading" variant="block" :count="3" label="Loading project settings" />
 
-		<!-- Settings -->
-		<div v-else-if="project" class="space-y-6">
-			<h1 class="text-2xl font-bold text-gray-900 dark:text-white">Project Settings</h1>
+		<UiAlert v-else-if="loadError" tone="error" action-label="Try again" @action="loadProject">
+			{{ loadError }}
+		</UiAlert>
 
-			<!-- DSN -->
-			<div class="card p-6">
-				<h2 class="text-lg font-semibold text-gray-900 dark:text-white mb-4">Client Keys (DSN)</h2>
-				<p class="text-sm text-gray-500 mb-4">
-					Use this DSN to configure your Sentry SDK.
-				</p>
+		<div v-else-if="project" class="lg:grid lg:grid-cols-[200px_minmax(0,1fr)] lg:items-start lg:gap-8">
+			<AppSectionNav :items="SECTIONS" label="Settings sections" class="sticky top-20 max-lg:hidden" />
 
-				<div class="flex items-center space-x-2">
-					<code class="flex-1 bg-gray-100 dark:bg-gray-700 px-3 py-2 rounded-lg text-sm font-mono break-all text-gray-900 dark:text-gray-100">
-						{{ dsn }}
-					</code>
-					<button @click="copyDsn" class="btn btn-secondary" title="Copy to clipboard">
-						<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-							<path
-								stroke-linecap="round"
-								stroke-linejoin="round"
-								stroke-width="2"
-								d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"
-							/>
-						</svg>
-					</button>
-				</div>
-			</div>
+			<div class="flex flex-col gap-5">
+				<UiCard id="dsn" title="Client keys (DSN)" class="scroll-mt-20" padded>
+					<p class="mb-3 text-body-s text-fg-muted">Use this DSN to configure your Sentry SDK.</p>
+					<UiCopyField :value="dsn" label="DSN" />
+				</UiCard>
 
-			<!-- Project info -->
-			<div class="card p-6">
-				<h2 class="text-lg font-semibold text-gray-900 dark:text-white mb-4">Project Information</h2>
+				<UiCard id="information" title="Project information" class="scroll-mt-20">
+					<UiDescriptionList :items="projectInfo" layout="grid" />
+				</UiCard>
 
-				<dl class="space-y-4">
-					<div>
-						<dt class="text-sm text-gray-500">Name</dt>
-						<dd class="text-gray-900 dark:text-white">{{ project.name }}</dd>
-					</div>
-					<div>
-						<dt class="text-sm text-gray-500">Slug</dt>
-						<dd class="text-gray-900 dark:text-white font-mono">{{ project.slug }}</dd>
-					</div>
-					<div>
-						<dt class="text-sm text-gray-500">Platform</dt>
-						<dd class="text-gray-900 dark:text-white">{{ project.platform }}</dd>
-					</div>
-					<div>
-						<dt class="text-sm text-gray-500">Created</dt>
-						<dd class="text-gray-900 dark:text-white">{{ formatDate(project.createdAt) }}</dd>
-					</div>
-					<div>
-						<dt class="text-sm text-gray-500">Project ID</dt>
-						<dd class="text-gray-900 dark:text-white font-mono text-sm">{{ project.id }}</dd>
-					</div>
-				</dl>
-			</div>
-
-			<!-- Team Members (read-only roster; membership is administered
-			     under Administration → Projects) -->
-			<div class="card p-6">
-				<h2 class="text-lg font-semibold text-gray-900 dark:text-white mb-2">Team Members</h2>
-				<p class="text-sm text-gray-500 mb-4">
-					Who has access to this project. Membership is managed centrally by administrators
-					(Administration → Projects).
-				</p>
-
-				<!-- Members error -->
-				<div
-					v-if="membersError"
-					class="bg-error-50 dark:bg-error-900/20 text-error-700 dark:text-error-400 px-4 py-3 rounded-lg mb-4"
+				<UiCard
+					id="members"
+					title="Team members"
+					:meta="members.length ? `${members.length}` : undefined"
+					class="scroll-mt-20"
+					data-testid="members-card"
 				>
-					{{ membersError }}
-				</div>
-
-				<!-- Members loading -->
-				<div v-if="membersLoading && members.length === 0" class="text-center py-4">
-					<div class="animate-spin rounded-full h-6 w-6 border-b-2 border-primary-600 mx-auto"></div>
-				</div>
-
-				<!-- Read-only roster -->
-				<div v-else class="space-y-3">
-					<div
-						v-for="member in members"
-						:key="member.userId"
-						class="flex items-center justify-between py-2 px-3 bg-gray-50 dark:bg-gray-700/50 rounded-lg"
-					>
-						<div class="flex items-center space-x-3 min-w-0">
-							<div class="min-w-0">
-								<div class="text-sm font-medium text-gray-900 dark:text-white truncate">
-									{{ member.name }}
+					<p class="px-4 pt-3.5 text-body-s text-fg-muted">
+						Who has access to this project. Membership is managed centrally by administrators
+						(Administration → Projects).
+					</p>
+					<div class="px-4 pt-3 pb-4">
+						<UiAlert v-if="membersError" tone="error">{{ membersError }}</UiAlert>
+						<UiSkeleton v-else-if="membersLoading && members.length === 0" :count="2" label="Loading members" />
+						<p v-else-if="members.length === 0" class="text-body-s text-fg-subtle">No members found.</p>
+						<ul v-else class="overflow-hidden rounded-lg border border-border">
+							<li
+								v-for="member in members"
+								:key="member.userId"
+								class="flex items-center gap-3 border-b border-border px-3 py-2.5 last:border-b-0"
+							>
+								<UiAvatar :name="member.name" size="sm" />
+								<div class="min-w-0 flex-1">
+									<p class="truncate text-body-s font-medium text-fg">{{ member.name }}</p>
+									<p class="truncate text-caption text-fg-subtle">{{ member.email }}</p>
 								</div>
-								<div class="text-xs text-gray-500 truncate">{{ member.email }}</div>
-							</div>
+								<UiTag :tone="member.role === 'owner' ? 'accent' : 'neutral'">{{ ROLE_LABELS[member.role] }}</UiTag>
+							</li>
+						</ul>
+					</div>
+				</UiCard>
+
+				<UiCard id="webhook" title="Webhook notifications" class="scroll-mt-20" padded>
+					<form class="flex flex-col gap-3" @submit.prevent="saveWebhook">
+						<UiFormField
+							v-slot="f"
+							label="Webhook URL"
+							help="Receives a POST when a new issue is detected. Works with Slack, Discord or any HTTP endpoint."
+						>
+							<UiInput
+								:id="f.id"
+								v-model="webhookUrl"
+								:aria-describedby="f.describedBy"
+								type="url"
+								placeholder="https://hooks.slack.com/services/..."
+							/>
+						</UiFormField>
+						<div class="flex flex-wrap gap-2">
+							<UiButton type="submit" variant="primary" :loading="savingWebhook">Save</UiButton>
+							<UiButton v-if="webhookUrl" :icon="Send" :loading="testingWebhook" @click="testWebhook">
+								Send test
+							</UiButton>
 						</div>
+					</form>
+				</UiCard>
 
-						<span
-							class="inline-flex items-center px-2 py-1 text-xs font-medium rounded-full shrink-0"
-							:class="
-								member.role === 'owner'
-									? 'bg-primary-100 dark:bg-primary-900/30 text-primary-700 dark:text-primary-300'
-									: 'bg-gray-100 dark:bg-gray-600 text-gray-700 dark:text-gray-300'
-							"
-						>
-							{{ member.role === 'owner' ? 'Owner' : member.role === 'admin' ? 'Admin' : 'Member' }}
-						</span>
-					</div>
-
-					<div v-if="members.length === 0 && !membersLoading" class="text-sm text-gray-500 text-center py-4">
-						No members found.
-					</div>
-				</div>
-			</div>
-
-			<!-- Webhook Notifications -->
-			<div class="card p-6">
-				<h2 class="text-lg font-semibold text-gray-900 dark:text-white mb-2">Webhook Notifications</h2>
-				<p class="text-sm text-gray-500 mb-4">
-					Receive a POST request when a new issue is detected. Works with Slack Incoming Webhooks, Discord Webhooks, or any HTTP endpoint.
-				</p>
-
-				<div class="space-y-3">
-					<div>
-						<label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Webhook URL</label>
-						<input
-							v-model="webhookUrl"
-							type="url"
-							placeholder="https://hooks.slack.com/services/..."
-							class="w-full px-3 py-2 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg text-sm text-gray-900 dark:text-gray-100 placeholder-gray-400 focus:outline-hidden focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-						/>
-					</div>
-
-					<div class="flex items-center space-x-3">
-						<button
-							class="btn btn-primary"
-							:disabled="savingWebhook"
-							@click="saveWebhook"
-						>
-							<span v-if="savingWebhook">Saving...</span>
-							<span v-else-if="webhookSaved">Saved!</span>
-							<span v-else>Save</span>
-						</button>
-						<button
-							v-if="webhookUrl"
-							class="btn btn-secondary"
-							:disabled="testingWebhook"
-							@click="testWebhook"
-						>
-							<span v-if="testingWebhook">Sending...</span>
-							<span v-else-if="webhookTested">Sent!</span>
-							<span v-else>Send Test</span>
-						</button>
-					</div>
-				</div>
-			</div>
-
-			<!-- Rate Limiting -->
-			<div class="card p-6">
-				<h2 class="text-lg font-semibold text-gray-900 dark:text-white mb-2">Rate Limiting</h2>
-				<p class="text-sm text-gray-500 mb-4">
-					Limit the number of events this project can receive per hour. Set to 0 for unlimited.
-				</p>
-
-				<div class="space-y-4">
-					<div>
-						<label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-							Max events per hour
-						</label>
-						<div class="flex items-center space-x-3">
-							<input
+				<UiCard id="rate-limit" title="Rate limiting" meta="0 = unlimited" class="scroll-mt-20" padded>
+					<form class="flex flex-wrap items-end gap-2" @submit.prevent="saveRateLimit">
+						<UiFormField v-slot="f" label="Max events per hour" class="w-full sm:w-52">
+							<UiInput
+								:id="f.id"
 								v-model.number="maxEventsPerHour"
 								type="number"
 								min="0"
 								step="100"
-								class="w-48 px-3 py-2 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg text-sm text-gray-900 dark:text-gray-100 placeholder-gray-400 focus:outline-hidden focus:ring-2 focus:ring-primary-500 focus:border-transparent"
 								placeholder="0 (unlimited)"
+								data-numeric
 							/>
-							<button
-								class="btn btn-primary"
-								:disabled="savingConfig"
-								@click="saveRateLimit"
-							>
-								<span v-if="savingConfig">Saving...</span>
-								<span v-else-if="configSaved">Saved!</span>
-								<span v-else>Save</span>
-							</button>
-						</div>
-					</div>
-
-					<!-- Current usage display -->
-					<div v-if="rateLimitStatus && maxEventsPerHour > 0" class="text-sm">
-						<div class="flex items-center space-x-2">
-							<span class="text-gray-500">Current hour:</span>
-							<span :class="rateLimitStatus.isLimited ? 'text-error-600 font-medium' : 'text-gray-900 dark:text-white'">
-								{{ rateLimitStatus.currentHourCount.toLocaleString() }} / {{ maxEventsPerHour.toLocaleString() }}
-							</span>
-							<span v-if="rateLimitStatus.isLimited" class="inline-flex items-center px-2 py-0.5 rounded-sm text-xs font-medium bg-error-100 text-error-800 dark:bg-error-900/30 dark:text-error-400">
-								Rate limited
-							</span>
-						</div>
-					</div>
-				</div>
-			</div>
-
-			<!-- Data Retention -->
-			<div class="card p-6">
-				<h2 class="text-lg font-semibold text-gray-900 dark:text-white mb-4">Data Retention</h2>
-				<p class="text-sm text-gray-500 mb-4">
-					Configure how long event data is kept. Older events, stats, and empty issues will be automatically deleted.
-				</p>
-
-				<div class="flex items-center space-x-4">
-					<select v-model.number="retentionDays" class="input w-auto">
-						<option :value="0">Keep forever</option>
-						<option :value="7">7 days</option>
-						<option :value="30">30 days</option>
-						<option :value="90">90 days</option>
-						<option :value="180">180 days</option>
-						<option :value="365">1 year</option>
-					</select>
-					<button
-						class="btn btn-primary"
-						:disabled="savingRetention"
-						@click="saveRetention"
+						</UiFormField>
+						<UiButton type="submit" variant="primary" :loading="savingRateLimit">Save</UiButton>
+					</form>
+					<div
+						v-if="rateLimitStatus && maxEventsPerHour > 0"
+						class="mt-4 flex flex-wrap items-center gap-x-3 gap-y-2"
+						data-testid="rate-limit-usage"
 					>
-						{{ savingRetention ? 'Saving...' : 'Save' }}
-					</button>
-					<span v-if="retentionSaved" class="text-sm text-green-600 dark:text-green-400">Saved!</span>
-				</div>
-			</div>
-
-			<!-- API Tokens -->
-			<div class="card p-6">
-				<h2 class="text-lg font-semibold text-gray-900 dark:text-white mb-2">API Tokens</h2>
-				<p class="text-sm text-gray-500 mb-4">
-					Create personal API tokens for programmatic access to the API.
-				</p>
-				<router-link to="/settings/tokens" class="btn btn-secondary">
-					Manage API Tokens
-				</router-link>
-			</div>
-
-			<!-- Source Maps -->
-			<div class="card p-6">
-				<h2 class="text-lg font-semibold text-gray-900 dark:text-white mb-2">Source Maps</h2>
-				<p class="text-sm text-gray-500 mb-4">
-					Upload source maps to see original source code in stack traces. Associate each source map with a release version and the URL of the minified file it maps to.
-				</p>
-
-				<!-- Upload form -->
-				<div class="space-y-3 mb-6 p-4 bg-gray-50 dark:bg-gray-700/50 rounded-lg">
-					<div>
-						<label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Release</label>
-						<input v-model="smRelease" class="w-full px-3 py-2 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg text-sm text-gray-900 dark:text-gray-100 placeholder-gray-400 focus:outline-hidden focus:ring-2 focus:ring-primary-500 focus:border-transparent" placeholder="e.g. my-app@1.2.0" />
-					</div>
-					<div>
-						<label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Minified File URL</label>
-						<input v-model="smFileUrl" class="w-full px-3 py-2 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-lg text-sm text-gray-900 dark:text-gray-100 placeholder-gray-400 focus:outline-hidden focus:ring-2 focus:ring-primary-500 focus:border-transparent" placeholder="e.g. https://example.com/assets/main.abc123.js" />
-					</div>
-					<div>
-						<label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Source Map File (.map)</label>
-						<input type="file" accept=".map,.json" class="w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-primary-50 file:text-primary-700 hover:file:bg-primary-100 dark:file:bg-primary-900/20 dark:file:text-primary-400" @change="handleSourceMapFile" />
-					</div>
-					<button
-						class="btn btn-primary"
-						:disabled="uploadingSm || !smRelease || !smFileUrl || !smContent"
-						@click="uploadSourceMap"
-					>
-						{{ uploadingSm ? 'Uploading...' : 'Upload Source Map' }}
-					</button>
-					<p v-if="smError" class="text-sm text-error-600">{{ smError }}</p>
-					<p v-if="smSuccess" class="text-sm text-green-600">Source map uploaded successfully.</p>
-				</div>
-
-				<!-- Existing source maps list -->
-				<div v-if="sourceMaps.length > 0">
-					<h3 class="text-sm font-medium text-gray-900 dark:text-white mb-2">Uploaded Source Maps</h3>
-					<div class="divide-y divide-gray-200 dark:divide-gray-700 border border-gray-200 dark:border-gray-700 rounded-lg">
-						<div v-for="sm in sourceMaps" :key="sm.id" class="flex items-center justify-between p-3">
-							<div class="min-w-0 flex-1">
-								<div class="flex items-center space-x-2">
-									<span class="inline-flex items-center px-2 py-0.5 rounded-sm text-xs font-medium bg-primary-100 text-primary-800 dark:bg-primary-900/20 dark:text-primary-400">{{ sm.release }}</span>
-									<span class="text-sm text-gray-900 dark:text-white truncate">{{ sm.fileUrl }}</span>
-								</div>
-								<p class="text-xs text-gray-400 mt-1">{{ formatSize(sm.size) }} — {{ formatDate(sm.createdAt) }}</p>
-							</div>
-							<button class="text-gray-400 hover:text-error-600 ml-2" @click="deleteSourceMap(sm.id)">
-								<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-									<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-								</svg>
-							</button>
+						<span class="text-body-s text-fg-subtle">Current hour</span>
+						<span
+							class="text-body-s font-medium"
+							:class="rateLimitStatus.isLimited ? 'text-level-error' : 'text-fg'"
+							data-numeric
+						>
+							{{ formatNumber(rateLimitStatus.currentHourCount) }} / {{ formatNumber(maxEventsPerHour) }}
+						</span>
+						<div
+							class="h-1.5 w-full max-w-72 overflow-hidden rounded-full bg-subtle"
+							role="meter"
+							aria-label="Events this hour"
+							:aria-valuenow="rateLimitStatus.currentHourCount"
+							aria-valuemin="0"
+							:aria-valuemax="maxEventsPerHour"
+						>
+							<div
+								class="h-full rounded-full"
+								:class="usagePercent >= 100 ? 'bg-level-error' : usagePercent >= 80 ? 'bg-level-warning' : 'bg-accent'"
+								:style="{ width: `${usagePercent}%` }"
+							/>
 						</div>
+						<UiTag v-if="rateLimitStatus.isLimited" class="text-level-error">Rate limited</UiTag>
 					</div>
-				</div>
-				<p v-else class="text-sm text-gray-400">No source maps uploaded yet.</p>
-			</div>
+				</UiCard>
 
-			<!-- Inbound Filters -->
-			<div class="card p-6">
-				<h2 class="text-lg font-semibold text-gray-900 dark:text-white mb-2">Inbound Filters</h2>
-				<p class="text-sm text-gray-500 mb-4">
-					Configure rules to automatically drop noisy or unwanted events before they are stored.
-				</p>
-				<RouterLink :to="`/projects/${slug}/filters`" class="btn btn-secondary">
-					Manage Filters
-				</RouterLink>
-			</div>
+				<UiCard
+					id="retention"
+					title="Data retention"
+					meta="Older events are deleted automatically"
+					class="scroll-mt-20"
+					padded
+				>
+					<form class="flex flex-wrap items-end gap-2" @submit.prevent="saveRetention">
+						<UiFormField v-slot="f" label="Keep events for" class="w-full sm:w-52">
+							<UiSelect :id="f.id" v-model.number="retentionDays" class="w-full">
+								<option v-for="o in RETENTION_OPTIONS" :key="o.value" :value="o.value">{{ o.label }}</option>
+							</UiSelect>
+						</UiFormField>
+						<UiButton type="submit" variant="primary" :loading="savingRetention">Save</UiButton>
+					</form>
+				</UiCard>
 
-			<!-- Danger zone -->
-			<div class="card border-error-200 dark:border-error-800">
-				<div class="p-6 border-b border-error-200 dark:border-error-800">
-					<h2 class="text-lg font-semibold text-error-600 dark:text-error-400">Danger Zone</h2>
-				</div>
-				<div class="p-6">
-					<div class="flex items-center justify-between">
+				<UiCard
+					id="api-tokens"
+					title="API tokens"
+					meta="Personal tokens for the API and AI agents"
+					class="scroll-mt-20"
+					padded
+				>
+					<UiButton :icon="KeyRound" to="/settings/tokens">Manage API tokens</UiButton>
+				</UiCard>
+
+				<UiCard
+					id="source-maps"
+					title="Source maps"
+					meta="Original code in stack traces"
+					class="scroll-mt-20"
+					padded
+				>
+					<form class="flex flex-col gap-3" @submit.prevent="uploadSourceMap">
+						<div class="grid gap-3 sm:grid-cols-2">
+							<UiFormField v-slot="f" label="Release">
+								<UiInput :id="f.id" v-model="smRelease" placeholder="my-app@1.2.0" class="font-mono" />
+							</UiFormField>
+							<UiFormField v-slot="f" label="Minified file URL">
+								<UiInput
+									:id="f.id"
+									v-model="smFileUrl"
+									placeholder="https://example.com/assets/main.abc123.js"
+									class="font-mono"
+								/>
+							</UiFormField>
+						</div>
+						<div class="flex flex-wrap items-center gap-2">
+							<input
+								ref="smInput"
+								type="file"
+								accept=".map,.json"
+								class="sr-only"
+								aria-label="Source map file (.map)"
+								data-testid="sourcemap-file"
+								@change="handleSourceMapFile"
+							/>
+							<UiButton :icon="Upload" @click="smInput?.click()">Choose .map file</UiButton>
+							<span class="min-w-0 truncate text-caption text-fg-subtle">
+								{{ smFile ? `${smFile.name} · ${formatSize(smFile.size)}` : 'No file chosen' }}
+							</span>
+						</div>
+						<UiAlert v-if="smError" tone="error">{{ smError }}</UiAlert>
 						<div>
-							<h3 class="text-sm font-medium text-gray-900 dark:text-white">Delete this project</h3>
-							<p class="text-sm text-gray-500">
+							<UiButton
+								type="submit"
+								variant="primary"
+								:loading="uploadingSm"
+								:disabled="!smRelease || !smFileUrl || !smContent"
+							>
+								Upload source map
+							</UiButton>
+						</div>
+					</form>
+
+					<ul v-if="sourceMaps.length > 0" class="mt-4 overflow-hidden rounded-lg border border-border" aria-label="Uploaded source maps">
+						<li
+							v-for="sm in sourceMaps"
+							:key="sm.id"
+							class="flex items-center gap-3 border-b border-border px-3 py-2.5 last:border-b-0"
+							data-testid="sourcemap-row"
+						>
+							<div class="min-w-0 flex-1">
+								<div class="flex min-w-0 items-center gap-2">
+									<UiTag>{{ sm.release }}</UiTag>
+									<span class="min-w-0 truncate font-mono text-body-s text-fg" :title="sm.fileUrl">{{ sm.fileUrl }}</span>
+								</div>
+								<p class="mt-0.5 text-caption text-fg-subtle" data-numeric>
+									{{ formatSize(sm.size) }} · {{ formatDate(sm.createdAt) }}
+								</p>
+							</div>
+							<UiButton
+								variant="ghost"
+								size="icon-sm"
+								:icon="Trash2"
+								:aria-label="`Delete source map ${sm.fileUrl}`"
+								@click="deleteSourceMap(sm)"
+							/>
+						</li>
+					</ul>
+					<p v-else class="mt-4 text-body-s text-fg-subtle">No source maps uploaded yet.</p>
+				</UiCard>
+
+				<UiCard
+					id="inbound-filters"
+					title="Inbound filters"
+					meta="Drop noisy events before they are stored"
+					class="scroll-mt-20"
+					padded
+				>
+					<UiButton :icon="Funnel" :to="`/projects/${slug}/filters`">Manage filters</UiButton>
+				</UiCard>
+
+				<UiCard id="danger" title="Danger zone" tone="danger" class="scroll-mt-20" padded>
+					<div class="flex flex-wrap items-center gap-4">
+						<div class="min-w-0 flex-1">
+							<h3 class="text-body-s font-medium text-fg">Delete this project</h3>
+							<p class="text-body-s text-fg-muted">
 								Once you delete a project, there is no going back. All data will be permanently deleted.
 							</p>
 						</div>
-						<button
-							class="btn btn-danger"
-							@click="showDeleteConfirm = true"
-						>
-							Delete Project
-						</button>
+						<UiButton variant="danger" :icon="Trash2" data-testid="delete-project" @click="deleteProject">
+							Delete project
+						</UiButton>
 					</div>
-				</div>
-			</div>
-
-			<!-- Delete confirmation modal -->
-			<div
-				v-if="showDeleteConfirm"
-				class="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
-				@click.self="showDeleteConfirm = false"
-			>
-				<div class="bg-white dark:bg-gray-800 rounded-lg p-6 max-w-md mx-4">
-					<h3 class="text-lg font-semibold text-gray-900 dark:text-white mb-2">
-						Delete "{{ project.name }}"?
-					</h3>
-					<p class="text-sm text-gray-500 mb-6">
-						This action cannot be undone. All issues, events, and settings for this project will be permanently deleted.
-					</p>
-					<div class="flex justify-end space-x-3">
-						<button
-							class="btn btn-secondary"
-							@click="showDeleteConfirm = false"
-						>
-							Cancel
-						</button>
-						<button
-							class="btn btn-danger"
-							:disabled="deleting"
-							@click="deleteProject"
-						>
-							<span v-if="deleting">Deleting...</span>
-							<span v-else>Delete Project</span>
-						</button>
-					</div>
-				</div>
+				</UiCard>
 			</div>
 		</div>
 	</div>

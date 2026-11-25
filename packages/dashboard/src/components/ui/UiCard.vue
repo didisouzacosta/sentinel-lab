@@ -36,7 +36,7 @@ const titleId = `card-${useId()}`;
 	>
 		<header
 			v-if="title || $slots.header || $slots.actions"
-			class="flex min-h-11 items-center gap-2 border-b border-border px-4 py-2.5"
+			class="flex min-h-11 flex-wrap items-center gap-x-2 gap-y-0.5 border-b border-border px-4 py-2.5"
 		>
 			<slot name="header">
 				<component

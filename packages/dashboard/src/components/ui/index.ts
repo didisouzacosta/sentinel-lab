@@ -20,6 +20,7 @@ export { default as UiMenu } from './UiMenu.vue';
 export { default as UiSegmented } from './UiSegmented.vue';
 export { default as UiSelect } from './UiSelect.vue';
 export { default as UiSkeleton } from './UiSkeleton.vue';
+export { default as UiSwitch } from './UiSwitch.vue';
 export { default as UiTabs } from './UiTabs.vue';
 export { default as UiTag } from './UiTag.vue';
 export { default as UiToaster } from './UiToaster.vue';

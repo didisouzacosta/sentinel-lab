@@ -549,12 +549,12 @@ describe('project settings shows read-only roster without management controls', 
 		expect(text).toContain('Owner');
 		// No management controls remain on the roster
 		expect(text).not.toContain('Add Member');
-		const membersCard = wrapper.findAll('.card').find((c) => c.text().includes('Team Members'));
-		expect(membersCard).toBeDefined();
-		expect(membersCard?.findAll('select').length).toBe(0);
-		expect(membersCard?.findAll('button').length).toBe(0);
+		const membersCard = wrapper.find('[data-testid="members-card"]');
+		expect(membersCard.text()).toContain('Team members');
+		expect(membersCard.findAll('select').length).toBe(0);
+		expect(membersCard.findAll('button').length).toBe(0);
 		// Points at the centralized administration surface
-		expect(membersCard?.text()).toContain('administrators');
+		expect(membersCard.text()).toContain('administrators');
 	});
 });
 
