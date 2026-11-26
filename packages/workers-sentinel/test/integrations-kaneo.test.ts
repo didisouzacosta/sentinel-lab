@@ -287,6 +287,80 @@ describe('Kaneo integration config routes', () => {
 		expect(JSON.parse(readText).integration.apiKey).toBe('kane…6789');
 	});
 
+	it('saves verified credentials as pending, then connects when a project is chosen', async () => {
+		const pending = await authFetch(owner.token!, url(), {
+			method: 'PUT',
+			body: JSON.stringify({ baseUrl: KANEO, apiKey: validKey }),
+		});
+		expect(pending.status).toBe(201);
+		const pendingText = await pending.text();
+		expect(pendingText).not.toContain(validKey);
+		expect(JSON.parse(pendingText).integration).toMatchObject({
+			status: 'pending',
+			baseUrl: KANEO,
+			workspaceId: 'ws1',
+			workspaceName: 'Personal',
+			kaneoProjectId: '',
+			apiKey: 'kane…6789',
+			webhookStatus: null,
+		});
+		// No project yet: no webhook was touched and the test has nothing to check.
+		expect(requests.some((r) => r.path.startsWith('/generic-webhook-integration'))).toBe(false);
+		const test = await authFetch(owner.token!, `${url()}/test`, { method: 'POST' });
+		expect(test.status).toBe(409);
+		expect(((await test.json()) as { error: string }).error).toBe('integration_incomplete');
+
+		// Reloading the page keeps it: the key is not typed again.
+		const read = (await (await authFetch(owner.token!, url())).json()) as {
+			integration: { status: string; apiKey: string };
+		};
+		expect(read.integration).toMatchObject({ status: 'pending', apiKey: 'kane…6789' });
+
+		const connected = await authFetch(owner.token!, url(), {
+			method: 'PUT',
+			body: JSON.stringify({ kaneoProjectId: 'kp1' }),
+		});
+		expect(connected.status).toBe(200);
+		expect(((await connected.json()) as { integration: unknown }).integration).toMatchObject({
+			status: 'connected',
+			kaneoProjectId: 'kp1',
+			workspaceName: 'Personal',
+			createColumn: 'to-do',
+			doneColumn: 'done',
+		});
+	});
+
+	it('stores nothing when Kaneo refuses a credentials-only save', async () => {
+		const response = await authFetch(owner.token!, url(), {
+			method: 'PUT',
+			body: JSON.stringify({ baseUrl: KANEO, apiKey: 'wrong-key-000000000' }),
+		});
+		expect(response.status).toBe(502);
+		expect(((await response.json()) as { code: string }).code).toBe('unauthorized');
+		const read = (await (await authFetch(owner.token!, url())).json()) as { integration: unknown };
+		expect(read.integration).toBeNull();
+	});
+
+	it('reports connected integrations saved before the status field existed', async () => {
+		await connect();
+		const stub = env.PROJECT_STATE.get(env.PROJECT_STATE.idFromName(project.id));
+		const stored = (await (
+			await stub.fetch('http://internal/integrations/get', {
+				method: 'POST',
+				body: JSON.stringify({ type: 'kaneo' }),
+			})
+		).json()) as { integration: { config: Record<string, unknown> } };
+		const { status: _status, ...legacy } = stored.integration.config;
+		await stub.fetch('http://internal/integrations/save', {
+			method: 'POST',
+			body: JSON.stringify({ type: 'kaneo', enabled: true, config: legacy }),
+		});
+		const read = (await (await authFetch(owner.token!, url())).json()) as {
+			integration: { status: string };
+		};
+		expect(read.integration.status).toBe('connected');
+	});
+
 	it('stores the credentials sealed in ProjectState', async () => {
 		await connect();
 		const stub = env.PROJECT_STATE.get(env.PROJECT_STATE.idFromName(project.id));

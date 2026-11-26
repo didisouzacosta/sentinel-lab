@@ -52,6 +52,17 @@ export interface SlackIdentity {
 	botUserId: string;
 	/** Workspace URL, e.g. `https://acme.slack.com/`. */
 	url: string;
+	/** The Slack app's id (A…), when auth.test reports it. */
+	appId?: string;
+}
+
+/** Slack app ids look like `A08K2TX4R1Q`. */
+export const SLACK_APP_ID = /^A[A-Z0-9]{8,}$/;
+
+/** The App ID in a pasted app page address (api.slack.com/apps/A…) or the bare id. */
+export function parseSlackAppId(raw: string): string | null {
+	const match = raw.trim().match(/\bA[A-Z0-9]{8,}\b/);
+	return match && SLACK_APP_ID.test(match[0]) ? match[0] : null;
 }
 
 export interface SlackChannel {
@@ -211,15 +222,21 @@ export function createSlackClient(credentials: SlackCredentials, fetcher?: typeo
 
 	return {
 		async authTest(): Promise<SlackIdentity> {
-			const data = await call<{ team_id?: string; team?: string; user_id?: string; url?: string }>(
-				'auth.test',
-				{ body: {} },
-			);
+			const data = await call<{
+				team_id?: string;
+				team?: string;
+				user_id?: string;
+				url?: string;
+				app_id?: string;
+			}>('auth.test', { body: {} });
 			return {
 				teamId: data.team_id ?? '',
 				teamName: data.team ?? '',
 				botUserId: data.user_id ?? '',
 				url: data.url ?? '',
+				...(typeof data.app_id === 'string' && SLACK_APP_ID.test(data.app_id)
+					? { appId: data.app_id }
+					: {}),
 			};
 		},
 

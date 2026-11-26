@@ -154,6 +154,44 @@ describe('Slack messages for issues', () => {
 		expect(await outbox()).toEqual([]);
 	});
 
+	it('delivers nothing while only the bot token is saved (pending)', async () => {
+		const pending = await authFetch(
+			owner.token!,
+			`${BASE}/api/projects/${project.slug}/integrations/slack`,
+			{ method: 'PUT', body: JSON.stringify({ botToken: SLACK_TOKEN }) },
+		);
+		expect(pending.status).toBe(201);
+		expect(((await pending.json()) as { integration: unknown }).integration).toMatchObject({
+			status: 'pending',
+			channelId: '',
+			teamName: 'Acme',
+		});
+		fakeSlack.requests = [];
+
+		await sendError('Too early');
+		expect(await outbox()).toEqual([]);
+		const early = (await issues()).find((i) => i.title === 'Error: Too early')!;
+		expect((await issueDetail(early.id)).availableIntegrations).toEqual([]);
+
+		const test = await authFetch(
+			owner.token!,
+			`${BASE}/api/projects/${project.slug}/integrations/slack/test`,
+			{ method: 'POST' },
+		);
+		expect(test.status).toBe(409);
+		expect(fakeSlack.posts()).toHaveLength(0);
+
+		// Choosing the channel (no token in the body) turns it on.
+		const connected = await authFetch(
+			owner.token!,
+			`${BASE}/api/projects/${project.slug}/integrations/slack`,
+			{ method: 'PUT', body: JSON.stringify({ channelId: 'C0ERRORS' }) },
+		);
+		expect(connected.status).toBe(200);
+		await sendError('Now it counts');
+		expect((await outbox()).map((row) => row.action)).toEqual(['create']);
+	});
+
 	it('marks the message resolved, and back, following the issue status', async () => {
 		await connect();
 		await sendError('Sync boom');

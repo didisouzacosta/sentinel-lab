@@ -85,7 +85,14 @@ export interface KaneoConfig {
 	/** installed | in_use (another webhook owns the slot) | failed. */
 	webhookStatus?: KaneoWebhookStatus;
 	webhookError?: string | null;
+	/** pending: credentials saved, no project chosen yet. Derived when absent. */
+	status?: IntegrationStatus;
+	/** Name of the Kaneo workspace (shown in the settings). */
+	workspaceName?: string;
 }
+
+/** pending: credentials verified and saved, destination not chosen yet. */
+export type IntegrationStatus = 'pending' | 'connected';
 
 export type KaneoWebhookStatus = 'installed' | 'in_use' | 'failed';
 
@@ -259,6 +266,11 @@ async function installKaneoWebhook(
 	}
 }
 
+/** Rows saved before `status` existed are connected when they have a project. */
+export function kaneoStatus(config: KaneoConfig): IntegrationStatus {
+	return config.kaneoProjectId ? 'connected' : 'pending';
+}
+
 /** The integration as the dashboard and API see it: secrets masked. */
 export function kaneoView(integration: StoredIntegration, credentials: KaneoCredentials | null) {
 	const config = integration.config as unknown as KaneoConfig;
@@ -271,6 +283,8 @@ export function kaneoView(integration: StoredIntegration, credentials: KaneoCred
 		kaneoProjectId: config.kaneoProjectId,
 		kaneoProjectName: config.kaneoProjectName,
 		kaneoProjectSlug: config.kaneoProjectSlug,
+		status: kaneoStatus(config),
+		workspaceName: config.workspaceName ?? null,
 		createColumn: config.createColumn,
 		doneColumn: config.doneColumn,
 		reopenColumn: config.reopenColumn,
@@ -366,6 +380,100 @@ export function parseEnvironments(value: unknown, fallback: string[]): string[] 
 
 export function badRequest(c: Ctx, error: Error): Response {
 	return c.json({ error: 'invalid_integration', message: error.message }, 400);
+}
+
+/** The integration has credentials but no destination yet. */
+export function integrationIncomplete(c: Ctx, message: string): Response {
+	return c.json({ error: 'integration_incomplete', message }, 409);
+}
+
+/**
+ * "Verify & save" before a project is chosen: list the workspaces with the
+ * given key (proves it works) and store the credentials as `pending`.
+ * Pending rows deliver nothing (ProjectState.activeIntegration needs a
+ * project) and install no webhook.
+ */
+async function saveKaneoCredentialsOnly(
+	c: Ctx,
+	ctx: { project: Project; auth: AuthContext },
+	input: {
+		origin: string;
+		credentials: KaneoCredentials;
+		stored: StoredIntegration | null;
+		storedCredentials: KaneoCredentials | null;
+		apiKeyTyped: boolean;
+	},
+): Promise<Response> {
+	let workspaces: Awaited<ReturnType<KaneoClient['listWorkspaces']>>;
+	try {
+		workspaces = await createKaneoClient(
+			input.origin,
+			input.credentials,
+			kaneoFetcher(c.env, input.origin),
+		).listWorkspaces();
+	} catch (error) {
+		return kaneoFailure(c, error);
+	}
+	const only = workspaces.length === 1 ? workspaces[0] : undefined;
+	const storedConfig = input.stored ? (input.stored.config as unknown as KaneoConfig) : null;
+	const config: KaneoConfig = {
+		baseUrl: input.origin,
+		workspaceId: only?.id ?? '',
+		workspaceName: only?.name,
+		status: 'pending',
+		kaneoProjectId: '',
+		kaneoProjectName: '',
+		kaneoProjectSlug: '',
+		createColumn: '',
+		doneColumn: '',
+		reopenColumn: '',
+		autoCreate: storedConfig?.autoCreate ?? false,
+		minLevel: storedConfig?.minLevel ?? 'error',
+		environments: storedConfig?.environments ?? [],
+		sentinelProjectId: ctx.project.id,
+		sentinelProjectSlug: ctx.project.slug,
+		sentinelOrigin: new URL(c.req.url).origin,
+		webhookKaneoProjectId: null,
+	};
+	const credentialsChanged =
+		!input.storedCredentials ||
+		input.storedCredentials.apiKey !== input.credentials.apiKey ||
+		input.apiKeyTyped;
+	const secretCipher = credentialsChanged
+		? await sealSecret(
+				c.env.INTEGRATIONS_KEY as string,
+				ctx.project.id,
+				JSON.stringify(input.credentials),
+			)
+		: undefined;
+	const saveResponse = await projectState(c.env, ctx.project.id).fetch(
+		new Request('http://internal/integrations/save', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				type: 'kaneo',
+				enabled: input.stored?.enabled ?? true,
+				config,
+				secretCipher,
+			}),
+		}),
+	);
+	const saved = (await saveResponse.json()) as {
+		integration: StoredIntegration;
+		created: boolean;
+	};
+	if (!saveResponse.ok) return c.json(saved, saveResponse.status as ContentfulStatusCode);
+	await writeAudit(
+		c.env,
+		ctx.auth,
+		saved.created ? 'integration.created' : 'integration.updated',
+		ctx.project,
+		{ integration: 'kaneo', status: 'pending' },
+	);
+	return c.json(
+		{ integration: kaneoView(saved.integration, input.credentials) },
+		saved.created ? 201 : 200,
+	);
 }
 
 // ---------------------------------------------------------------------------
@@ -493,8 +601,17 @@ integrationRoutes.put('/:slug/integrations/kaneo', async (c) => {
 
 	const kaneoProjectId = optionalString(body.kaneoProjectId, 'kaneoProjectId', 128);
 	if (kaneoProjectId instanceof Error) return badRequest(c, kaneoProjectId);
-	const targetProjectId = kaneoProjectId ?? storedConfig?.kaneoProjectId;
-	if (!targetProjectId) return badRequest(c, new Error('kaneoProjectId is required'));
+	const targetProjectId = kaneoProjectId || storedConfig?.kaneoProjectId;
+	if (!targetProjectId) {
+		// Credentials only ("Verify & save"): check them, store them, choose the project later.
+		return saveKaneoCredentialsOnly(c, ctx, {
+			origin: base.origin,
+			credentials,
+			stored,
+			storedCredentials,
+			apiKeyTyped: patch.apiKey !== undefined,
+		});
+	}
 
 	const minLevel = body.minLevel ?? storedConfig?.minLevel ?? 'error';
 	if (!ISSUE_LEVELS.includes(minLevel as IssueLevel)) {
@@ -513,10 +630,13 @@ integrationRoutes.put('/:slug/integrations/kaneo', async (c) => {
 	let client: KaneoClient;
 	let kaneoProject: Awaited<ReturnType<KaneoClient['getProject']>>;
 	let columns: KaneoColumn[];
+	let workspaceName: string | undefined;
 	try {
 		client = createKaneoClient(base.origin, credentials, kaneoFetcher(c.env, base.origin));
 		kaneoProject = await client.getProject(targetProjectId);
 		columns = await client.listColumns(targetProjectId);
+		const workspaces = await client.listWorkspaces();
+		workspaceName = workspaces.find((ws) => ws.id === kaneoProject.workspaceId)?.name;
 	} catch (error) {
 		return kaneoFailure(c, error);
 	}
@@ -551,6 +671,8 @@ integrationRoutes.put('/:slug/integrations/kaneo', async (c) => {
 	const config: KaneoConfig = {
 		baseUrl: base.origin,
 		workspaceId: kaneoProject.workspaceId,
+		workspaceName,
+		status: 'connected',
 		kaneoProjectId: kaneoProject.id,
 		kaneoProjectName: kaneoProject.name,
 		kaneoProjectSlug: kaneoProject.slug,
@@ -670,6 +792,7 @@ integrationRoutes.post('/:slug/integrations/kaneo/test', async (c) => {
 		return c.json({ error: 'no_integration', message: 'Kaneo is not connected' }, 404);
 	}
 	const config = integration.config as unknown as KaneoConfig;
+	if (!config.kaneoProjectId) return integrationIncomplete(c, 'Choose a Kaneo project first');
 	try {
 		const credentials = await openKaneoCredentials(c.env, ctx.project.id, integration);
 		const client = createKaneoClient(
