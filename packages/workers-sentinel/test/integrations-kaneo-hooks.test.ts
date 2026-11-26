@@ -2,6 +2,7 @@ import { env, runDurableObjectAlarm, runInDurableObject, SELF } from 'cloudflare
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { verifyHexSignature } from '../src/routes/hooks';
 import { FAKE_KANEO, fakeKaneo, installFakeKaneo } from './kaneo-fake';
+import { fakeSlack, installFakeSlack, SLACK_TOKEN } from './slack-fake';
 import {
 	authFetch,
 	createTestProject,
@@ -291,6 +292,29 @@ describe('Kaneo → Sentinel webhook', () => {
 		await authFetch(owner.token!, settingsUrl(), { method: 'DELETE' });
 		const response = await deliver(statusChanged(taskId, 'to-do', 'done'), secret);
 		expect(response.status).toBe(401);
+	});
+
+	it('tells Slack when a task closed in Kaneo resolves its issue', async () => {
+		installFakeSlack();
+		await connect();
+		const slack = await authFetch(
+			owner.token!,
+			`${BASE}/api/projects/${project.slug}/integrations/slack`,
+			{ method: 'PUT', body: JSON.stringify({ botToken: SLACK_TOKEN, channelId: 'C0ERRORS' }) },
+		);
+		expect(slack.status).toBe(201);
+		const { issueId, taskId } = await linkedIssue();
+		await runDurableObjectAlarm(stub());
+		const [message] = fakeSlack.posts();
+		expect(message).toBeDefined();
+		fakeKaneo.requests = [];
+
+		const resolved = await deliver(statusChanged(taskId, 'to-do', 'done'));
+		expect(await resolved.json()).toEqual({ issueId, status: 'resolved' });
+		await runDurableObjectAlarm(stub());
+		expect(message.edits.at(-1)?.text).toMatch(/^Resolved in /);
+		// Still never sent back to Kaneo
+		expect(fakeKaneo.requests.filter((r) => r.method !== 'GET')).toEqual([]);
 	});
 
 	it('does not create Durable Objects for made-up project ids', async () => {

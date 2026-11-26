@@ -17,6 +17,18 @@ import {
 } from '../lib/kaneo';
 import { buildKaneoTask } from '../lib/kaneo-task';
 import { openSecret, SecretBoxError } from '../lib/secret-box';
+import {
+	createSlackClient,
+	parseSlackMessageId,
+	type SlackCredentials,
+	SlackError,
+	slackMessageId,
+} from '../lib/slack';
+import {
+	buildSlackIssueMessage,
+	buildSlackRegressionReply,
+	type SlackIssue,
+} from '../lib/slack-message';
 import type {
 	DroppedAttachment,
 	Env,
@@ -57,11 +69,18 @@ const OUTBOX_BATCH = 20;
 /** Color of the `sentinel` label Sentinel puts on the tasks it creates. */
 const KANEO_LABEL_COLOR = '#e5484d';
 
+/** Integration types this Durable Object delivers to. */
+const INTEGRATION_TYPES = ['kaneo', 'slack'] as const;
+type IntegrationType = (typeof INTEGRATION_TYPES)[number];
+
 type IntegrationAction = 'create' | 'resolve' | 'reopen';
-const OUTBOX_ACTION_LABEL: Record<IntegrationAction, string> = {
-	create: 'create',
-	resolve: 'close',
-	reopen: 'reopen',
+/** How a failed delivery is named in `integrations.last_error`. */
+const OUTBOX_FAILURE: Record<
+	IntegrationType,
+	{ thing: string } & Record<IntegrationAction, string>
+> = {
+	kaneo: { thing: 'Kaneo task', create: 'create', resolve: 'close', reopen: 'reopen' },
+	slack: { thing: 'Slack message', create: 'post', resolve: 'update', reopen: 'update' },
 };
 
 /** Where the project lives, so alarm deliveries can link back to the dashboard. */
@@ -69,6 +88,36 @@ interface IntegrationContext {
 	projectId: string;
 	slug: string;
 	origin: string;
+	/** Project name, shown in Slack messages. */
+	name?: string;
+}
+
+/** The parts of the Slack config (routes/integrations-slack.ts SlackConfig) used here. */
+interface SlackRuntimeConfig {
+	channelId: string;
+	channelName: string;
+	minLevel: string;
+	environments: string[];
+	notifyRegression: boolean;
+	notifyResolved: boolean;
+	sentinelProjectId?: string;
+	sentinelProjectSlug?: string;
+	sentinelProjectName?: string;
+	sentinelOrigin?: string;
+}
+
+interface ActiveSlack {
+	id: string;
+	config: SlackRuntimeConfig;
+	secretCipher: string;
+}
+
+/** Context fields every integration config carries (saveIntegrationContext). */
+interface IntegrationContextFields {
+	sentinelProjectId?: string;
+	sentinelProjectSlug?: string;
+	sentinelProjectName?: string;
+	sentinelOrigin?: string;
 }
 
 /** The parts of the Kaneo config (routes/integrations.ts KaneoConfig) used here. */
@@ -113,7 +162,13 @@ class IntegrationError extends Error {
 }
 
 function integrationErrorMessage(error: unknown): string {
-	if (error instanceof KaneoError || error instanceof IntegrationError) return error.message;
+	if (
+		error instanceof KaneoError ||
+		error instanceof SlackError ||
+		error instanceof IntegrationError
+	) {
+		return error.message;
+	}
 	if (error instanceof SecretBoxError) return 'the stored credentials could not be decrypted';
 	return 'unexpected error';
 }
@@ -1229,7 +1284,7 @@ export class ProjectState extends DurableObject<Env> {
 				now,
 			);
 		}
-		const queuedIntegration = this.queueKaneoForIngest(
+		const queuedIntegration = this.queueIntegrationsForIngest(
 			issueId,
 			!existingIssue,
 			regressed,
@@ -1482,7 +1537,7 @@ export class ProjectState extends DurableObject<Env> {
 			stats,
 			links: this.issueLinks(issueId),
 			/** Integrations that can create a task for this issue right now. */
-			availableIntegrations: this.activeKaneo() ? ['kaneo'] : [],
+			availableIntegrations: INTEGRATION_TYPES.filter((type) => this.activeIntegration(type)),
 		});
 	}
 
@@ -1514,7 +1569,8 @@ export class ProjectState extends DurableObject<Env> {
 	 * Change one issue's status with its activity row. Asking for the status
 	 * the issue already has changes nothing (no activity, no delivery), which
 	 * also ends any Sentinel ↔ Kaneo ping-pong. `sync: false` is for changes
-	 * that came from Kaneo itself: they are not sent back.
+	 * that came from Kaneo itself: they are not sent back to Kaneo (Slack
+	 * still hears about them).
 	 */
 	private changeIssueStatus(
 		issueId: string,
@@ -1541,9 +1597,10 @@ export class ProjectState extends DurableObject<Env> {
 				JSON.stringify({ from: previousStatus, to: status, ...options.activity }),
 				new Date().toISOString(),
 			);
-			if (options.sync !== false) {
-				queued = this.queueKaneoForStatus(issueId, previousStatus, status);
-			}
+			queued =
+				options.sync === false
+					? this.queueSlackForStatus(issueId, previousStatus, status)
+					: this.queueIntegrationsForStatus(issueId, previousStatus, status);
 		});
 		return { changed: true, queued };
 	}
@@ -1694,7 +1751,7 @@ export class ProjectState extends DurableObject<Env> {
 						JSON.stringify({ from, to: status }),
 						now,
 					);
-					if (this.queueKaneoForStatus(row.id as string, from, status)) queued = true;
+					if (this.queueIntegrationsForStatus(row.id as string, from, status)) queued = true;
 				}
 			});
 			if (queued) {
@@ -2867,7 +2924,7 @@ export class ProjectState extends DurableObject<Env> {
 			return true; // wiped: do not reschedule
 		}
 
-		// Integration deliveries (Kaneo) first: they are what usually brought
+		// Integration deliveries (Kaneo, Slack) first: they are what usually brought
 		// the alarm forward. A failure here never blocks maintenance.
 		try {
 			await this.processIntegrationOutbox();
@@ -3634,7 +3691,7 @@ export class ProjectState extends DurableObject<Env> {
 	}
 
 	// ============================================
-	// Integrations (Kaneo)
+	// Integrations (Kaneo, Slack)
 	// ============================================
 	// Internal storage only: the route layer (routes/integrations.ts) checks
 	// roles, seals and opens secrets, and talks to the external service.
@@ -3751,13 +3808,39 @@ export class ProjectState extends DurableObject<Env> {
 
 	private kaneoCreates = new Map<string, Promise<IssueLink>>();
 
-	private activeKaneo(): ActiveKaneo | null {
-		const row = this.integrationRow('kaneo');
+	private slackPosts = new Map<string, Promise<IssueLink>>();
+
+	/** The enabled integration of `type`, with its config parsed. */
+	private activeIntegration(
+		type: string,
+	): { id: string; type: string; config: unknown; secretCipher: string } | null {
+		const row = this.integrationRow(type);
 		if (!row || (row.enabled as number) !== 1) return null;
 		return {
 			id: row.id as string,
-			config: JSON.parse(row.config as string) as KaneoRuntimeConfig,
+			type: row.type as string,
+			config: JSON.parse(row.config as string),
 			secretCipher: row.secret_cipher as string,
+		};
+	}
+
+	private activeKaneo(): ActiveKaneo | null {
+		const active = this.activeIntegration('kaneo');
+		return active ? { ...active, config: active.config as KaneoRuntimeConfig } : null;
+	}
+
+	private activeSlack(): ActiveSlack | null {
+		const active = this.activeIntegration('slack');
+		if (!active) return null;
+		const config = active.config as SlackRuntimeConfig;
+		return {
+			...active,
+			config: {
+				...config,
+				environments: config.environments ?? [],
+				notifyRegression: config.notifyRegression !== false,
+				notifyResolved: config.notifyResolved !== false,
+			},
 		};
 	}
 
@@ -3780,7 +3863,7 @@ export class ProjectState extends DurableObject<Env> {
 			}));
 	}
 
-	private kaneoLink(integrationId: string, issueId: string): IssueLink | null {
+	private integrationLink(integrationId: string, issueId: string): IssueLink | null {
 		return this.issueLinks(issueId).find((link) => link.integrationId === integrationId) ?? null;
 	}
 
@@ -3832,7 +3915,7 @@ export class ProjectState extends DurableObject<Env> {
 		if (!isNewIssue && !regressed) return false;
 		const kaneo = this.activeKaneo();
 		if (!kaneo) return false;
-		if (this.kaneoLink(kaneo.id, issueId)) {
+		if (this.integrationLink(kaneo.id, issueId)) {
 			if (!regressed) return false;
 			this.enqueueIntegration(kaneo.id, issueId, 'reopen', { reason: 'regression' });
 			return true;
@@ -3854,7 +3937,7 @@ export class ProjectState extends DurableObject<Env> {
 		if (from === to) return false;
 		const kaneo = this.activeKaneo();
 		if (!kaneo) return false;
-		if (!this.kaneoLink(kaneo.id, issueId) && !this.hasPendingCreate(kaneo.id, issueId)) {
+		if (!this.integrationLink(kaneo.id, issueId) && !this.hasPendingCreate(kaneo.id, issueId)) {
 			return false;
 		}
 		if (to === 'resolved') {
@@ -3868,22 +3951,110 @@ export class ProjectState extends DurableObject<Env> {
 		return false;
 	}
 
+	/** Ingest trigger for every integration; true when any delivery was queued. */
+	private queueIntegrationsForIngest(
+		issueId: string,
+		isNewIssue: boolean,
+		regressed: boolean,
+		level: string,
+		environment: string | null,
+	): boolean {
+		const kaneo = this.queueKaneoForIngest(issueId, isNewIssue, regressed, level, environment);
+		const slack = this.queueSlackForIngest(issueId, isNewIssue, regressed, level, environment);
+		return kaneo || slack;
+	}
+
+	/** Status trigger for every integration; true when any delivery was queued. */
+	private queueIntegrationsForStatus(issueId: string, from: string, to: string): boolean {
+		const kaneo = this.queueKaneoForStatus(issueId, from, to);
+		const slack = this.queueSlackForStatus(issueId, from, to);
+		return kaneo || slack;
+	}
+
+	/** Level and environment filters shared by the integrations. */
+	private passesFilters(
+		config: { minLevel: string; environments: string[] },
+		level: string,
+		environment: string | null,
+	): boolean {
+		const rank = (value: string) => ISSUE_LEVEL_RANK[value] ?? ISSUE_LEVEL_RANK.error;
+		if (rank(level) < rank(config.minLevel)) return false;
+		if (config.environments.length > 0) {
+			if (!environment || !config.environments.includes(environment)) return false;
+		}
+		return true;
+	}
+
+	/**
+	 * Slack ingest trigger: a new issue that passes the filters gets a
+	 * message; a regression replies in the thread of the issue's message (or
+	 * posts one when there is none yet and the filters match).
+	 */
+	private queueSlackForIngest(
+		issueId: string,
+		isNewIssue: boolean,
+		regressed: boolean,
+		level: string,
+		environment: string | null,
+	): boolean {
+		if (!isNewIssue && !regressed) return false;
+		const slack = this.activeSlack();
+		if (!slack) return false;
+		if (regressed && !slack.config.notifyRegression) return false;
+		if (this.integrationLink(slack.id, issueId)) {
+			if (!regressed) return false;
+			this.enqueueIntegration(slack.id, issueId, 'reopen', { reason: 'regression' });
+			return true;
+		}
+		if (this.hasPendingCreate(slack.id, issueId)) return false;
+		if (!this.passesFilters(slack.config, level, environment)) return false;
+		this.enqueueIntegration(
+			slack.id,
+			issueId,
+			'create',
+			regressed ? { reason: 'regression' } : undefined,
+		);
+		return true;
+	}
+
+	/** Slack status trigger: resolving (and undoing it) updates the issue's message. */
+	private queueSlackForStatus(issueId: string, from: string, to: string): boolean {
+		if (from === to) return false;
+		const slack = this.activeSlack();
+		if (!slack || !slack.config.notifyResolved) return false;
+		if (!this.integrationLink(slack.id, issueId) && !this.hasPendingCreate(slack.id, issueId)) {
+			return false;
+		}
+		if (to === 'resolved') {
+			this.enqueueIntegration(slack.id, issueId, 'resolve');
+			return true;
+		}
+		if (from === 'resolved') {
+			this.enqueueIntegration(slack.id, issueId, 'reopen', { reason: 'manual' });
+			return true;
+		}
+		return false;
+	}
+
 	/** Remember where this project lives so alarm deliveries can build permalinks. */
 	private saveIntegrationContext(type: string, context: IntegrationContext | undefined): void {
 		if (!context?.projectId || !context.slug || !context.origin) return;
 		const row = this.integrationRow(type);
 		if (!row) return;
-		const config = JSON.parse(row.config as string) as KaneoRuntimeConfig;
+		const config = JSON.parse(row.config as string) as IntegrationContextFields;
+		const name = context.name ?? config.sentinelProjectName;
 		if (
 			config.sentinelProjectId === context.projectId &&
 			config.sentinelProjectSlug === context.slug &&
-			config.sentinelOrigin === context.origin
+			config.sentinelOrigin === context.origin &&
+			config.sentinelProjectName === name
 		) {
 			return;
 		}
 		config.sentinelProjectId = context.projectId;
 		config.sentinelProjectSlug = context.slug;
 		config.sentinelOrigin = context.origin;
+		if (name) config.sentinelProjectName = name;
 		this.sql.exec(
 			'UPDATE integrations SET config = ? WHERE id = ?',
 			JSON.stringify(config),
@@ -3913,7 +4084,7 @@ export class ProjectState extends DurableObject<Env> {
 		return createKaneoClient(config.baseUrl, { apiKey }, kaneoFetcher(this.env, config.baseUrl));
 	}
 
-	private issuePermalink(config: KaneoRuntimeConfig, issueId: string): string {
+	private issuePermalink(config: IntegrationContextFields, issueId: string): string {
 		return `${config.sentinelOrigin}/projects/${encodeURIComponent(config.sentinelProjectSlug ?? '')}/issues/${encodeURIComponent(issueId)}`;
 	}
 
@@ -3923,7 +4094,7 @@ export class ProjectState extends DurableObject<Env> {
 	): Promise<{ link: IssueLink; created: boolean }> {
 		const kaneo = this.activeKaneo();
 		if (!kaneo) throw new IntegrationError('no_integration', 'Kaneo is not connected');
-		const existing = this.kaneoLink(kaneo.id, issueId);
+		const existing = this.integrationLink(kaneo.id, issueId);
 		if (existing) return { link: existing, created: false };
 		const inFlight = this.kaneoCreates.get(issueId);
 		if (inFlight) return { link: await inFlight, created: false };
@@ -4012,7 +4183,7 @@ export class ProjectState extends DurableObject<Env> {
 			await this.createKaneoTaskFor(issueId);
 			return true;
 		}
-		const link = this.kaneoLink(kaneo.id, issueId);
+		const link = this.integrationLink(kaneo.id, issueId);
 		if (!link) {
 			// Wait for a pending creation; without one there is nothing to update.
 			return !this.hasPendingCreate(kaneo.id, issueId);
@@ -4039,6 +4210,166 @@ export class ProjectState extends DurableObject<Env> {
 		return true;
 	}
 
+	// ============================================
+	// Slack delivery (issue → message, thread and updates)
+	// ============================================
+	// Same outbox as Kaneo. One message per issue (issue_links external_id =
+	// `<channel>:<ts>`): a regression replies in its thread, resolving and
+	// reopening edit it in place.
+
+	private async slackClientFor(slack: ActiveSlack) {
+		const key = this.env.INTEGRATIONS_KEY;
+		if (!key) {
+			throw new IntegrationError(
+				'integrations_unconfigured',
+				'INTEGRATIONS_KEY is not set on this Sentinel instance',
+			);
+		}
+		const config = slack.config;
+		if (!config.sentinelProjectId || !config.sentinelOrigin || !config.sentinelProjectSlug) {
+			throw new IntegrationError(
+				'integration_context_missing',
+				'Open the Slack settings of this project and save them again',
+			);
+		}
+		const { botToken } = JSON.parse(
+			await openSecret(key, config.sentinelProjectId, slack.secretCipher),
+		) as SlackCredentials;
+		return createSlackClient({ botToken });
+	}
+
+	/** The issue and its latest event, as the Slack message needs them. */
+	private slackIssue(issueId: string): {
+		issue: SlackIssue;
+		latestEvent: Record<string, unknown> | null;
+	} {
+		const rows = this.sql.exec('SELECT * FROM issues WHERE id = ?', issueId).toArray();
+		if (rows.length === 0) throw new IntegrationError('issue_not_found', 'Issue not found');
+		const issue = this.rowToIssue(rows[0]);
+		const eventRow = this.sql
+			.exec(
+				'SELECT data FROM events WHERE issue_id = ? ORDER BY received_at DESC, id DESC LIMIT 1',
+				issueId,
+			)
+			.toArray()[0];
+		return {
+			issue,
+			latestEvent: eventRow
+				? (JSON.parse(eventRow.data as string) as Record<string, unknown>)
+				: null,
+		};
+	}
+
+	private slackContext(config: SlackRuntimeConfig, issueId: string) {
+		return {
+			permalink: this.issuePermalink(config, issueId),
+			projectName: config.sentinelProjectName ?? config.sentinelProjectSlug ?? 'Sentinel',
+		};
+	}
+
+	/** Post the issue's Slack message, or return the one it already has. */
+	private async createSlackMessageFor(
+		issueId: string,
+		state: 'new' | 'regressed' = 'new',
+	): Promise<{ link: IssueLink; created: boolean }> {
+		const slack = this.activeSlack();
+		if (!slack) throw new IntegrationError('no_integration', 'Slack is not connected');
+		const existing = this.integrationLink(slack.id, issueId);
+		if (existing) return { link: existing, created: false };
+		const inFlight = this.slackPosts.get(issueId);
+		if (inFlight) return { link: await inFlight, created: false };
+
+		const posting = (async (): Promise<IssueLink> => {
+			const { issue, latestEvent } = this.slackIssue(issueId);
+			const client = await this.slackClientFor(slack);
+			const config = slack.config;
+			const context = this.slackContext(config, issueId);
+			const message = buildSlackIssueMessage(
+				issue,
+				latestEvent,
+				context,
+				issue.status === 'resolved' ? 'resolved' : state,
+			);
+			const posted = await client.postMessage(config.channelId, message);
+			const permalink = await client
+				.getPermalink(posted.channel, posted.ts)
+				.catch(() => context.permalink);
+			const link: IssueLink = {
+				integrationId: slack.id,
+				type: 'slack',
+				externalId: slackMessageId(posted.channel, posted.ts),
+				externalUrl: permalink,
+				externalKey: `#${config.channelName}`,
+				createdAt: new Date().toISOString(),
+			};
+			try {
+				this.sql.exec(
+					`INSERT INTO issue_links (issue_id, integration_id, external_id, external_url, external_key, created_at)
+					 VALUES (?, ?, ?, ?, ?, ?)`,
+					issueId,
+					link.integrationId,
+					link.externalId,
+					link.externalUrl,
+					link.externalKey,
+					link.createdAt,
+				);
+			} catch {
+				console.error('Slack message posted for an issue that no longer exists');
+			}
+			return link;
+		})();
+
+		this.slackPosts.set(issueId, posting);
+		try {
+			return { link: await posting, created: true };
+		} finally {
+			this.slackPosts.delete(issueId);
+		}
+	}
+
+	/** Deliver one Slack outbox row. Returns false to retry later without counting an attempt. */
+	private async deliverSlack(slack: ActiveSlack, row: Record<string, SqlStorageValue>) {
+		const issueId = row.issue_id as string;
+		const action = row.action as IntegrationAction;
+		const payload = row.payload ? (JSON.parse(row.payload as string) as { reason?: string }) : {};
+		if (action === 'create') {
+			await this.createSlackMessageFor(
+				issueId,
+				payload.reason === 'regression' ? 'regressed' : 'new',
+			);
+			return true;
+		}
+		const link = this.integrationLink(slack.id, issueId);
+		if (!link) return !this.hasPendingCreate(slack.id, issueId);
+		const message = parseSlackMessageId(link.externalId);
+		if (!message) return true;
+		const client = await this.slackClientFor(slack);
+		const { issue, latestEvent } = this.slackIssue(issueId);
+		const context = this.slackContext(slack.config, issueId);
+		if (action === 'resolve') {
+			await client.updateMessage(
+				message.channel,
+				message.ts,
+				buildSlackIssueMessage(issue, latestEvent, context, 'resolved'),
+			);
+			return true;
+		}
+		const regression = payload.reason === 'regression';
+		await client.updateMessage(
+			message.channel,
+			message.ts,
+			buildSlackIssueMessage(issue, latestEvent, context, regression ? 'regressed' : 'new'),
+		);
+		if (regression) {
+			await client.postMessage(
+				message.channel,
+				buildSlackRegressionReply(issue, context),
+				message.ts,
+			);
+		}
+		return true;
+	}
+
 	/** Alarm step: deliver due outbox rows in order. Never throws. */
 	private async processIntegrationOutbox(): Promise<void> {
 		const due = this.sql
@@ -4056,13 +4387,21 @@ export class ProjectState extends DurableObject<Env> {
 			) {
 				continue;
 			}
-			const kaneo = this.activeKaneo();
-			if (!kaneo || kaneo.id !== row.integration_id) {
+			const integrationRow = this.sql
+				.exec('SELECT type FROM integrations WHERE id = ?', row.integration_id as string)
+				.toArray()[0];
+			const type = integrationRow?.type as IntegrationType | undefined;
+			const kaneo = type === 'kaneo' ? this.activeKaneo() : null;
+			const slack = type === 'slack' ? this.activeSlack() : null;
+			const active = kaneo ?? slack;
+			if (!type || !active || active.id !== row.integration_id) {
 				this.sql.exec('DELETE FROM integration_outbox WHERE id = ?', id);
 				continue;
 			}
 			try {
-				const done = await this.deliverKaneo(kaneo, row);
+				const done = kaneo
+					? await this.deliverKaneo(kaneo, row)
+					: await this.deliverSlack(slack as ActiveSlack, row);
 				if (done) {
 					this.sql.exec('DELETE FROM integration_outbox WHERE id = ?', id);
 				} else {
@@ -4077,17 +4416,27 @@ export class ProjectState extends DurableObject<Env> {
 					this.sql.exec('DELETE FROM integration_outbox WHERE id = ?', id);
 					continue;
 				}
+				if (error instanceof SlackError && error.code === 'ratelimited') {
+					// Slack said when to come back: that wait is not a failed attempt.
+					this.sql.exec(
+						'UPDATE integration_outbox SET next_attempt_at = ? WHERE id = ?',
+						new Date(Date.now() + (error.retryAfter ?? 30) * 1000).toISOString(),
+						id,
+					);
+					continue;
+				}
 				const message = integrationErrorMessage(error);
 				const attempts = (row.attempts as number) + 1;
 				if (attempts > OUTBOX_BACKOFF_MS.length) {
-					const verb = OUTBOX_ACTION_LABEL[row.action as IntegrationAction] ?? 'update';
+					const failure = OUTBOX_FAILURE[type];
+					const verb = failure[row.action as IntegrationAction] ?? 'update';
 					this.ctx.storage.transactionSync(() => {
 						this.sql.exec('DELETE FROM integration_outbox WHERE id = ?', id);
 						this.sql.exec(
 							'UPDATE integrations SET last_error = ?, last_error_at = ? WHERE id = ?',
-							`Could not ${verb} the Kaneo task of issue ${row.issue_id as string}: ${message}`,
+							`Could not ${verb} the ${failure.thing} of issue ${row.issue_id as string}: ${message}`,
 							new Date().toISOString(),
-							kaneo.id,
+							active.id,
 						);
 					});
 				} else {
@@ -4103,21 +4452,30 @@ export class ProjectState extends DurableObject<Env> {
 		}
 	}
 
+	/** "Create task in Kaneo" / "Post to Slack" from the issue page. */
 	private async handleCreateIntegrationTask(request: Request): Promise<Response> {
-		const { issueId, context } = (await request.json()) as {
+		const { issueId, context, type } = (await request.json()) as {
 			issueId?: string;
 			context?: IntegrationContext;
+			type?: string;
 		};
 		if (!issueId) return this.jsonResponse({ error: 'missing_issue_id' }, 400);
-		this.saveIntegrationContext('kaneo', context);
+		const target = type ?? 'kaneo';
+		if (target !== 'kaneo' && target !== 'slack') {
+			return this.jsonResponse({ error: 'unknown_integration' }, 400);
+		}
+		this.saveIntegrationContext(target, context);
 		try {
-			const result = await this.createKaneoTaskFor(issueId);
+			const result =
+				target === 'slack'
+					? await this.createSlackMessageFor(issueId)
+					: await this.createKaneoTaskFor(issueId);
 			return this.jsonResponse(
 				{ link: result.link, created: result.created },
 				result.created ? 201 : 200,
 			);
 		} catch (error) {
-			return this.integrationErrorResponse(error);
+			return this.integrationErrorResponse(error, target);
 		}
 	}
 
@@ -4168,10 +4526,14 @@ export class ProjectState extends DurableObject<Env> {
 		if (!target) return this.jsonResponse({ issueId, ignored: 'no_change' });
 
 		const actor = (body.actorName ?? '').trim().slice(0, 80);
-		this.changeIssueStatus(issueId, target, 'kaneo', actor ? `Kaneo · ${actor}` : 'Kaneo', {
-			sync: false,
-			activity: { via: 'kaneo' },
-		});
+		const { queued } = this.changeIssueStatus(
+			issueId,
+			target,
+			'kaneo',
+			actor ? `Kaneo · ${actor}` : 'Kaneo',
+			{ sync: false, activity: { via: 'kaneo' } },
+		);
+		if (queued) await this.scheduleNextAlarm();
 		return this.jsonResponse({ issueId, status: target });
 	}
 
@@ -4185,7 +4547,7 @@ export class ProjectState extends DurableObject<Env> {
 		return this.jsonResponse({ ok: true });
 	}
 
-	private integrationErrorResponse(error: unknown): Response {
+	private integrationErrorResponse(error: unknown, type = 'kaneo'): Response {
 		if (error instanceof IntegrationError) {
 			const status =
 				error.code === 'no_integration' || error.code === 'issue_not_found'
@@ -4201,12 +4563,17 @@ export class ProjectState extends DurableObject<Env> {
 				error.code === 'invalid_url' ? 400 : 502,
 			);
 		}
+		if (error instanceof SlackError) {
+			return this.jsonResponse(
+				{ error: 'slack_failed', code: error.code, message: error.message },
+				error.code === 'invalid_token' ? 400 : 502,
+			);
+		}
 		if (error instanceof SecretBoxError) {
 			return this.jsonResponse(
 				{
 					error: 'integration_secret_unreadable',
-					message:
-						'The stored Kaneo credentials could not be decrypted. Enter them again in the project settings.',
+					message: `The stored ${type === 'slack' ? 'Slack' : 'Kaneo'} credentials could not be decrypted. Enter them again in the project settings.`,
 				},
 				409,
 			);

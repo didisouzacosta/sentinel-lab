@@ -214,7 +214,7 @@ O webhook único vira um sistema de integrações em duas camadas:
 
 | Tipo | O que faz | Volta (de fora para dentro) |
 |---|---|---|
-| `slack` / `discord` | mensagem formatada (no lugar do `text` cru de hoje) | — |
+| `slack` / `discord` | mensagem formatada (no lugar do `text` cru de hoje). **`slack` ✅ (25/11/2026, no código; ainda não publicado):** token de bot de um app criado pelo manifest + canal escolhido numa lista; mensagem por issue nova (filtros de nível e ambiente), resposta em thread quando volta, mensagem marcada quando resolve; ferramentas MCP `get_integrations`, `list_slack_channels`, `configure_slack`, `test_slack`, `disconnect_slack` (o token só entra pelo painel). `discord` ainda não | — |
 | `webhook` | JSON assinado com HMAC (`X-Sentinel-Signature`) para qualquer endereço | — |
 | `kaneo` | cria a tarefa no projeto e coluna escolhidos, com prioridade pelo nível (fatal→urgent, error→high, warning→medium), etiqueta `sentinel`, link externo para a issue e modelo de título (o Tem Horário usa `NN · [Pn] título`) | webhook do Kaneo `taskStatusChanged` → tarefa em "done" resolve a issue; issue que voltou move a tarefa de volta e comenta |
 | `github` | abre issue no repositório com etiquetas | issue fechada no GitHub resolve a issue |
@@ -235,6 +235,8 @@ O webhook único vira um sistema de integrações em duas camadas:
 - **Retentativa:** fila no `ProjectState` com alarme (1 min, 5 min, 30 min; depois desiste e marca a integração com o
   erro, visível no painel e no `list_integrations`). Falha numa integração nunca atrasa a ingestão.
 - O `webhook_url` atual vira automaticamente uma integração `webhook`/`slack` (migração sem perda).
+  *(25/11: decidido manter o `webhook_url` como webhook genérico; a integração `slack` é separada e usa token de bot, não
+  a URL do incoming webhook, então não há o que migrar.)*
 
 ### Fase 5 — Análise automática (conforme decisão 9)
 - Opção (b): workflow `.github/workflows/sentinel-triage.yml` no repositório do app, disparado por issue com a
