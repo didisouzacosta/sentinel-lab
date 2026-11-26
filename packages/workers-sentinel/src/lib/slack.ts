@@ -28,6 +28,7 @@ export type SlackErrorCode =
 	| 'not_in_channel'
 	| 'channel_not_found'
 	| 'channel_archived'
+	| 'message_not_found'
 	| 'ratelimited'
 	| 'unreachable'
 	| 'bad_request'
@@ -115,6 +116,8 @@ function slackFailure(error: string, needed: unknown): SlackError {
 				'channel_not_found',
 				'Slack channel not found (private channels need the bot invited first)',
 			);
+		case 'message_not_found':
+			return new SlackError('message_not_found', 'The Slack message was deleted');
 		case 'is_archived':
 			return new SlackError('channel_archived', 'That Slack channel is archived');
 		case 'ratelimited':

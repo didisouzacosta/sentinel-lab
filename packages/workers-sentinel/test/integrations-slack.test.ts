@@ -99,7 +99,7 @@ describe('Slack messages', () => {
 			context,
 		);
 		const serialized = JSON.stringify(message);
-		expect(message.text).toBe('New error in Web: TypeError: <b>x</b> is undefined');
+		expect(message.text).toBe('New error in Web: TypeError: &lt;b&gt;x&lt;/b&gt; is undefined');
 		expect(serialized).toContain('&lt;b&gt;x&lt;/b&gt;');
 		expect(serialized).toContain('production');
 		expect(serialized).toContain('web@1.2.3');

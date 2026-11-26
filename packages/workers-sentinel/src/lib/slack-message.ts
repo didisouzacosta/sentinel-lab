@@ -14,6 +14,8 @@ const MAX_TITLE = 150;
 const MAX_FIELD = 200;
 const MAX_EXCEPTION = 500;
 const MAX_FRAMES = 5;
+/** Slack's limit for a section's text. */
+const MAX_SECTION = 3000;
 
 export interface SlackIssue {
 	id: string;
@@ -52,6 +54,17 @@ function oneLine(value: unknown, max: number): string {
 /** Escape the three characters Slack mrkdwn treats as control. */
 function esc(value: string): string {
 	return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+/**
+ * Escape, then cut to `max` characters without leaving half an entity
+ * (`&am…`). Escaping can grow text up to five times, so length limits must be
+ * applied after it: Slack refuses a section over 3000 characters.
+ */
+function escFit(value: string, max: number): string {
+	const escaped = esc(value);
+	if (escaped.length <= max) return escaped;
+	return `${escaped.slice(0, max - 1).replace(/&[a-z]*$/, '')}…`;
 }
 
 /** Inline code that survives backticks inside the value. */
@@ -125,7 +138,10 @@ export function buildSlackIssueMessage(
 			const body = [oneLine(head || 'Error', MAX_EXCEPTION), ...frames]
 				.join('\n')
 				.replace(/```/g, "'''");
-			blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `\`\`\`${esc(body)}\`\`\`` } });
+			blocks.push({
+				type: 'section',
+				text: { type: 'mrkdwn', text: `\`\`\`${escFit(body, MAX_SECTION - 6)}\`\`\`` },
+			});
 		} else if (summary?.message) {
 			blocks.push({
 				type: 'section',
@@ -145,7 +161,10 @@ export function buildSlackIssueMessage(
 	});
 
 	return {
-		text: `${prefix.replace(/^:[a-z_]+: /, '')} in ${project}: ${title}`,
+		// Escaped too: an error title is attacker-controlled (DSNs are public),
+		// and `<!channel>` in the notification text must not reach Slack as a
+		// mention.
+		text: esc(`${prefix.replace(/^:[a-z_]+: /, '')} in ${project}: ${title}`),
 		blocks,
 	};
 }
@@ -166,7 +185,7 @@ export function buildSlackRegressionReply(
 export function buildSlackTestMessage(projectName: string, settingsUrl: string): SlackMessage {
 	const project = esc(oneLine(projectName, 80));
 	return {
-		text: `Sentinel is connected to this channel for ${oneLine(projectName, 80)}`,
+		text: `Sentinel is connected to this channel for ${project}`,
 		blocks: [
 			{
 				type: 'section',
