@@ -65,6 +65,16 @@ const router = createRouter({
 					component: () => import('../views/ReleaseDetail.vue'),
 				},
 				{
+					path: 'projects/:slug/integrations',
+					name: 'project-integrations',
+					component: () => import('../views/ProjectIntegrations.vue'),
+				},
+				{
+					path: 'projects/:slug/integrations/:kind(slack|kaneo|webhook)',
+					name: 'project-integration',
+					component: () => import('../views/ProjectIntegration.vue'),
+				},
+				{
 					path: 'projects/:slug/settings',
 					name: 'project-settings',
 					component: () => import('../views/ProjectSettings.vue'),

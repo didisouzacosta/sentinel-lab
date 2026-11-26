@@ -1,10 +1,9 @@
 import { flushPromises, mount } from '@vue/test-utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import AppKaneoIntegration, {
-	type KaneoIntegration,
-} from '../components/app/AppKaneoIntegration.vue';
+import AppKaneoIntegration from '../components/app/AppKaneoIntegration.vue';
 import { confirmState, settleConfirm } from '../composables/useConfirm';
 import { useToast } from '../composables/useToast';
+import type { KaneoIntegration } from '../lib/integrations';
 import { seedAuth } from './helpers';
 import { MockApiError, mockApi, onDelete, onGet, onPost, onPut, resetMocks } from './mocks';
 
@@ -23,8 +22,10 @@ const COLUMNS = [
 const SAVED: KaneoIntegration = {
 	id: 'int-1',
 	enabled: true,
+	status: 'connected',
 	baseUrl: 'https://kaneo.example.com',
 	workspaceId: 'ws1',
+	workspaceName: 'Personal',
 	kaneoProjectId: 'kp1',
 	kaneoProjectName: 'Sentinel',
 	kaneoProjectSlug: 'SNT',
@@ -40,6 +41,17 @@ const SAVED: KaneoIntegration = {
 	lastErrorAt: null,
 	webhookStatus: 'installed',
 	webhookError: null,
+};
+const PENDING: KaneoIntegration = {
+	...SAVED,
+	status: 'pending',
+	kaneoProjectId: '',
+	kaneoProjectName: '',
+	kaneoProjectSlug: '',
+	createColumn: '',
+	doneColumn: '',
+	reopenColumn: '',
+	webhookStatus: null,
 };
 
 function discoverHandler(body?: unknown) {
@@ -64,6 +76,13 @@ async function mountCard() {
 	return wrapper;
 }
 
+type Wrapper = Awaited<ReturnType<typeof mountCard>>;
+const button = (wrapper: Wrapper, text: string) =>
+	wrapper.findAll('button').find((b) => b.text() === text)!;
+const stepState = (wrapper: Wrapper, step: string) =>
+	wrapper.get(`[data-testid="kaneo-${step}"]`).attributes('data-state');
+const header = (wrapper: Wrapper) => wrapper.get('[data-testid="connection-header"]');
+
 beforeEach(() => resetMocks());
 
 afterEach(() => {
@@ -72,99 +91,157 @@ afterEach(() => {
 	document.body.innerHTML = '';
 });
 
-describe('Kaneo integration card', () => {
-	it('connects: loads projects with the typed key, picks default columns, saves', async () => {
+describe('Kaneo integration steps', () => {
+	it('walks through the steps: key saved as pending, projects load, default columns, connect', async () => {
 		onGet(URL, () => ({ configured: true, integration: null }));
 		onPost(`${URL}/discover`, discoverHandler);
-		onPut(URL, () => ({ integration: SAVED }));
+		onPut(URL, (body) =>
+			(body as Record<string, unknown>).kaneoProjectId
+				? { integration: SAVED }
+				: { integration: PENDING },
+		);
 		const wrapper = await mountCard();
 
-		expect(wrapper.get('#kaneo').text()).toContain('Not connected');
-		// Only the API key: no Cloudflare Access service token fields
-		expect(wrapper.text()).not.toContain('Access client');
-		const connect = wrapper.get('button[type="submit"]');
-		expect(connect.text()).toBe('Connect');
-		expect(connect.attributes('disabled')).toBeDefined();
+		expect(header(wrapper).attributes('data-state')).toBe('off');
+		expect(stepState(wrapper, 'step-connect')).toBe('current');
+		expect(stepState(wrapper, 'step-project')).toBe('locked');
+		expect(stepState(wrapper, 'webhook')).toBe('locked');
 
-		const inputs = wrapper.findAll('input');
-		await inputs[0].setValue('https://kaneo.example.com');
-		await inputs[1].setValue('kaneo-api-key-123456789');
-		await wrapper
-			.findAll('button')
-			.find((b) => b.text() === 'Load projects')!
-			.trigger('click');
+		// The API keys link appears once the URL is typed.
+		expect(wrapper.find('a[data-testid="kaneo-api-keys-link"]').exists()).toBe(false);
+		await wrapper.get('[data-testid="kaneo-url"]').setValue('https://kaneo.example.com/api');
+		const keysLink = wrapper.get('a[data-testid="kaneo-api-keys-link"]');
+		expect(keysLink.attributes('href')).toBe(
+			'https://kaneo.example.com/dashboard/settings/account/developer',
+		);
+		expect(keysLink.attributes('target')).toBe('_blank');
+
+		await wrapper.get('[data-testid="kaneo-key"]').setValue('kaneo-typed-key');
+		await button(wrapper, 'Verify & save').trigger('click');
 		await flushPromises();
-
-		// One workspace is picked automatically and its projects load
-		const discoverCalls = mockApi.calls.filter((c) => c.url === `${URL}/discover`);
-		expect(discoverCalls[0].body).toMatchObject({
-			baseUrl: 'https://kaneo.example.com',
-			apiKey: 'kaneo-api-key-123456789',
+		expect(mockApi.calls.find((c) => c.method === 'put')?.body).toEqual({
+			baseUrl: 'https://kaneo.example.com/api',
+			apiKey: 'kaneo-typed-key',
 		});
-		expect(discoverCalls[1].body).toMatchObject({ workspaceId: 'ws1' });
+		expect(useToast().toasts.at(-1)?.message).toBe('Kaneo key verified · workspace Personal');
+		expect(header(wrapper).attributes('data-state')).toBe('pending');
+		expect(stepState(wrapper, 'step-connect')).toBe('done');
+		// Projects load with the saved key: never the typed key again.
+		const discovers = mockApi.calls.filter((c) => c.url === `${URL}/discover`);
+		expect(discovers.every((c) => !(c.body as Record<string, unknown>).apiKey)).toBe(true);
+		expect(discovers.at(-1)?.body).toEqual({ workspaceId: 'ws1' });
 
-		const projectSelect = wrapper.findAll('select')[0];
-		await projectSelect.setValue('kp1');
-		await projectSelect.trigger('change');
+		await wrapper.get('[data-testid="kaneo-project"]').setValue('kp1');
+		await button(wrapper, 'Continue').trigger('click');
 		await flushPromises();
-		const selects = wrapper.findAll('select');
-		expect((selects[1].element as HTMLSelectElement).value).toBe('to-do');
-		expect((selects[2].element as HTMLSelectElement).value).toBe('done');
-		expect((selects[3].element as HTMLSelectElement).value).toBe('to-do');
+		expect(stepState(wrapper, 'step-project')).toBe('done');
+		expect(stepState(wrapper, 'step-columns')).toBe('current');
+		const selects = wrapper.get('[data-testid="kaneo-step-columns"]').findAll('select');
+		expect((selects[0].element as HTMLSelectElement).value).toBe('to-do');
+		expect((selects[1].element as HTMLSelectElement).value).toBe('done');
+		expect((selects[2].element as HTMLSelectElement).value).toBe('to-do');
 
-		await wrapper.get('form').trigger('submit');
+		await wrapper.get('button[role="switch"]').trigger('click');
+		await button(wrapper, 'Save and connect').trigger('click');
 		await flushPromises();
-		expect(mockApi.calls.find((c) => c.method === 'put')?.body).toMatchObject({
-			baseUrl: 'https://kaneo.example.com',
-			apiKey: 'kaneo-api-key-123456789',
+		expect(mockApi.calls.filter((c) => c.method === 'put').at(-1)?.body).toEqual({
 			kaneoProjectId: 'kp1',
 			createColumn: 'to-do',
 			doneColumn: 'done',
 			reopenColumn: 'to-do',
-			autoCreate: false,
+			autoCreate: true,
+			minLevel: 'error',
 			environments: [],
 		});
 		expect(useToast().toasts.at(-1)?.message).toBe('Kaneo connected');
-		// The key never stays in the form after saving
-		expect((wrapper.findAll('input')[1].element as HTMLInputElement).value).toBe('');
+		expect(header(wrapper).attributes('data-state')).toBe('connected');
+		expect(stepState(wrapper, 'webhook')).toBe('done');
+		expect(wrapper.get('[data-testid="kaneo-webhook"]').text()).toContain('resolves its issue');
 		wrapper.unmount();
 	});
 
-	it('shows a saved connection with the key masked and keeps it on save', async () => {
+	it('resumes a pending setup: the key is kept and projects load by themselves', async () => {
+		onGet(URL, () => ({ configured: true, integration: PENDING }));
+		onPost(`${URL}/discover`, discoverHandler);
+		const wrapper = await mountCard();
+		expect(stepState(wrapper, 'step-connect')).toBe('done');
+		expect(wrapper.get('[data-testid="kaneo-step-connect"]').text()).toContain('key kane…6789');
+		expect(stepState(wrapper, 'step-project')).toBe('current');
+		expect(wrapper.findAll('[data-testid="kaneo-project"] option').map((o) => o.text())).toContain(
+			'Sentinel (SNT)',
+		);
+		wrapper.unmount();
+	});
+
+	it('shows a saved connection and keeps the key when settings change', async () => {
 		onGet(URL, () => ({ configured: true, integration: SAVED }));
 		onPost(`${URL}/discover`, discoverHandler);
-		onPut(URL, () => ({ integration: { ...SAVED, autoCreate: true } }));
+		onPut(URL, () => ({ integration: { ...SAVED, minLevel: 'warning', autoCreate: true } }));
 		const wrapper = await mountCard();
 
-		expect(wrapper.get('#kaneo').text()).toContain('Connected');
-		expect(wrapper.text()).toContain('Saved (kane…6789)');
-		expect((wrapper.findAll('input')[1].element as HTMLInputElement).value).toBe('');
-		// Columns of the saved project load on their own (stored credentials)
-		expect(mockApi.calls.find((c) => c.url === `${URL}/discover`)?.body).toMatchObject({
+		expect(header(wrapper).text()).toContain('Connected to Sentinel (SNT)');
+		// Columns load with the stored key (never sent from the browser).
+		expect(mockApi.calls.find((c) => c.url === `${URL}/discover`)?.body).toEqual({
 			kaneoProjectId: 'kp1',
 		});
-		expect(mockApi.calls.find((c) => c.url === `${URL}/discover`)?.body).not.toHaveProperty(
-			'apiKey',
-		);
-
+		const changes = wrapper.findAll('button').filter((b) => b.text() === 'Change');
+		await changes[2].trigger('click');
 		await wrapper.get('button[role="switch"]').trigger('click');
-		await wrapper.get('form').trigger('submit');
+		await flushPromises();
+		await wrapper
+			.get('[data-testid="kaneo-step-columns"]')
+			.findAll('select')[3]
+			.setValue('warning');
+		await button(wrapper, 'Save').trigger('click');
 		await flushPromises();
 		const body = mockApi.calls.find((c) => c.method === 'put')?.body as Record<string, unknown>;
 		expect(body).not.toHaveProperty('apiKey');
-		expect(body.autoCreate).toBe(true);
+		expect(body).toMatchObject({ kaneoProjectId: 'kp1', autoCreate: true, minLevel: 'warning' });
 		expect(useToast().toasts.at(-1)?.message).toBe('Kaneo settings saved');
 		wrapper.unmount();
 	});
 
-	it('shows the last delivery failure', async () => {
+	it('explains a webhook already in use, links to Kaneo and retries', async () => {
 		onGet(URL, () => ({
 			configured: true,
-			integration: { ...SAVED, lastError: 'Kaneo answered 401: Unauthorized' },
+			integration: {
+				...SAVED,
+				webhookStatus: 'in_use',
+				webhookError: 'This Kaneo project already has a webhook',
+			},
 		}));
 		onPost(`${URL}/discover`, discoverHandler);
+		onPut(URL, () => ({ integration: SAVED }));
 		const wrapper = await mountCard();
-		expect(wrapper.text()).toContain('Last delivery failed: Kaneo answered 401: Unauthorized');
+
+		expect(header(wrapper).attributes('data-state')).toBe('attention');
+		expect(header(wrapper).text()).toContain('one-way');
+		expect(stepState(wrapper, 'webhook')).toBe('current');
+		const step = wrapper.get('[data-testid="kaneo-webhook"]');
+		expect(step.text()).toContain('Kaneo allows one webhook per project');
+		expect(step.get('[data-testid="kaneo-project-integrations-link"]').attributes('href')).toBe(
+			'https://kaneo.example.com/dashboard/settings/projects/kp1/integrations',
+		);
+		await button(wrapper, 'Try again').trigger('click');
+		await flushPromises();
+		expect(mockApi.calls.find((c) => c.method === 'put')?.body).toEqual({});
+		expect(useToast().toasts.at(-1)?.message).toBe('Two-way sync is on');
+		expect(stepState(wrapper, 'webhook')).toBe('done');
+		wrapper.unmount();
+	});
+
+	it('shows a refused key in the first step', async () => {
+		onGet(URL, () => ({ configured: true, integration: null }));
+		onPut(URL, () => new MockApiError('Kaneo answered 401: Unauthorized', 502, 'kaneo_failed'));
+		const wrapper = await mountCard();
+		await wrapper.get('[data-testid="kaneo-url"]').setValue('https://kaneo.example.com');
+		await wrapper.get('[data-testid="kaneo-key"]').setValue('wrong');
+		await button(wrapper, 'Verify & save').trigger('click');
+		await flushPromises();
+		expect(wrapper.get('[data-testid="kaneo-step-connect"] [role="alert"]').text()).toContain(
+			'401',
+		);
+		expect(stepState(wrapper, 'step-connect')).toBe('current');
 		wrapper.unmount();
 	});
 
@@ -178,23 +255,17 @@ describe('Kaneo integration card', () => {
 		onDelete(URL, () => ({ deleted: true }));
 		const wrapper = await mountCard();
 
-		await wrapper
-			.findAll('button')
-			.find((b) => b.text() === 'Test connection')!
-			.trigger('click');
+		await button(wrapper, 'Send test').trigger('click');
 		await flushPromises();
 		expect(useToast().toasts.at(-1)?.message).toContain('Sentinel is reachable');
 
-		await wrapper
-			.findAll('button')
-			.find((b) => b.text() === 'Disconnect')!
-			.trigger('click');
+		await button(wrapper, 'Disconnect').trigger('click');
 		await flushPromises();
 		expect(confirmState.current).toMatchObject({ tone: 'danger', confirmLabel: 'Disconnect' });
 		settleConfirm(true);
 		await flushPromises();
 		expect(mockApi.calls.some((c) => c.method === 'delete' && c.url === URL)).toBe(true);
-		expect(wrapper.get('#kaneo').text()).toContain('Not connected');
+		expect(header(wrapper).text()).toContain('Not connected');
 		wrapper.unmount();
 	});
 
@@ -202,49 +273,7 @@ describe('Kaneo integration card', () => {
 		onGet(URL, () => ({ configured: false, integration: null }));
 		const wrapper = await mountCard();
 		expect(wrapper.text()).toContain('INTEGRATIONS_KEY');
-		expect(wrapper.find('form').exists()).toBe(false);
+		expect(wrapper.find('[data-testid="kaneo-step-connect"]').exists()).toBe(false);
 		wrapper.unmount();
-	});
-
-	it('shows Kaneo errors from discovery inline', async () => {
-		onGet(URL, () => ({ configured: true, integration: null }));
-		onPost(
-			`${URL}/discover`,
-			() => new MockApiError('Kaneo answered 401: Unauthorized', 502, 'kaneo_failed'),
-		);
-		const wrapper = await mountCard();
-		await wrapper.findAll('input')[0].setValue('https://kaneo.example.com');
-		await wrapper.findAll('input')[1].setValue('wrong');
-		await wrapper
-			.findAll('button')
-			.find((b) => b.text() === 'Load projects')!
-			.trigger('click');
-		await flushPromises();
-		expect(wrapper.get('[role="alert"]').text()).toContain('Kaneo answered 401');
-		wrapper.unmount();
-	});
-
-	it('says whether closing a task in Kaneo resolves the issue', async () => {
-		onGet(URL, () => ({ configured: true, integration: SAVED }));
-		onPost(`${URL}/discover`, discoverHandler);
-		const on = await mountCard();
-		expect(on.get('[data-testid="kaneo-webhook"]').text()).toContain('Two-way sync is on');
-		on.unmount();
-
-		resetMocks();
-		onGet(URL, () => ({
-			configured: true,
-			integration: {
-				...SAVED,
-				webhookStatus: 'in_use',
-				webhookError: 'This Kaneo project already has a webhook.',
-			},
-		}));
-		onPost(`${URL}/discover`, discoverHandler);
-		const taken = await mountCard();
-		const alert = taken.get('[data-testid="kaneo-webhook"]');
-		expect(alert.text()).toContain('Only Sentinel → Kaneo is synced.');
-		expect(alert.text()).toContain('already has a webhook');
-		taken.unmount();
 	});
 });

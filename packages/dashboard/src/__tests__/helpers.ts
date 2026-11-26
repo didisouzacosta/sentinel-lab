@@ -72,6 +72,16 @@ export function testRouter(): Router {
 				path: '/projects/:slug/settings',
 				component: { template: '<div>project settings</div>' },
 			},
+			{
+				path: '/projects/:slug/integrations',
+				name: 'project-integrations',
+				component: { template: '<div>integrations</div>' },
+			},
+			{
+				path: '/projects/:slug/integrations/:kind',
+				name: 'project-integration',
+				component: { template: '<div>integration</div>' },
+			},
 			{ path: '/', component: { template: '<div>home</div>' } },
 		],
 	});

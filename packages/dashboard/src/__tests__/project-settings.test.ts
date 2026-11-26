@@ -212,9 +212,14 @@ describe('project settings', () => {
 		expect(wrapper.get('output[aria-label="DSN"]').text()).toBe('https://pk@sentinel.local/proj-1');
 		expect(wrapper.find('button[aria-label="Copy DSN"]').exists()).toBe(true);
 		const nav = wrapper.get('nav[aria-label="Settings sections"]');
-		expect(nav.findAll('a')).toHaveLength(12);
-		expect(nav.get('a[href="#slack"]').text()).toBe('Slack');
-		expect(nav.get('a[href="#kaneo"]').text()).toBe('Kaneo');
+		expect(nav.findAll('a')).toHaveLength(10);
+		// Slack, Kaneo and the webhook moved to their own Integrations page
+		expect(nav.get('a[href="#integrations"]').text()).toBe('Integrations');
+		expect(nav.find('a[href="#slack"]').exists()).toBe(false);
+		expect(wrapper.get('#integrations a').attributes('href')).toBe(
+			'/projects/web-frontend/integrations',
+		);
+		expect(mockApi.calls.some((c) => c.url.includes('/integrations/'))).toBe(false);
 		expect(nav.get('a[href="#danger"]').text()).toBe('Danger zone');
 		const usage = wrapper.get('[data-testid="rate-limit-usage"]');
 		expect(usage.text()).toContain('4,912 / 5,000');
@@ -281,12 +286,7 @@ describe('project settings', () => {
 		const { wrapper } = await mountAt(ProjectSettings, '/projects/web-frontend/settings', 'member');
 		const row = wrapper.get('[data-testid="sourcemap-row"]');
 		expect(row.find('button[aria-label^="Delete source map"]').exists()).toBe(false);
-		// Integrations are for owners and admins: no card, no nav entry, no request
-		expect(wrapper.find('#kaneo').exists()).toBe(false);
-		expect(wrapper.find('#slack').exists()).toBe(false);
-		expect(wrapper.find('nav[aria-label="Settings sections"] a[href="#kaneo"]').exists()).toBe(
-			false,
-		);
+		// No integration requests from Settings (they live on the Integrations page)
 		expect(mockApi.calls.some((c) => c.url.includes('/integrations/'))).toBe(false);
 		wrapper.unmount();
 	});

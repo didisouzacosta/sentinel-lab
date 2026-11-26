@@ -1,8 +1,22 @@
 <script setup lang="ts">
 // Dev-only gallery of the design system (route /__ui, registered only when
 // import.meta.env.DEV). Mirrors the Figma page "Componentes" for review.
-import { Check, Clock, EyeOff, Moon, Plus, Search, Sun, Trash2 } from 'lucide-vue-next';
+import {
+	Check,
+	Clock,
+	EyeOff,
+	Moon,
+	Plus,
+	Search,
+	Slack,
+	Sun,
+	Trash2,
+	Unplug,
+} from 'lucide-vue-next';
 import { ref } from 'vue';
+import AppConnectionHeader from '../../components/app/AppConnectionHeader.vue';
+import AppIntegrationCard from '../../components/app/AppIntegrationCard.vue';
+import AppSetupStep from '../../components/app/AppSetupStep.vue';
 import {
 	UiAlert,
 	UiAvatar,
@@ -15,12 +29,14 @@ import {
 	UiDescriptionList,
 	UiDialog,
 	UiEmptyState,
+	UiExternalLink,
 	UiFormField,
 	UiInput,
 	UiMenu,
 	UiSegmented,
 	UiSelect,
 	UiSkeleton,
+	UiStatus,
 	UiTabs,
 	UiTag,
 } from '../../components/ui';
@@ -178,6 +194,57 @@ async function askDelete() {
 						</template>
 					</UiMenu>
 					<UiButton @click="toast.error('Merge failed: issues belong to different projects')">Error toast</UiButton>
+				</div>
+			</UiCard>
+
+			<UiCard title="Integrations" class="lg:col-span-2" padded>
+				<div class="flex flex-col gap-4">
+					<div class="flex flex-wrap gap-2">
+						<UiStatus state="connected" />
+						<UiStatus state="pending" />
+						<UiStatus state="attention" />
+						<UiStatus state="off" />
+					</div>
+					<div class="flex flex-wrap items-center gap-4">
+						<UiExternalLink href="https://api.slack.com/apps">Open in Slack</UiExternalLink>
+						<UiExternalLink variant="button" href="https://api.slack.com/apps">Open in Slack</UiExternalLink>
+						<UiExternalLink variant="button" disabled>Open in Slack</UiExternalLink>
+					</div>
+					<AppConnectionHeader state="connected" title="Connected to #th-errors" summary="#th-errors · error and above">
+						<template #actions>
+							<UiButton size="sm" variant="danger" :icon="Unplug">Disconnect</UiButton>
+						</template>
+					</AppConnectionHeader>
+					<div class="grid gap-4 md:grid-cols-2">
+						<AppIntegrationCard
+							name="Slack"
+							description="Post new issues, regressions and resolutions to a channel."
+							:icon="Slack"
+							state="connected"
+							summary="#th-errors · error and above"
+							to="/__ui"
+							action-label="Manage"
+						/>
+						<AppIntegrationCard
+							name="Slack"
+							description="Post new issues, regressions and resolutions to a channel."
+							:icon="Slack"
+							state="off"
+							summary="Not set up yet"
+							to="/__ui"
+							action-label="Set up"
+							action-variant="primary"
+						/>
+					</div>
+					<ol class="divide-y divide-border overflow-hidden rounded-[10px] border border-border bg-surface">
+						<AppSetupStep :number="1" title="Create the Slack app" state="done" description="App A08K2TX4R1Q">
+							<template #actions><UiButton size="sm" variant="ghost">Change</UiButton></template>
+						</AppSetupStep>
+						<AppSetupStep :number="2" title="Install the app and paste the bot token" state="current" description="Two clicks in Slack, then paste the token here.">
+							<UiButton variant="primary" class="self-start">Verify &amp; save</UiButton>
+						</AppSetupStep>
+						<AppSetupStep :number="3" title="Choose the channel and alerts" state="locked" locked-hint="Complete step 2 first" />
+					</ol>
 				</div>
 			</UiCard>
 

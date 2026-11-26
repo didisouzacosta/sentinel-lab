@@ -192,6 +192,13 @@ Ciclo de cada etapa de tela, igual ao do redesign: Figma aprovado → implementa
 | 5 | Verificação | — | Checks, roteiro da seção 9 no browser e capturas 1440/375. **Revisão sua** |
 | 6 | Entrega | — | PR → CI verde → merge → deploy → conferência em produção |
 
+**Andamento (26/11/2026):** etapas 0 a 5 feitas.
+- Figma aprovado.
+- Backend: estado `pending`, `status`, `workspaceName` e `appId`, MCP atualizado. Testes do worker: 590 passando.
+- Componentes e telas. Testes do dashboard: 256 passando.
+- Conferência local no browser: visão geral, Slack, Kaneo, Settings, 375px e tema escuro.
+- Falta a etapa 6 (PR, deploy e conferência em produção).
+
 ## 7. Figma
 
 - Arquivo **"Sentinel · Redesign do painel"** (`Q0WqtHyVVZQ5upP3aRar0n`).

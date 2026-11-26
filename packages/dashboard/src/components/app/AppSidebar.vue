@@ -67,6 +67,12 @@ const projectNav = computed<NavLink[]>(() => {
 		},
 		{ to: `${base}/filters`, label: 'Filters', icon: Filter, active: name === 'project-filters' },
 		{
+			to: `${base}/integrations`,
+			label: 'Integrations',
+			icon: Plug,
+			active: name === 'project-integrations' || name === 'project-integration',
+		},
+		{
 			to: `${base}/settings`,
 			label: 'Settings',
 			icon: Settings,

@@ -151,6 +151,7 @@ const newComment = ref('');
 const submittingComment = ref(false);
 
 const projectsStore = useProjectsStore();
+const canManageProject = computed(() => projectsStore.canManage(slug.value));
 
 // Export: the whole issue (and the event on screen) as JSON, for pasting
 // into an AI assistant or attaching to a ticket (lib/issue-export.ts).
@@ -752,6 +753,17 @@ onMounted(() => loadIssue());
 									Post to Slack
 								</UiButton>
 							</template>
+						</div>
+					</UiCard>
+					<UiCard
+						v-if="canManageProject && !kaneoLink && !kaneoAvailable && !slackLink && !slackAvailable"
+						title="Integrations"
+						:heading-level="3"
+						data-testid="issue-integrations-setup"
+					>
+						<div class="flex items-center justify-between gap-3 px-4 py-3.5">
+							<span class="text-body-s text-fg-muted">Send issues to Slack or Kaneo</span>
+							<UiButton size="sm" :to="`/projects/${slug}/integrations`">Set up</UiButton>
 						</div>
 					</UiCard>
 					<UiCard title="Event Info" :heading-level="3">

@@ -27,7 +27,15 @@ const PAGE: Record<string, string> = {
 	releases: 'Releases',
 	'release-detail': 'Release',
 	'project-filters': 'Filters',
+	'project-integrations': 'Integrations',
+	'project-integration': 'Integrations',
 	'project-settings': 'Settings',
+};
+
+const INTEGRATION_NAMES: Record<string, string> = {
+	slack: 'Slack',
+	kaneo: 'Kaneo',
+	webhook: 'Webhook',
 };
 
 const crumbs = computed<Crumb[]>(() => {
@@ -39,6 +47,11 @@ const crumbs = computed<Crumb[]>(() => {
 		if (name === 'issue-detail' || name === 'event-detail')
 			list.push({ label: 'Issues', to: `${base}/issues` });
 		if (name === 'release-detail') list.push({ label: 'Releases', to: `${base}/releases` });
+		if (name === 'project-integration') {
+			list.push({ label: 'Integrations', to: `${base}/integrations` });
+			list.push({ label: INTEGRATION_NAMES[String(route.params.kind)] ?? 'Integration' });
+			return list;
+		}
 		list.push({ label: name === 'release-detail' ? String(route.params.version) : PAGE[name] });
 		return list;
 	}
