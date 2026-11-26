@@ -41,6 +41,8 @@ export const fakeSlack = {
 	/** Answer the next chat.* call with HTTP 429. */
 	rateLimitOnce: false,
 	nextTs: 1,
+	/** The workspace auth.test reports. */
+	team: { id: 'T0ACME', name: 'Acme' },
 
 	reset() {
 		this.requests = [];
@@ -49,6 +51,7 @@ export const fakeSlack = {
 		this.failPosts = null;
 		this.rateLimitOnce = false;
 		this.nextTs = 1;
+		this.team = { id: 'T0ACME', name: 'Acme' };
 	},
 
 	calls(api: string) {
@@ -101,8 +104,8 @@ async function handle(url: URL, init: RequestInit = {}): Promise<Response> {
 			return json({
 				ok: true,
 				url: 'https://acme.slack.com/',
-				team: 'Acme',
-				team_id: 'T0ACME',
+				team: fakeSlack.team.name,
+				team_id: fakeSlack.team.id,
 				user: 'sentinel',
 				user_id: 'U0BOT',
 				bot_id: 'B0BOT',

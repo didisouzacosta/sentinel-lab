@@ -3736,6 +3736,8 @@ export class ProjectState extends DurableObject<Env> {
 			config?: Record<string, unknown>;
 			secretCipher?: string;
 			webhookSecretCipher?: string | null;
+			/** Forget the issue links (their messages live in another workspace now). */
+			resetLinks?: boolean;
 		};
 		if (!body.type || !body.config) {
 			return this.jsonResponse({ error: 'missing_fields' }, 400);
@@ -3774,6 +3776,13 @@ export class ProjectState extends DurableObject<Env> {
 				now,
 				existing.id as string,
 			);
+			if (body.resetLinks) {
+				this.sql.exec('DELETE FROM issue_links WHERE integration_id = ?', existing.id);
+				this.sql.exec(
+					"DELETE FROM integration_outbox WHERE integration_id = ? AND action != 'create'",
+					existing.id,
+				);
+			}
 		}
 		const row = this.integrationRow(body.type);
 		return this.jsonResponse(
@@ -4346,20 +4355,27 @@ export class ProjectState extends DurableObject<Env> {
 		const client = await this.slackClientFor(slack);
 		const { issue, latestEvent } = this.slackIssue(issueId);
 		const context = this.slackContext(slack.config, issueId);
-		if (action === 'resolve') {
+		const regression = payload.reason === 'regression';
+		const state = action === 'resolve' ? 'resolved' : regression ? 'regressed' : 'new';
+		try {
 			await client.updateMessage(
 				message.channel,
 				message.ts,
-				buildSlackIssueMessage(issue, latestEvent, context, 'resolved'),
+				buildSlackIssueMessage(issue, latestEvent, context, state),
 			);
+		} catch (error) {
+			if (!(error instanceof SlackError) || error.code !== 'message_not_found') throw error;
+			// Someone deleted the message in Slack: forget it, so later changes
+			// do not fail forever. A regression posts a fresh message instead.
+			this.sql.exec(
+				'DELETE FROM issue_links WHERE integration_id = ? AND issue_id = ?',
+				slack.id,
+				issueId,
+			);
+			if (regression) await this.createSlackMessageFor(issueId, 'regressed');
 			return true;
 		}
-		const regression = payload.reason === 'regression';
-		await client.updateMessage(
-			message.channel,
-			message.ts,
-			buildSlackIssueMessage(issue, latestEvent, context, regression ? 'regressed' : 'new'),
-		);
+		if (action === 'resolve') return true;
 		if (regression) {
 			await client.postMessage(
 				message.channel,

@@ -330,6 +330,8 @@ slackIntegrationRoutes.put('/:slug/integrations/slack', async (c) => {
 	};
 
 	const tokenChanged = !resolved.stored || resolved.stored.botToken !== credentials.botToken;
+	// A token from another workspace cannot edit the old messages: forget them.
+	const workspaceChanged = Boolean(storedConfig?.teamId && storedConfig.teamId !== identity.teamId);
 	const secretCipher = tokenChanged
 		? await sealSecret(
 				c.env.INTEGRATIONS_KEY as string,
@@ -347,6 +349,7 @@ slackIntegrationRoutes.put('/:slug/integrations/slack', async (c) => {
 				enabled: flags.enabled ?? stored?.enabled ?? true,
 				config,
 				secretCipher,
+				resetLinks: workspaceChanged,
 			}),
 		}),
 	);
@@ -372,6 +375,7 @@ slackIntegrationRoutes.put('/:slug/integrations/slack', async (c) => {
 			integration: 'slack',
 			channel: config.channelId,
 			...(changedFields ? { fields: changedFields } : {}),
+			...(workspaceChanged ? { workspaceChanged: true } : {}),
 		},
 	);
 	if (tokenChanged && !saved.created) {
