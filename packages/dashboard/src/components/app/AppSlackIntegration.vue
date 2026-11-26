@@ -1,42 +1,37 @@
 <script setup lang="ts">
-// Slack integration settings for one project (owner/admin only; the parent
-// renders it only for managers and the server enforces the same rule).
-// The bot token is write-only here: the API returns it masked, and the input
-// starts empty with the masked value as a hint.
-import { ExternalLink, PlugZap, RefreshCw, Send, Unplug } from 'lucide-vue-next';
-import { computed, onMounted, ref } from 'vue';
+// Slack setup for one project, as three steps (owner/admin only; the page
+// renders it only for managers and the server enforces the same rule):
+//   1. create the Slack app from Sentinel's manifest (and tell us its page),
+//   2. install it and paste the bot token → Verify & save (stored as pending),
+//   3. choose the channel and alerts → connected.
+// The bot token is write-only: the API returns it masked.
+import { RefreshCw, Send, Unplug } from 'lucide-vue-next';
+import { computed, nextTick, onMounted, ref } from 'vue';
 import { api } from '../../api/client';
 import { useConfirm } from '../../composables/useConfirm';
 import { useToast } from '../../composables/useToast';
+import { parseSlackAppId, slackLinks } from '../../lib/integration-links';
+import {
+	environmentsPhrase,
+	LEVELS,
+	levelPhrase,
+	type SlackIntegration,
+	slackSummary,
+	splitEnvironments,
+} from '../../lib/integrations';
 import {
 	UiAlert,
 	UiButton,
-	UiCard,
 	UiCode,
+	UiExternalLink,
 	UiFormField,
 	UiInput,
 	UiSelect,
 	UiSkeleton,
 	UiSwitch,
 } from '../ui';
-
-export interface SlackIntegration {
-	id: string;
-	enabled: boolean;
-	teamId: string;
-	teamName: string;
-	channelId: string;
-	channelName: string;
-	channelPrivate: boolean;
-	minLevel: string;
-	environments: string[];
-	notifyRegression: boolean;
-	notifyResolved: boolean;
-	botToken: string | null;
-	credentialsReadable: boolean;
-	lastError: string | null;
-	lastErrorAt: string | null;
-}
+import AppConnectionHeader from './AppConnectionHeader.vue';
+import AppSetupStep from './AppSetupStep.vue';
 
 interface Channel {
 	id: string;
@@ -45,12 +40,13 @@ interface Channel {
 	isMember: boolean;
 }
 
+type Step = 1 | 2 | 3;
+
 const props = defineProps<{ slug: string }>();
+const emit = defineEmits<{ change: [integration: SlackIntegration | null] }>();
 
 const toast = useToast();
 const askConfirm = useConfirm();
-
-const LEVELS = ['debug', 'info', 'warning', 'error', 'fatal'];
 
 const loading = ref(true);
 const loadError = ref<string | null>(null);
@@ -58,51 +54,107 @@ const configured = ref(true);
 const integration = ref<SlackIntegration | null>(null);
 const manifest = ref<unknown>(null);
 
-// Form state
+// Step 1
+const appPage = ref('');
+const appPageError = ref<string | null>(null);
+/** App ID known before the token is saved (sent with it). */
+const localAppId = ref<string | null>(null);
+const skippedApp = ref(false);
+const savingApp = ref(false);
+// Step 2
 const botToken = ref('');
+const tokenError = ref<string | null>(null);
+const verifying = ref(false);
+// Step 3
 const channelId = ref('');
 const minLevel = ref('error');
 const environments = ref('');
 const notifyRegression = ref(true);
 const notifyResolved = ref(true);
-
 const channels = ref<Channel[]>([]);
-const teamName = ref('');
 const truncated = ref(false);
 const discovering = ref(false);
 const discoverError = ref<string | null>(null);
 const saving = ref(false);
 const testing = ref(false);
+/** A finished step reopened with Change. */
+const editing = ref<Step | null>(null);
+/** What AppSetupStep exposes. */
+interface StepHandle {
+	focus: () => void;
+}
+const stepRefs = ref<Record<number, StepHandle | null>>({});
+/** Template ref callback for step `n` (focus moves to it when it opens). */
+function stepRef(n: number) {
+	return (el: unknown) => {
+		stepRefs.value[n] = el as StepHandle | null;
+	};
+}
 
 const base = computed(() => `/api/projects/${props.slug}/integrations/slack`);
-const connected = computed(() => integration.value !== null);
-const canSave = computed(
-	() => Boolean(channelId.value) && (connected.value || Boolean(botToken.value)),
+const summary = computed(() => slackSummary(integration.value));
+const appId = computed(() => integration.value?.appId ?? localAppId.value);
+const connected = computed(() => integration.value?.status === 'connected');
+const tokenSaved = computed(
+	() => Boolean(integration.value) && integration.value?.credentialsReadable === true,
 );
+
+const done = computed<Record<Step, boolean>>(() => ({
+	1: Boolean(integration.value) || Boolean(localAppId.value) || skippedApp.value,
+	2: tokenSaved.value,
+	3: connected.value,
+}));
+const firstOpen = computed<Step | null>(
+	() => ([1, 2, 3] as Step[]).find((step) => !done.value[step]) ?? null,
+);
+function stateOf(step: Step): 'current' | 'done' | 'locked' {
+	if (editing.value === step) return 'current';
+	if (done.value[step]) return 'done';
+	return firstOpen.value === step && editing.value === null ? 'current' : 'locked';
+}
+
+const appSummary = computed(() =>
+	appId.value ? `App ${appId.value}` : 'Created in Slack (app page not linked)',
+);
+const tokenSummary = computed(() => {
+	const value = integration.value;
+	if (!value) return '';
+	const parts = ['Verified', `workspace ${value.teamName}`];
+	if (value.botToken) parts.push(`token ${value.botToken}`);
+	return parts.join(' · ');
+});
+const channelSummary = computed(() => {
+	const value = integration.value;
+	if (!value || value.status !== 'connected') return '';
+	const extras = [
+		value.notifyRegression ? 'regressions on' : 'regressions off',
+		value.notifyResolved ? 'resolutions on' : 'resolutions off',
+	];
+	return [
+		`#${value.channelName}`,
+		levelPhrase(value.minLevel),
+		environmentsPhrase(value.environments),
+		...extras,
+	].join(' · ');
+});
 const manifestJson = computed(() =>
 	manifest.value ? JSON.stringify(manifest.value, null, 2) : '',
-);
-/** Slack's documented "create an app from this manifest" link. */
-const createAppUrl = computed(() =>
-	manifest.value
-		? `https://api.slack.com/apps?new_app=1&manifest_json=${encodeURIComponent(JSON.stringify(manifest.value))}`
-		: 'https://api.slack.com/apps?new_app=1',
 );
 
 function message(err: unknown, fallback: string) {
 	return err instanceof Error ? err.message : fallback;
 }
 
-function fillForm(value: SlackIntegration) {
+function setIntegration(value: SlackIntegration | null) {
+	integration.value = value;
+	emit('change', value);
+	if (!value) return;
 	channelId.value = value.channelId;
 	minLevel.value = value.minLevel;
 	environments.value = value.environments.join(', ');
 	notifyRegression.value = value.notifyRegression;
 	notifyResolved.value = value.notifyResolved;
-	teamName.value = value.teamName;
-	botToken.value = '';
-	// The saved channel shows even before the picker loads.
-	if (!channels.value.some((channel) => channel.id === value.channelId)) {
+	if (value.channelId && !channels.value.some((channel) => channel.id === value.channelId)) {
 		channels.value = [
 			{
 				id: value.channelId,
@@ -115,22 +167,23 @@ function fillForm(value: SlackIntegration) {
 	}
 }
 
-/** Ask the server which channels this token can post to (falls back to the saved one). */
+async function focusStep(step: Step) {
+	await nextTick();
+	stepRefs.value[step]?.focus();
+}
+
+/** Channels the saved token can post to. */
 async function discover() {
 	discovering.value = true;
 	discoverError.value = null;
 	try {
-		const result = await api.post<{
-			team: { name: string };
-			channels: Channel[];
-			truncated: boolean;
-		}>(`${base.value}/discover`, botToken.value ? { botToken: botToken.value } : {});
-		teamName.value = result.team.name;
+		const result = await api.post<{ channels: Channel[]; truncated: boolean }>(
+			`${base.value}/discover`,
+			{},
+		);
 		channels.value = result.channels;
 		truncated.value = result.truncated;
-		if (!channels.value.some((channel) => channel.id === channelId.value)) {
-			channelId.value = '';
-		}
+		if (!channels.value.some((channel) => channel.id === channelId.value)) channelId.value = '';
 	} catch (err) {
 		discoverError.value = message(err, 'Could not reach Slack');
 	} finally {
@@ -148,9 +201,11 @@ async function load() {
 			manifest: unknown;
 		}>(base.value);
 		configured.value = result.configured;
-		integration.value = result.integration;
 		manifest.value = result.manifest;
-		if (result.integration) fillForm(result.integration);
+		setIntegration(result.integration);
+		if (result.integration?.status === 'pending' && result.integration.credentialsReadable) {
+			discover();
+		}
 	} catch (err) {
 		loadError.value = message(err, 'Failed to load the Slack integration');
 	} finally {
@@ -158,24 +213,83 @@ async function load() {
 	}
 }
 
-async function save() {
+async function saveApp() {
+	appPageError.value = null;
+	const parsed = parseSlackAppId(appPage.value);
+	if (!parsed) {
+		appPageError.value = appPage.value.trim()
+			? 'That does not look like a Slack app page or App ID (it looks like A08K2TX4R1Q).'
+			: "Paste your app's page address, or choose “I already have a token”.";
+		return;
+	}
+	if (integration.value) {
+		savingApp.value = true;
+		try {
+			const result = await api.put<{ integration: SlackIntegration }>(base.value, {
+				appId: parsed,
+			});
+			setIntegration(result.integration);
+		} catch (err) {
+			appPageError.value = message(err, 'Failed to save the app page');
+			return;
+		} finally {
+			savingApp.value = false;
+		}
+	} else {
+		localAppId.value = parsed;
+	}
+	appPage.value = '';
+	editing.value = null;
+	focusStep(tokenSaved.value ? 3 : 2);
+}
+
+function skipApp() {
+	skippedApp.value = true;
+	appPageError.value = null;
+	editing.value = null;
+	focusStep(2);
+}
+
+async function verifyToken() {
+	tokenError.value = null;
+	if (!botToken.value.trim()) {
+		tokenError.value = 'Paste the Bot User OAuth Token (it starts with xoxb-).';
+		return;
+	}
+	verifying.value = true;
+	try {
+		const body: Record<string, unknown> = { botToken: botToken.value.trim() };
+		if (!integration.value && localAppId.value) body.appId = localAppId.value;
+		const result = await api.put<{ integration: SlackIntegration }>(base.value, body);
+		setIntegration(result.integration);
+		botToken.value = '';
+		editing.value = null;
+		toast.success(`Token verified · workspace ${result.integration.teamName}`);
+		if (result.integration.status === 'pending') {
+			focusStep(3);
+			discover();
+		}
+	} catch (err) {
+		tokenError.value = message(err, 'Slack refused this token');
+	} finally {
+		verifying.value = false;
+	}
+}
+
+async function saveChannel() {
+	if (!channelId.value) return;
 	saving.value = true;
 	try {
-		const body: Record<string, unknown> = {
+		const wasConnected = connected.value;
+		const result = await api.put<{ integration: SlackIntegration }>(base.value, {
 			channelId: channelId.value,
 			minLevel: minLevel.value,
-			environments: environments.value
-				.split(',')
-				.map((name) => name.trim())
-				.filter(Boolean),
+			environments: splitEnvironments(environments.value),
 			notifyRegression: notifyRegression.value,
 			notifyResolved: notifyResolved.value,
-		};
-		if (botToken.value) body.botToken = botToken.value;
-		const result = await api.put<{ integration: SlackIntegration }>(base.value, body);
-		const wasConnected = connected.value;
-		integration.value = result.integration;
-		fillForm(result.integration);
+		});
+		setIntegration(result.integration);
+		editing.value = null;
 		toast.success(
 			wasConnected
 				? 'Slack settings saved'
@@ -186,6 +300,21 @@ async function save() {
 	} finally {
 		saving.value = false;
 	}
+}
+
+function change(step: Step) {
+	editing.value = step;
+	if (step === 1) appPage.value = appId.value ?? '';
+	if (step === 3) discover();
+	focusStep(step);
+}
+
+function cancelChange() {
+	editing.value = null;
+	appPageError.value = null;
+	tokenError.value = null;
+	botToken.value = '';
+	if (integration.value) setIntegration(integration.value);
 }
 
 async function test() {
@@ -204,17 +333,19 @@ async function disconnect() {
 	const ok = await askConfirm({
 		title: 'Disconnect Slack?',
 		description:
-			'Sentinel stops posting to Slack for this project and forgets which message belongs to which issue. Messages already in Slack stay there.',
+			'Sentinel stops posting to Slack for this project, forgets the bot token and which message belongs to which issue. Messages already in Slack stay there.',
 		confirmLabel: 'Disconnect',
 		tone: 'danger',
 	});
 	if (!ok) return;
 	try {
 		await api.delete(base.value);
-		integration.value = null;
+		setIntegration(null);
 		channels.value = [];
 		channelId.value = '';
-		teamName.value = '';
+		localAppId.value = null;
+		skippedApp.value = false;
+		editing.value = null;
 		toast.success('Slack disconnected');
 	} catch (err) {
 		toast.error(message(err, 'Failed to disconnect Slack'));
@@ -225,126 +356,199 @@ onMounted(load);
 </script>
 
 <template>
-	<UiCard
-		id="slack"
-		title="Slack"
-		:meta="connected ? `#${integration?.channelName}` : 'Not connected'"
-		class="scroll-mt-20"
-		padded
-	>
-		<UiSkeleton v-if="loading" class="h-24 w-full" />
+	<div class="flex flex-col gap-4" data-testid="slack-integration">
+		<UiSkeleton v-if="loading" variant="block" class="h-40" label="Loading the Slack integration" />
 		<UiAlert v-else-if="loadError" tone="error" action-label="Try again" @action="load">{{ loadError }}</UiAlert>
 		<UiAlert v-else-if="!configured" tone="warning">
 			Integrations are off on this Sentinel instance: the <code>INTEGRATIONS_KEY</code> secret is not set.
 		</UiAlert>
-		<form v-else class="flex flex-col gap-4" data-testid="slack-form" @submit.prevent="save">
-			<p class="text-body-s text-fg-muted">
-				Post a message to a Slack channel for each new issue, reply in its thread when a resolved error comes
-				back, and mark it resolved when you resolve the issue.
-			</p>
+		<template v-else>
+			<AppConnectionHeader
+				:state="summary.state"
+				:title="summary.title"
+				:summary="integration ? (connected ? channelSummary : summary.summary) : 'Three steps, about two minutes. Nothing is posted until you pick a channel.'"
+			>
+				<template v-if="integration" #actions>
+					<UiButton v-if="connected" size="sm" :icon="Send" :loading="testing" @click="test">Send test</UiButton>
+					<UiButton size="sm" variant="danger" :icon="Unplug" @click="disconnect">Disconnect</UiButton>
+				</template>
+			</AppConnectionHeader>
 
 			<UiAlert v-if="integration?.lastError" tone="error">
 				Last delivery failed: {{ integration.lastError }}
 			</UiAlert>
-			<UiAlert v-if="integration && !integration.credentialsReadable" tone="warning">
-				The saved token can no longer be read. Paste the bot token again.
-			</UiAlert>
 
-			<details v-if="!connected" class="rounded-lg border border-border px-3.5 py-3" open data-testid="slack-setup">
-				<summary class="cursor-pointer text-body-s font-medium text-fg">1. Create the Slack app</summary>
-				<div class="mt-3 flex flex-col gap-3">
-					<p class="text-body-s text-fg-muted">
-						Open Slack's app builder with Sentinel's manifest filled in, pick your workspace, create the app and
-						click <strong>Install to Workspace</strong>. Then copy the
-						<strong>Bot User OAuth Token</strong> (OAuth &amp; Permissions, starts with <code>xoxb-</code>).
+			<ol class="divide-y divide-border overflow-hidden rounded-[10px] border border-border bg-surface" aria-label="Slack setup steps">
+				<AppSetupStep
+					:ref="stepRef(1)"
+					:number="1"
+					title="Create the Slack app"
+					:state="stateOf(1)"
+					:description="stateOf(1) === 'done' ? appSummary : 'Sentinel fills in the name, the bot user and the four permissions it needs.'"
+					data-testid="slack-step-app"
+				>
+					<template #actions>
+						<UiButton size="sm" variant="ghost" @click="change(1)">Change</UiButton>
+					</template>
+					<div class="flex flex-wrap items-center gap-3">
+						<UiExternalLink variant="button" :href="slackLinks.createApp(manifest)" data-testid="slack-create-app">
+							Create the app in Slack
+						</UiExternalLink>
+						<details v-if="manifestJson" class="text-body-s text-fg-muted">
+							<summary class="cursor-pointer">Or paste the manifest yourself</summary>
+							<p class="mt-2 text-caption text-fg-subtle">Create New App → From a manifest, then paste:</p>
+							<UiCode class="mt-2" :code="manifestJson" language="App manifest (JSON)" />
+						</details>
+					</div>
+					<form class="flex flex-col gap-3" @submit.prevent="saveApp">
+						<UiFormField
+							v-slot="f"
+							label="Your app's page"
+							:error="appPageError"
+							help="After creating the app, paste the address of its page (api.slack.com/apps/A…) or its App ID. We use it to link you straight to the token."
+						>
+							<UiInput
+								:id="f.id"
+								v-model="appPage"
+								:aria-describedby="f.describedBy"
+								:aria-invalid="f.invalid || undefined"
+								autocomplete="off"
+								placeholder="https://api.slack.com/apps/A0…"
+								data-testid="slack-app-page"
+							/>
+						</UiFormField>
+						<div class="flex flex-wrap items-center gap-2">
+							<UiButton type="submit" variant="primary" :loading="savingApp">Continue</UiButton>
+							<UiButton v-if="!integration" variant="ghost" @click="skipApp">I already have a token</UiButton>
+							<UiButton v-if="editing === 1" variant="ghost" @click="cancelChange">Cancel</UiButton>
+						</div>
+					</form>
+				</AppSetupStep>
+
+				<AppSetupStep
+					:ref="stepRef(2)"
+					:number="2"
+					title="Install the app and paste the bot token"
+					:state="stateOf(2)"
+					:description="stateOf(2) === 'done' ? tokenSummary : 'Two clicks in Slack, then paste the token here. Sentinel never reads it from Slack for you.'"
+					locked-hint="Complete step 1 first"
+					data-testid="slack-step-token"
+				>
+					<template #actions>
+						<UiButton size="sm" variant="ghost" @click="change(2)">Change</UiButton>
+					</template>
+					<ol class="flex flex-col gap-2.5">
+						<li class="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+							<span class="flex size-5 items-center justify-center rounded-full bg-subtle text-caption text-fg-muted">a</span>
+							<span class="text-body-s text-fg">Install the app in your workspace</span>
+							<UiExternalLink :href="slackLinks.install(appId)" data-testid="slack-install-link">Install to Workspace</UiExternalLink>
+						</li>
+						<li class="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+							<span class="flex size-5 items-center justify-center rounded-full bg-subtle text-caption text-fg-muted">b</span>
+							<span class="text-body-s text-fg">Copy the <strong>Bot User OAuth Token</strong> (starts with <code>xoxb-</code>)</span>
+							<UiExternalLink :href="slackLinks.oauth(appId)" data-testid="slack-oauth-link">Open OAuth &amp; Permissions</UiExternalLink>
+						</li>
+					</ol>
+					<p v-if="!appId" class="text-caption text-fg-subtle">
+						Without the app page, these open your list of Slack apps: pick the app first.
 					</p>
-					<a
-						:href="createAppUrl"
-						target="_blank"
-						rel="noopener noreferrer"
-						class="inline-flex items-center gap-1.5 self-start text-body-s font-medium text-accent-text hover:underline"
-						data-testid="slack-create-app"
-					>
-						Create the app in Slack
-						<ExternalLink :size="14" aria-hidden="true" />
-					</a>
-					<details v-if="manifestJson">
-						<summary class="cursor-pointer text-caption text-fg-subtle">Or paste the manifest yourself (Create New App → From a manifest)</summary>
-						<UiCode class="mt-2" :code="manifestJson" language="App manifest (JSON)" />
-					</details>
-				</div>
-			</details>
+					<form class="flex flex-col gap-3" @submit.prevent="verifyToken">
+						<UiFormField
+							v-slot="f"
+							label="Bot token"
+							:error="tokenError"
+							:help="integration?.botToken ? `Saved (${integration.botToken}). Paste a new one to replace it.` : 'Paste it here. We check it with Slack and save it encrypted before you pick a channel.'"
+						>
+							<UiInput
+								:id="f.id"
+								v-model="botToken"
+								:aria-describedby="f.describedBy"
+								:aria-invalid="f.invalid || undefined"
+								type="password"
+								autocomplete="off"
+								:placeholder="integration?.botToken ?? 'xoxb-…'"
+								data-testid="slack-token"
+							/>
+						</UiFormField>
+						<div class="flex flex-wrap items-center gap-2">
+							<UiButton type="submit" variant="primary" :loading="verifying">Verify &amp; save</UiButton>
+							<UiButton v-if="editing === 2" variant="ghost" @click="cancelChange">Cancel</UiButton>
+						</div>
+					</form>
+				</AppSetupStep>
 
-			<UiFormField
-				v-slot="f"
-				:label="connected ? 'Bot token' : '2. Bot token'"
-				:help="integration?.botToken ? `Saved (${integration.botToken}). Paste a new one to replace it.` : 'Bot User OAuth Token, starts with xoxb-.'"
-			>
-				<UiInput
-					:id="f.id"
-					v-model="botToken"
-					:aria-describedby="f.describedBy"
-					type="password"
-					autocomplete="off"
-					:placeholder="integration?.botToken ?? 'xoxb-…'"
-				/>
-			</UiFormField>
-
-			<div class="flex flex-wrap items-center gap-2">
-				<UiButton :icon="RefreshCw" :loading="discovering" :disabled="!connected && !botToken" @click="discover">
-					{{ channels.length > 1 ? 'Reload channels' : 'Load channels' }}
-				</UiButton>
-				<span v-if="teamName" class="text-caption text-fg-subtle">Workspace: {{ teamName }}</span>
-			</div>
-			<UiAlert v-if="discoverError" tone="error">{{ discoverError }}</UiAlert>
-
-			<UiFormField
-				v-slot="f"
-				:label="connected ? 'Channel' : '3. Channel'"
-				:help="truncated ? 'Showing the first 1000 channels.' : 'Private channels show up once the bot is invited (/invite @Sentinel).'"
-			>
-				<UiSelect :id="f.id" v-model="channelId" class="w-full" :disabled="channels.length === 0">
-					<option value="" disabled>Choose a channel</option>
-					<option v-for="channel in channels" :key="channel.id" :value="channel.id">
-						{{ channel.isPrivate ? '🔒' : '#' }}{{ channel.name }}
-					</option>
-				</UiSelect>
-			</UiFormField>
-
-			<div class="flex flex-col gap-3 rounded-lg border border-border px-3.5 py-3">
-				<div class="grid gap-3 sm:grid-cols-2">
-					<UiFormField v-slot="f" label="Minimum level">
-						<UiSelect :id="f.id" v-model="minLevel" class="w-full">
-							<option v-for="level in LEVELS" :key="level" :value="level">{{ level }}</option>
-						</UiSelect>
-					</UiFormField>
-					<UiFormField v-slot="f" label="Environments" help="Comma-separated. Empty means all.">
-						<UiInput :id="f.id" v-model="environments" :aria-describedby="f.describedBy" placeholder="production" />
-					</UiFormField>
-				</div>
-				<div class="flex items-center justify-between gap-3">
-					<div>
-						<p class="text-body-s font-medium text-fg">Errors that come back</p>
-						<p class="text-caption text-fg-subtle">Reply in the thread when a resolved issue gets events again.</p>
-					</div>
-					<UiSwitch v-model="notifyRegression" label="Errors that come back" />
-				</div>
-				<div class="flex items-center justify-between gap-3">
-					<div>
-						<p class="text-body-s font-medium text-fg">Resolutions</p>
-						<p class="text-caption text-fg-subtle">Mark the message resolved when the issue is resolved.</p>
-					</div>
-					<UiSwitch v-model="notifyResolved" label="Resolutions" />
-				</div>
-			</div>
-
-			<div class="flex flex-wrap gap-2">
-				<UiButton type="submit" variant="primary" :icon="PlugZap" :loading="saving" :disabled="!canSave">
-					{{ connected ? 'Save' : 'Connect' }}
-				</UiButton>
-				<UiButton v-if="connected" :icon="Send" :loading="testing" @click="test">Send test message</UiButton>
-				<UiButton v-if="connected" variant="danger" :icon="Unplug" @click="disconnect">Disconnect</UiButton>
-			</div>
-		</form>
-	</UiCard>
+				<AppSetupStep
+					:ref="stepRef(3)"
+					:number="3"
+					title="Choose the channel and alerts"
+					:state="stateOf(3)"
+					:description="stateOf(3) === 'done' ? channelSummary : 'Pick where alerts go and which ones are worth a message.'"
+					locked-hint="Complete step 2 first"
+					data-testid="slack-step-channel"
+				>
+					<template #actions>
+						<UiButton size="sm" variant="ghost" @click="change(3)">Change</UiButton>
+					</template>
+					<form class="flex flex-col gap-3" @submit.prevent="saveChannel">
+						<div v-if="discovering" class="flex flex-col gap-2" data-testid="slack-channels-loading">
+							<p class="flex items-center gap-2 text-body-s font-medium text-fg-muted">
+								<RefreshCw :size="14" class="animate-spin" aria-hidden="true" />
+								Loading channels from Slack…
+							</p>
+							<UiSkeleton variant="line" :count="2" label="Loading channels from Slack" />
+						</div>
+						<UiAlert v-else-if="discoverError" tone="error" action-label="Try again" @action="discover">
+							{{ discoverError }}
+						</UiAlert>
+						<UiFormField
+							v-else
+							v-slot="f"
+							label="Channel"
+							:help="truncated ? 'Showing the first 1000 channels.' : 'Private channels show up once the bot is invited (/invite @Sentinel).'"
+						>
+							<div class="flex flex-wrap items-center gap-2">
+								<UiSelect :id="f.id" v-model="channelId" class="min-w-0 flex-1" data-testid="slack-channel">
+									<option value="" disabled>Choose a channel</option>
+									<option v-for="channel in channels" :key="channel.id" :value="channel.id">
+										{{ channel.isPrivate ? '🔒' : '#' }}{{ channel.name }}
+									</option>
+								</UiSelect>
+								<UiButton :icon="RefreshCw" @click="discover">Reload channels</UiButton>
+							</div>
+						</UiFormField>
+						<div :class="['grid gap-3 sm:grid-cols-2', !channelId && 'opacity-50']">
+							<UiFormField v-slot="f" label="Minimum level">
+								<UiSelect :id="f.id" v-model="minLevel" class="w-full">
+									<option v-for="level in LEVELS" :key="level" :value="level">{{ level }}</option>
+								</UiSelect>
+							</UiFormField>
+							<UiFormField v-slot="f" label="Environments" help="Comma-separated. Empty means all.">
+								<UiInput :id="f.id" v-model="environments" :aria-describedby="f.describedBy" placeholder="production" />
+							</UiFormField>
+						</div>
+						<div class="flex items-center justify-between gap-3">
+							<div>
+								<p class="text-body-s font-medium text-fg">Errors that come back</p>
+								<p class="text-caption text-fg-subtle">Reply in the thread when a resolved issue gets events again.</p>
+							</div>
+							<UiSwitch v-model="notifyRegression" label="Errors that come back" />
+						</div>
+						<div class="flex items-center justify-between gap-3">
+							<div>
+								<p class="text-body-s font-medium text-fg">Resolutions</p>
+								<p class="text-caption text-fg-subtle">Mark the message resolved when the issue is resolved.</p>
+							</div>
+							<UiSwitch v-model="notifyResolved" label="Resolutions" />
+						</div>
+						<div class="flex flex-wrap items-center gap-2">
+							<UiButton type="submit" variant="primary" :loading="saving" :disabled="!channelId">
+								{{ connected ? 'Save' : 'Save and connect' }}
+							</UiButton>
+							<UiButton v-if="editing === 3" variant="ghost" @click="cancelChange">Cancel</UiButton>
+						</div>
+					</form>
+				</AppSetupStep>
+			</ol>
+		</template>
+	</div>
 </template>

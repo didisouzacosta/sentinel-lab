@@ -4,6 +4,7 @@ import { openSecret } from '../src/lib/secret-box';
 import {
 	checkBotToken,
 	createSlackClient,
+	parseSlackAppId,
 	parseSlackMessageId,
 	SlackError,
 } from '../src/lib/slack';
@@ -51,6 +52,13 @@ describe('Slack client', () => {
 			code: 'ratelimited',
 			retryAfter: 7,
 		});
+	});
+
+	it('reads the App ID from an app page address or the bare id', () => {
+		expect(parseSlackAppId('https://api.slack.com/apps/A08K2TX4R1Q/oauth')).toBe('A08K2TX4R1Q');
+		expect(parseSlackAppId(' A08K2TX4R1Q ')).toBe('A08K2TX4R1Q');
+		expect(parseSlackAppId('https://api.slack.com/apps')).toBeNull();
+		expect(parseSlackAppId('xoxb-1234')).toBeNull();
 	});
 
 	it('round-trips message ids', () => {
@@ -234,6 +242,44 @@ describe('Slack integration config routes', () => {
 			minLevel: 'warning',
 			environments: ['production'],
 		});
+	});
+
+	it('saves a verified token as pending with the app id, before a channel is chosen', async () => {
+		const response = await authFetch(owner.token!, url(), {
+			method: 'PUT',
+			body: JSON.stringify({
+				botToken: SLACK_TOKEN,
+				appId: 'https://api.slack.com/apps/A08K2TX4R1Q',
+			}),
+		});
+		expect(response.status).toBe(201);
+		const text = await response.text();
+		expect(text).not.toContain(SLACK_TOKEN);
+		expect(JSON.parse(text).integration).toMatchObject({
+			status: 'pending',
+			appId: 'A08K2TX4R1Q',
+			teamName: 'Acme',
+			channelId: '',
+			botToken: 'xoxb…oken',
+		});
+		expect(fakeSlack.calls('conversations.info')).toHaveLength(0);
+
+		const connected = await authFetch(owner.token!, url(), {
+			method: 'PUT',
+			body: JSON.stringify({ channelId: 'C0ERRORS' }),
+		});
+		expect(connected.status).toBe(200);
+		expect(((await connected.json()) as { integration: unknown }).integration).toMatchObject({
+			status: 'connected',
+			appId: 'A08K2TX4R1Q',
+			channelName: 'errors',
+		});
+	});
+
+	it('refuses an app id that is not one', async () => {
+		const response = await connect({ appId: 'https://example.com/not-slack' });
+		expect(response.status).toBe(400);
+		expect(((await response.json()) as { message: string }).message).toContain('App ID');
 	});
 
 	it('finds channels by name, and refuses archived or bot-less private ones', async () => {

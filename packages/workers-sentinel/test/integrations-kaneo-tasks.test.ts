@@ -283,7 +283,7 @@ describe('Kaneo tasks for issues', () => {
 		const unconnected = await callTool(args);
 		expect(unconnected.isError).toBe(true);
 		expect(unconnected.text).toContain('Kaneo is not connected');
-		expect(unconnected.text).toContain(`/projects/${project.slug}/settings#kaneo`);
+		expect(unconnected.text).toContain(`/projects/${project.slug}/integrations/kaneo`);
 
 		await connect();
 		const first = await callTool(args);

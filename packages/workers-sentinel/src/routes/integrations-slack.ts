@@ -22,6 +22,7 @@ import { maskSecret, openSecret, SecretBoxError, sealSecret } from '../lib/secre
 import {
 	checkBotToken,
 	createSlackClient,
+	parseSlackAppId,
 	SLACK_APP_SCOPES,
 	type SlackChannel,
 	type SlackClient,
@@ -33,9 +34,11 @@ import { buildSlackTestMessage } from '../lib/slack-message';
 import type { AuthContext, Env } from '../types';
 import {
 	badRequest,
+	type IntegrationStatus,
 	ISSUE_LEVELS,
 	type IssueLevel,
 	integrationContext,
+	integrationIncomplete,
 	integrationsUnconfigured,
 	loadIntegration,
 	managedProject,
@@ -68,6 +71,10 @@ export interface SlackConfig {
 	environments: string[];
 	notifyRegression: boolean;
 	notifyResolved: boolean;
+	/** pending: token verified and saved, channel not chosen yet. Derived when absent. */
+	status?: IntegrationStatus;
+	/** The Slack app's id (A…), for links to its Install and OAuth pages. */
+	appId?: string | null;
 	sentinelProjectId?: string;
 	sentinelProjectSlug?: string;
 	sentinelProjectName?: string;
@@ -117,6 +124,8 @@ export function slackView(integration: StoredIntegration, credentials: SlackCred
 		teamId: config.teamId,
 		teamName: config.teamName,
 		botUserId: config.botUserId,
+		status: (config.channelId ? 'connected' : 'pending') as IntegrationStatus,
+		appId: config.appId ?? null,
 		channelId: config.channelId,
 		channelName: config.channelName,
 		channelPrivate: config.channelPrivate === true,
@@ -266,7 +275,23 @@ slackIntegrationRoutes.put('/:slug/integrations/slack', async (c) => {
 		typeof rawChannel === 'string' && rawChannel.trim() !== ''
 			? rawChannel
 			: storedConfig?.channelId;
-	if (!requestedChannel) return badRequest(c, new Error('channel is required'));
+
+	// The app's page address or App ID (optional; null clears it).
+	let appId: string | null | undefined = storedConfig?.appId ?? undefined;
+	if (body.appId === null || body.appId === '') appId = null;
+	else if (body.appId !== undefined) {
+		if (typeof body.appId !== 'string' || body.appId.length > 512) {
+			return badRequest(c, new Error('appId must be the Slack app page address or its App ID'));
+		}
+		const parsedAppId = parseSlackAppId(body.appId);
+		if (!parsedAppId) {
+			return badRequest(
+				c,
+				new Error('That is not a Slack app address or App ID (it looks like A08K2TX4R1Q)'),
+			);
+		}
+		appId = parsedAppId;
+	}
 
 	const minLevel = body.minLevel ?? storedConfig?.minLevel ?? 'error';
 	if (!ISSUE_LEVELS.includes(minLevel as IssueLevel)) {
@@ -287,15 +312,19 @@ slackIntegrationRoutes.put('/:slug/integrations/slack', async (c) => {
 
 	// Validate against Slack itself before storing anything.
 	let identity: Awaited<ReturnType<SlackClient['authTest']>>;
-	let channel: Awaited<ReturnType<typeof findChannel>>;
+	let channel: Awaited<ReturnType<typeof findChannel>> = null;
 	try {
 		const client = createSlackClient(credentials);
 		identity = await client.authTest();
-		channel = await findChannel(client, requestedChannel);
+		if (requestedChannel) channel = await findChannel(client, requestedChannel);
 	} catch (error) {
 		return slackFailure(c, error);
 	}
-	if (!channel) {
+	appId ??= identity.appId;
+	if (!requestedChannel) {
+		// Token only ("Verify & save"): stored as pending until a channel is chosen.
+		channel = null;
+	} else if (!channel) {
 		return badRequest(
 			c,
 			new Error(
@@ -303,8 +332,8 @@ slackIntegrationRoutes.put('/:slug/integrations/slack', async (c) => {
 			),
 		);
 	}
-	if (channel.isArchived) return badRequest(c, new Error(`#${channel.name} is archived`));
-	if (channel.isPrivate && !channel.isMember) {
+	if (channel?.isArchived) return badRequest(c, new Error(`#${channel.name} is archived`));
+	if (channel?.isPrivate && !channel.isMember) {
 		return badRequest(
 			c,
 			new Error(`The bot is not in #${channel.name}: invite it with /invite @<bot name>`),
@@ -316,9 +345,11 @@ slackIntegrationRoutes.put('/:slug/integrations/slack', async (c) => {
 		teamId: identity.teamId,
 		teamName: identity.teamName,
 		botUserId: identity.botUserId,
-		channelId: channel.id,
-		channelName: channel.name,
-		channelPrivate: channel.isPrivate,
+		status: channel ? 'connected' : 'pending',
+		appId: appId ?? null,
+		channelId: channel?.id ?? '',
+		channelName: channel?.name ?? '',
+		channelPrivate: channel?.isPrivate ?? false,
 		minLevel: minLevel as IssueLevel,
 		environments,
 		notifyRegression: flags.notifyRegression ?? storedConfig?.notifyRegression ?? true,
@@ -373,7 +404,7 @@ slackIntegrationRoutes.put('/:slug/integrations/slack', async (c) => {
 		ctx.project,
 		{
 			integration: 'slack',
-			channel: config.channelId,
+			...(config.channelId ? { channel: config.channelId } : { status: 'pending' }),
 			...(changedFields ? { fields: changedFields } : {}),
 			...(workspaceChanged ? { workspaceChanged: true } : {}),
 		},
@@ -401,6 +432,7 @@ slackIntegrationRoutes.post('/:slug/integrations/slack/test', async (c) => {
 		return c.json({ error: 'no_integration', message: 'Slack is not connected' }, 404);
 	}
 	const config = integration.config as unknown as SlackConfig;
+	if (!config.channelId) return integrationIncomplete(c, 'Choose a Slack channel first');
 	const origin = new URL(c.req.url).origin;
 	try {
 		const credentials = await openSlackCredentials(c.env, ctx.project.id, integration);
@@ -409,7 +441,7 @@ slackIntegrationRoutes.post('/:slug/integrations/slack/test', async (c) => {
 			config.channelId,
 			buildSlackTestMessage(
 				ctx.project.name,
-				`${origin}/projects/${encodeURIComponent(ctx.project.slug)}/settings#slack`,
+				`${origin}/projects/${encodeURIComponent(ctx.project.slug)}/integrations/slack`,
 			),
 		);
 		return c.json({ ok: true, channel: { id: config.channelId, name: config.channelName } });

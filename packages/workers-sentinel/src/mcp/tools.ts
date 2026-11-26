@@ -124,7 +124,12 @@ function slackToolError(
 	const data = (result.data ?? {}) as { error?: string; message?: string };
 	if (data.error === 'no_integration') {
 		return toolError(
-			`Slack is not connected to "${slug}": the user connects it at ${ctx.origin}/projects/${encodeURIComponent(slug)}/settings#slack.`,
+			`Slack is not connected to "${slug}": the user connects it at ${ctx.origin}/projects/${encodeURIComponent(slug)}/integrations/slack.`,
+		);
+	}
+	if (data.error === 'integration_incomplete') {
+		return toolError(
+			`Slack on "${slug}" has a saved bot token but no channel yet: call configure_slack with a channel first.`,
 		);
 	}
 	if (data.error === 'slack_failed' || data.error === 'invalid_integration') {
@@ -698,7 +703,7 @@ export const TOOLS: Tool[] = [
 				const data = (result.data ?? {}) as { error?: string; message?: string };
 				if (data.error === 'no_integration') {
 					return toolError(
-						`Kaneo is not connected to "${slug}": an owner or admin connects it at ${dashboardLink(ctx, `/projects/${enc(slug)}/settings#kaneo`)}.`,
+						`Kaneo is not connected to "${slug}": an owner or admin connects it at ${dashboardLink(ctx, `/projects/${enc(slug)}/integrations/kaneo`)}.`,
 					);
 				}
 				if (data.error === 'kaneo_failed' || data.error === 'integration_secret_unreadable') {
@@ -852,7 +857,7 @@ export const TOOLS: Tool[] = [
 			name: 'get_integrations',
 			title: 'Get the integrations',
 			description:
-				"The project's integrations (Kaneo, Slack): what is connected, its filters, the last delivery error and the settings page. Secrets come back masked. Owners and admins.",
+				'The project\'s integrations (Kaneo, Slack): what is connected (status "connected", or "pending" when the credentials are saved but no project/channel is chosen yet), its filters, the last delivery error and the Integrations page. Secrets come back masked. Owners and admins.',
 			inputSchema: {
 				type: 'object',
 				properties: { project: PROJECT_ARG },
@@ -875,7 +880,7 @@ export const TOOLS: Tool[] = [
 				integrationsAvailable: kaneoData.configured,
 				kaneo: kaneoData.integration,
 				slack: slackData.integration,
-				settings: dashboardLink(ctx, `/projects/${enc(slug)}/settings`),
+				settings: dashboardLink(ctx, `/projects/${enc(slug)}/integrations`),
 			});
 		},
 	},
@@ -911,7 +916,7 @@ export const TOOLS: Tool[] = [
 			name: 'configure_slack',
 			title: 'Configure Slack',
 			description:
-				"Points the project's Slack integration at a channel and sets its filters: a message per new issue at or above min_level (in the given environments, when set), a thread reply when a resolved issue comes back, and the message marked resolved when the issue is resolved. The Slack bot token is never passed here: if none is stored yet, the user pastes it on the settings page this tool links to. Ask the user before calling. Owners and admins.",
+				'Points the project\'s Slack integration at a channel and sets its filters: a message per new issue at or above min_level (in the given environments, when set), a thread reply when a resolved issue comes back, and the message marked resolved when the issue is resolved. The Slack bot token is never passed here: if none is stored yet, the user pastes it on the integration page this tool links to. A saved token without a channel shows as status "pending" in get_integrations; this tool then only needs the channel. Ask the user before calling. Owners and admins.',
 			inputSchema: {
 				type: 'object',
 				properties: {
@@ -953,7 +958,7 @@ export const TOOLS: Tool[] = [
 			if (!ok(current)) return apiError(current, `the Slack integration of "${slug}"`);
 			if (!(current.data as { integration: unknown }).integration) {
 				return toolError(
-					`Slack is not connected to "${slug}" yet. The bot token is only entered in the dashboard: ask the user to open ${dashboardLink(ctx, `/projects/${enc(slug)}/settings#slack`)}, create the Slack app from the manifest shown there and paste its Bot User OAuth Token. Then call configure_slack again.`,
+					`Slack is not connected to "${slug}" yet. The bot token is only entered in the dashboard: ask the user to open ${dashboardLink(ctx, `/projects/${enc(slug)}/integrations/slack`)}, follow the steps there (create the Slack app, install it, paste its Bot User OAuth Token and Verify & save). Then call configure_slack again.`,
 				);
 			}
 			if (args.environments !== undefined && !Array.isArray(args.environments)) {

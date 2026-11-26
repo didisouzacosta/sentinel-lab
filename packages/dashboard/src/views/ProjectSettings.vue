@@ -1,12 +1,10 @@
 <script setup lang="ts">
-import { Funnel, KeyRound, Send, Trash2, Upload } from 'lucide-vue-next';
+import { Funnel, KeyRound, Plug, Trash2, Upload } from 'lucide-vue-next';
 import { computed, onMounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { api } from '../api/client';
-import AppKaneoIntegration from '../components/app/AppKaneoIntegration.vue';
 import AppPageHeader from '../components/app/AppPageHeader.vue';
 import AppSectionNav, { type SectionNavItem } from '../components/app/AppSectionNav.vue';
-import AppSlackIntegration from '../components/app/AppSlackIntegration.vue';
 import {
 	UiAlert,
 	UiAvatar,
@@ -66,9 +64,7 @@ const ALL_SECTIONS: (SectionNavItem & { managersOnly?: boolean })[] = [
 	{ id: 'dsn', label: 'Client keys (DSN)' },
 	{ id: 'information', label: 'Project information' },
 	{ id: 'members', label: 'Team members' },
-	{ id: 'webhook', label: 'Webhook notifications' },
-	{ id: 'slack', label: 'Slack', managersOnly: true },
-	{ id: 'kaneo', label: 'Kaneo', managersOnly: true },
+	{ id: 'integrations', label: 'Integrations' },
 	{ id: 'rate-limit', label: 'Rate limiting' },
 	{ id: 'retention', label: 'Data retention' },
 	{ id: 'api-tokens', label: 'API tokens' },
@@ -97,10 +93,6 @@ const project = ref<Project | null>(null);
 const dsn = ref('');
 const loading = ref(true);
 const loadError = ref<string | null>(null);
-
-const webhookUrl = ref('');
-const savingWebhook = ref(false);
-const testingWebhook = ref(false);
 
 const maxEventsPerHour = ref(0);
 const rateLimitStatus = ref<{ currentHourCount: number; isLimited: boolean } | null>(null);
@@ -153,7 +145,6 @@ async function loadProject() {
 		);
 		project.value = response.project;
 		dsn.value = response.dsn;
-		webhookUrl.value = response.project.webhookUrl || '';
 
 		const settings = await api.get<{ retentionDays: number }>(
 			`/api/projects/${slug.value}/settings`,
@@ -204,31 +195,6 @@ async function loadRateLimitStatus() {
 		rateLimitStatus.value = response;
 	} catch {
 		/* the usage line is optional */
-	}
-}
-
-async function saveWebhook() {
-	savingWebhook.value = true;
-	try {
-		await api.patch(`/api/projects/${slug.value}`, { webhookUrl: webhookUrl.value || null });
-		toast.success(webhookUrl.value ? 'Webhook saved' : 'Webhook removed');
-	} catch (err) {
-		toast.error(message(err, 'Failed to save webhook'));
-	} finally {
-		savingWebhook.value = false;
-	}
-}
-
-async function testWebhook() {
-	if (!webhookUrl.value) return;
-	testingWebhook.value = true;
-	try {
-		await api.post(`/api/projects/${slug.value}/test-webhook`, {});
-		toast.success('Test notification sent');
-	} catch (err) {
-		toast.error(message(err, 'Failed to send test webhook. Check the URL and try again.'));
-	} finally {
-		testingWebhook.value = false;
 	}
 }
 
@@ -406,33 +372,15 @@ onMounted(() => {
 					</div>
 				</UiCard>
 
-				<UiCard id="webhook" title="Webhook notifications" class="scroll-mt-20" padded>
-					<form class="flex flex-col gap-3" @submit.prevent="saveWebhook">
-						<UiFormField
-							v-slot="f"
-							label="Webhook URL"
-							:help="canManage ? 'Receives a JSON POST when a new issue is detected (Discord or any HTTP endpoint). For Slack, use the Slack integration below.' : 'Receives a JSON POST when a new issue is detected (Discord or any HTTP endpoint).'"
-						>
-							<UiInput
-								:id="f.id"
-								v-model="webhookUrl"
-								:aria-describedby="f.describedBy"
-								type="url"
-								placeholder="https://discord.com/api/webhooks/..."
-							/>
-						</UiFormField>
-						<div class="flex flex-wrap gap-2">
-							<UiButton type="submit" variant="primary" :loading="savingWebhook">Save</UiButton>
-							<UiButton v-if="webhookUrl" :icon="Send" :loading="testingWebhook" @click="testWebhook">
-								Send test
-							</UiButton>
-						</div>
-					</form>
+				<UiCard id="integrations" title="Integrations" class="scroll-mt-20" padded>
+					<div class="flex flex-wrap items-center gap-3">
+						<p class="min-w-0 flex-1 text-body-s text-fg-muted">
+							Slack, Kaneo and the webhook now have their own page, with a step-by-step setup and the status of
+							each connection.
+						</p>
+						<UiButton :to="`/projects/${slug}/integrations`" :icon="Plug">Open integrations</UiButton>
+					</div>
 				</UiCard>
-
-				<AppSlackIntegration v-if="canManage" :slug="slug" />
-
-				<AppKaneoIntegration v-if="canManage" :slug="slug" />
 
 				<UiCard id="rate-limit" title="Rate limiting" meta="0 = unlimited" class="scroll-mt-20" padded>
 					<form class="flex flex-wrap items-end gap-2" @submit.prevent="saveRateLimit">

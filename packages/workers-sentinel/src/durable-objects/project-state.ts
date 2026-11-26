@@ -3849,16 +3849,24 @@ export class ProjectState extends DurableObject<Env> {
 
 	private slackPosts = new Map<string, Promise<IssueLink>>();
 
-	/** The enabled integration of `type`, with its config parsed. */
+	/**
+	 * The enabled integration of `type`, with its config parsed. One saved
+	 * with credentials only (`status: "pending"`, no Kaneo project or Slack
+	 * channel yet) is not active: nothing is queued or offered for it.
+	 */
 	private activeIntegration(
 		type: string,
 	): { id: string; type: string; config: unknown; secretCipher: string } | null {
 		const row = this.integrationRow(type);
 		if (!row || (row.enabled as number) !== 1) return null;
+		const config = JSON.parse(row.config as string) as Record<string, unknown>;
+		const target =
+			type === 'kaneo' ? config.kaneoProjectId : type === 'slack' ? config.channelId : true;
+		if (!target) return null;
 		return {
 			id: row.id as string,
 			type: row.type as string,
-			config: JSON.parse(row.config as string),
+			config,
 			secretCipher: row.secret_cipher as string,
 		};
 	}
