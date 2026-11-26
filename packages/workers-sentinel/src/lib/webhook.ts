@@ -116,13 +116,15 @@ export async function sendWebhook(url: string, payload: WebhookPayload): Promise
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify(payload),
 			// Redirects are refused: a redirect target would bypass the
-			// scheme/host validation above
-			redirect: 'error',
+			// scheme/host validation above. Workers reject redirect: 'error',
+			// so 'manual' hands back the 3xx, which the !ok branch treats as a failure.
+			redirect: 'manual',
 			signal: AbortSignal.timeout(WEBHOOK_TIMEOUT_MS),
 		});
 		if (!response.ok) {
 			// Never read or log the target's response body: it can echo
 			// attacker-controlled content into observability logs
+			await response.body?.cancel();
 			console.error(`Webhook delivery failed: ${response.status}`);
 		} else {
 			await response.body?.cancel();
