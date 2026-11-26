@@ -37,6 +37,9 @@ export interface KaneoIntegration {
 	credentialsReadable: boolean;
 	lastError: string | null;
 	lastErrorAt: string | null;
+	/** Kaneo → Sentinel webhook: installed, in_use (another webhook) or failed. */
+	webhookStatus: 'installed' | 'in_use' | 'failed' | null;
+	webhookError: string | null;
 }
 
 interface Named {
@@ -279,6 +282,16 @@ onMounted(load);
 			</UiAlert>
 			<UiAlert v-if="integration && !integration.credentialsReadable" tone="warning">
 				The saved credentials can no longer be read. Enter the API key again.
+			</UiAlert>
+			<UiAlert v-if="integration?.webhookStatus === 'installed'" tone="success" data-testid="kaneo-webhook">
+				Two-way sync is on: moving a task to the done column in Kaneo resolves its issue.
+			</UiAlert>
+			<UiAlert
+				v-else-if="integration?.webhookStatus"
+				tone="warning"
+				data-testid="kaneo-webhook"
+			>
+				Only Sentinel → Kaneo is synced. {{ integration.webhookError }}
 			</UiAlert>
 
 			<div class="grid gap-3 sm:grid-cols-2">

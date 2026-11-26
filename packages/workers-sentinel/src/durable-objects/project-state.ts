@@ -615,6 +615,8 @@ export class ProjectState extends DurableObject<Env> {
 					return this.handleSaveIntegrationContext(request);
 				case '/integrations/create-task':
 					return this.handleCreateIntegrationTask(request);
+				case '/integrations/kaneo-hook':
+					return this.handleKaneoHook(request);
 				case '/attachment/r2-probe':
 					// Test-only DO↔R2 binding probe (inert without the test
 					// fault-injection binding)
@@ -1554,35 +1556,53 @@ export class ProjectState extends DurableObject<Env> {
 			return this.jsonResponse({ error: 'no_updates' }, 400);
 		}
 
-		const current = this.sql.exec('SELECT status FROM issues WHERE id = ?', issueId).toArray();
-		const previousStatus = current.length > 0 ? (current[0].status as string) : null;
-
-		// Asking for the status the issue already has changes nothing: no
-		// activity row and no integration delivery (this also ends any
-		// Sentinel ↔ Kaneo ping-pong).
-		let queued = false;
-		if (previousStatus !== null && previousStatus !== status) {
-			this.ctx.storage.transactionSync(() => {
-				this.sql.exec('UPDATE issues SET status = ? WHERE id = ?', status, issueId);
-				this.sql.exec(
-					`INSERT INTO issue_activity (id, issue_id, user_id, user_name, type, data, created_at)
-					 VALUES (?, ?, ?, ?, 'status_change', ?, ?)`,
-					crypto.randomUUID(),
-					issueId,
-					userId || 'system',
-					userName || 'System',
-					JSON.stringify({ from: previousStatus, to: status }),
-					new Date().toISOString(),
-				);
-				queued = this.queueIntegrationsForStatus(issueId, previousStatus, status);
-			});
-		}
+		const { queued } = this.changeIssueStatus(issueId, status, userId, userName);
 		if (queued) {
 			await this.scheduleNextAlarm();
 		}
 
 		const rows = this.sql.exec('SELECT * FROM issues WHERE id = ?', issueId).toArray();
 		return this.jsonResponse({ issue: rows.length > 0 ? this.rowToIssue(rows[0]) : null });
+	}
+
+	/**
+	 * Change one issue's status with its activity row. Asking for the status
+	 * the issue already has changes nothing (no activity, no delivery), which
+	 * also ends any Sentinel ↔ Kaneo ping-pong. `sync: false` is for changes
+	 * that came from Kaneo itself: they are not sent back to Kaneo (Slack
+	 * still hears about them).
+	 */
+	private changeIssueStatus(
+		issueId: string,
+		status: string,
+		userId: string | undefined,
+		userName: string | undefined,
+		options: { sync?: boolean; activity?: Record<string, unknown> } = {},
+	): { changed: boolean; queued: boolean } {
+		const current = this.sql.exec('SELECT status FROM issues WHERE id = ?', issueId).toArray();
+		const previousStatus = current.length > 0 ? (current[0].status as string) : null;
+		if (previousStatus === null || previousStatus === status) {
+			return { changed: false, queued: false };
+		}
+		let queued = false;
+		this.ctx.storage.transactionSync(() => {
+			this.sql.exec('UPDATE issues SET status = ? WHERE id = ?', status, issueId);
+			this.sql.exec(
+				`INSERT INTO issue_activity (id, issue_id, user_id, user_name, type, data, created_at)
+				 VALUES (?, ?, ?, ?, 'status_change', ?, ?)`,
+				crypto.randomUUID(),
+				issueId,
+				userId || 'system',
+				userName || 'System',
+				JSON.stringify({ from: previousStatus, to: status, ...options.activity }),
+				new Date().toISOString(),
+			);
+			queued =
+				options.sync === false
+					? this.queueSlackForStatus(issueId, previousStatus, status)
+					: this.queueIntegrationsForStatus(issueId, previousStatus, status);
+		});
+		return { changed: true, queued };
 	}
 
 	private async handleDeleteIssue(request: Request): Promise<Response> {
@@ -4457,6 +4477,64 @@ export class ProjectState extends DurableObject<Env> {
 		} catch (error) {
 			return this.integrationErrorResponse(error, target);
 		}
+	}
+
+	/**
+	 * Apply a verified Kaneo webhook (routes/hooks.ts checked the signature):
+	 * a linked task moved into the done column resolves its issue; moved out
+	 * of it, a resolved issue reopens; a deleted task loses its link. The
+	 * change is attributed to Kaneo and never sent back to Kaneo.
+	 */
+	private async handleKaneoHook(request: Request): Promise<Response> {
+		const body = (await request.json()) as {
+			action?: 'status' | 'deleted';
+			taskId?: string;
+			oldStatus?: string | null;
+			newStatus?: string | null;
+			actorName?: string | null;
+		};
+		const kaneo = this.activeKaneo();
+		if (!kaneo || !body.taskId) return this.jsonResponse({ ignored: 'no_integration' });
+		const link = this.sql
+			.exec(
+				'SELECT issue_id FROM issue_links WHERE integration_id = ? AND external_id = ?',
+				kaneo.id,
+				body.taskId,
+			)
+			.toArray()[0];
+		if (!link) return this.jsonResponse({ ignored: 'unknown_task' });
+		const issueId = link.issue_id as string;
+
+		if (body.action === 'deleted') {
+			this.sql.exec(
+				'DELETE FROM issue_links WHERE integration_id = ? AND issue_id = ?',
+				kaneo.id,
+				issueId,
+			);
+			return this.jsonResponse({ issueId, unlinked: true });
+		}
+
+		const done = kaneo.config.doneColumn;
+		const current = this.sql.exec('SELECT status FROM issues WHERE id = ?', issueId).toArray()[0];
+		const status = current?.status as string | undefined;
+		let target: 'resolved' | 'unresolved' | null = null;
+		if (body.newStatus === done && status !== 'resolved') {
+			target = 'resolved';
+		} else if (body.oldStatus === done && body.newStatus !== done && status === 'resolved') {
+			target = 'unresolved';
+		}
+		if (!target) return this.jsonResponse({ issueId, ignored: 'no_change' });
+
+		const actor = (body.actorName ?? '').trim().slice(0, 80);
+		const { queued } = this.changeIssueStatus(
+			issueId,
+			target,
+			'kaneo',
+			actor ? `Kaneo · ${actor}` : 'Kaneo',
+			{ sync: false, activity: { via: 'kaneo' } },
+		);
+		if (queued) await this.scheduleNextAlarm();
+		return this.jsonResponse({ issueId, status: target });
 	}
 
 	private async handleSaveIntegrationContext(request: Request): Promise<Response> {

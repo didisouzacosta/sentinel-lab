@@ -37,6 +37,11 @@ expect 401 "an envelope with an unknown DSN key is refused" \
 	-H 'Content-Type: application/x-sentry-envelope' \
 	-H 'X-Sentry-Auth: Sentry sentry_version=7, sentry_key=00000000000000000000000000000000' \
 	--data-binary $'{}\n{"type":"event"}\n{}'
+expect 401 "an integration webhook with a bad signature is refused" \
+	-X POST "$BASE/api/hooks/kaneo/00000000-0000-4000-8000-000000000000" \
+	-H 'Content-Type: application/json' \
+	-H 'X-Kaneo-Signature: 0000000000000000000000000000000000000000000000000000000000000000' \
+	--data '{}'
 
 if [ "$failures" -gt 0 ]; then
 	echo "$failures smoke check(s) failed."

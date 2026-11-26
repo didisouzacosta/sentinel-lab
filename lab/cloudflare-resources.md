@@ -30,6 +30,7 @@ Todo recurso criado por este projeto começa com **`sentinel-lab`** / **`Sentine
   - ingestão dos SDKs, que exige a chave do DSN: `/api/*/envelope`, `/api/*/envelope/`, `/api/*/store`, `/api/*/store/`, e `/api/health`;
   - `/api/0/*` (desde 25/11/2026), a API no formato do Sentry usada pelo MCP do Sentry e por agentes: exige token `wst_` ou sessão, e sem credencial responde 401.
   - `/mcp` (aplicado em 25/11/2026), o MCP do próprio Sentinel: mesma autenticação, 401 sem credencial. As ferramentas chamam as rotas do painel por dentro do Worker, sem passar de novo pelo Access.
+  - `/api/hooks/*`, webhooks das integrações (o Kaneo avisa quando uma tarefa muda de coluna): cada entrega é conferida pela assinatura HMAC com o segredo do projeto, e sem assinatura válida responde 401. Entra no Access com `node lab/access.mjs apply`.
 - `workers.dev` e preview URLs desligados: não existe caminho até o Worker sem passar pelo Access.
 - Upload de dSYM/mapping no CI não precisa de Service Token: o sentry-cli e a API de debug files usam `/api/0/*` (público, exige token `wst_`). Só ferramentas que chamarem `/api/projects/*` direto precisariam de um **Service Token** do Access.
 
