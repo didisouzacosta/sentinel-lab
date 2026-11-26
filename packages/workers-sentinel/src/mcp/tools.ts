@@ -673,6 +673,46 @@ export const TOOLS: Tool[] = [
 	{
 		scope: 'write',
 		definition: {
+			name: 'create_kaneo_task',
+			title: 'Create a Kaneo task for an issue',
+			description:
+				"Creates the issue's task on the project's Kaneo board (title, level, where, release, counts, the exception and a link back to the issue; no user data) and links the two: closing the task in Kaneo then resolves the issue. Idempotent: an issue that already has a task returns it (created: false). Any project member; Kaneo must be connected in the project settings. Ask the user before calling.",
+			inputSchema: {
+				type: 'object',
+				properties: { project: PROJECT_ARG, issue_id: ISSUE_ARG },
+				required: ['project', 'issue_id'],
+				additionalProperties: false,
+			},
+			annotations: writes('Create a Kaneo task for an issue', {
+				idempotent: true,
+				openWorld: true,
+			}),
+		},
+		async run(args, ctx) {
+			const slug = args.project as string;
+			const result = await ctx.callApi(
+				'POST',
+				`/api/projects/${enc(slug)}/issues/${enc(args.issue_id as string)}/links/kaneo`,
+			);
+			if (!ok(result)) {
+				const data = (result.data ?? {}) as { error?: string; message?: string };
+				if (data.error === 'no_integration') {
+					return toolError(
+						`Kaneo is not connected to "${slug}": an owner or admin connects it at ${dashboardLink(ctx, `/projects/${enc(slug)}/settings#kaneo`)}.`,
+					);
+				}
+				if (data.error === 'kaneo_failed' || data.error === 'integration_secret_unreadable') {
+					return toolError(`Kaneo refused (creating the task): ${data.message ?? data.error}.`);
+				}
+				return apiError(result, `creating the Kaneo task of issue ${args.issue_id}`);
+			}
+			const data = result.data as { link?: unknown; created?: boolean };
+			return toolJson({ created: data.created === true, link: data.link ?? null });
+		},
+	},
+	{
+		scope: 'write',
+		definition: {
 			name: 'update_project',
 			title: 'Update a project',
 			description:

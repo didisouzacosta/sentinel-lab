@@ -533,6 +533,8 @@ export class ProjectState extends DurableObject<Env> {
 					return this.handleGetIssues(request);
 				case '/issue':
 					return this.handleGetIssue(request);
+				case '/issue-links':
+					return this.handleGetIssueLinks(request);
 				case '/issue/update':
 					return this.handleUpdateIssue(request);
 				case '/issue/delete':
@@ -1506,6 +1508,34 @@ export class ProjectState extends DurableObject<Env> {
 			nextCursor,
 			hasMore,
 		});
+	}
+
+	/**
+	 * Links (Kaneo tasks, Slack messages) of several issues at once, for
+	 * callers that list issues and show where each one is tracked
+	 * (`/api/0` annotations). Ids without links are left out of the map.
+	 */
+	private async handleGetIssueLinks(request: Request): Promise<Response> {
+		const { issueIds } = (await request.json()) as { issueIds?: unknown };
+		const ids = Array.isArray(issueIds)
+			? [...new Set(issueIds.filter((id): id is string => typeof id === 'string'))].slice(0, 100)
+			: [];
+		const links: Record<string, IssueLink[]> = {};
+		if (ids.length === 0) return this.jsonResponse({ links });
+		const rows = this.sql
+			.exec(
+				`SELECT l.*, i.type AS integration_type FROM issue_links l
+				 JOIN integrations i ON i.id = l.integration_id
+				 WHERE l.issue_id IN (${ids.map(() => '?').join(', ')}) ORDER BY l.created_at`,
+				...ids,
+			)
+			.toArray();
+		for (const row of rows) {
+			const issueId = row.issue_id as string;
+			links[issueId] ??= [];
+			links[issueId].push(this.rowToIssueLink(row));
+		}
+		return this.jsonResponse({ links });
 	}
 
 	private async handleGetIssue(request: Request): Promise<Response> {
@@ -3862,14 +3892,18 @@ export class ProjectState extends DurableObject<Env> {
 				issueId,
 			)
 			.toArray()
-			.map((row) => ({
-				integrationId: row.integration_id as string,
-				type: row.integration_type as string,
-				externalId: row.external_id as string,
-				externalUrl: row.external_url as string,
-				externalKey: (row.external_key as string | null) ?? null,
-				createdAt: row.created_at as string,
-			}));
+			.map((row) => this.rowToIssueLink(row));
+	}
+
+	private rowToIssueLink(row: Record<string, SqlStorageValue>): IssueLink {
+		return {
+			integrationId: row.integration_id as string,
+			type: row.integration_type as string,
+			externalId: row.external_id as string,
+			externalUrl: row.external_url as string,
+			externalKey: (row.external_key as string | null) ?? null,
+			createdAt: row.created_at as string,
+		};
 	}
 
 	private integrationLink(integrationId: string, issueId: string): IssueLink | null {
