@@ -53,9 +53,9 @@ Arquivos de hoje:
 
 | Camada | Figma | Vue | Propriedades principais |
 |---|---|---|---|
-| UI | `Ui/Status` | `components/ui/UiStatus.vue` | `state`: `connected` (✓, verde), `pending`, `attention` (⚠), `off`. `label` opcional |
-| UI | `Ui/ExternalLink` | `components/ui/UiExternalLink.vue` | `href`, `variant`: `inline` \| `button`, `disabled`. Sempre `target=_blank rel="noopener noreferrer"`, com o ícone `ExternalLink` |
-| App | `App/SetupStep` | `components/app/AppSetupStep.vue` | `number`, `title`, `state`: `done` \| `current` \| `locked`, `lockedHint`. Slots `default` (conteúdo), `summary` (quando feito) e `actions` (ex.: Change) |
+| UI | `Status` | `components/ui/UiStatus.vue` | `state`: `connected` (✓, verde), `pending`, `attention` (⚠), `off`. `label` opcional |
+| UI | `ExternalLink` | `components/ui/UiExternalLink.vue` | `href`, `variant`: `inline` \| `button`, `disabled`. Sempre `target=_blank rel="noopener noreferrer"`, com o ícone `ExternalLink` |
+| App | `App/SetupStep` (já existia; virou conjunto de variantes `state`) | `components/app/AppSetupStep.vue` | `number`, `title`, `state`: `done` \| `current` \| `locked`, `lockedHint`. Slots `default` (conteúdo), `summary` (quando feito) e `actions` (ex.: Change) |
 | App | `App/IntegrationCard` | `components/app/AppIntegrationCard.vue` | `name`, `icon`, `description`, `state` (`UiStatus`), `summary`, `to`. Ação `Set up` ou `Manage` |
 | App | `App/ConnectionHeader` | `components/app/AppConnectionHeader.vue` | `state`, `title`, `summary`. Slot `actions` (Send test, Disconnect) |
 
@@ -202,6 +202,24 @@ Ciclo de cada etapa de tela, igual ao do redesign: Figma aprovado → implementa
   - Kaneo: passos 1 a 4, incluindo o webhook `in_use`;
   - Webhook.
 - Uma página **Celular** com as mesmas telas em 375px.
+
+### 7.1 O que já está no Figma (26/11/2026)
+
+- **Componentes** (página Componentes, quadro "Componentes · integrações"): `Status`, `ExternalLink`, `App/IntegrationCard`, `App/ConnectionHeader`; `App/SetupStep` com as variantes `current`, `done` e `locked` e a ação opcional Change; ícones novos `external-link`, `lock`, `slack`, `kanban`, `webhook`, `refresh`, `unplug`, `send` e `loader`; item **Integrations** no `App/Sidebar`.
+- **Telas** (página Telas, a partir de y = 11000):
+
+| Tela | Estado |
+|---|---|
+| 12a · Integrations | Visão geral: Slack conectado, Kaneo com atenção, Webhook não configurado. Cartões com a mesma altura |
+| 12b · Slack · passo 1 | Não conectado: criar o app e colar o link da página do app |
+| 12b2 · Slack · passo 2 | Install to Workspace e Open OAuth & Permissions, token e Verify & save |
+| 12c · Slack · token salvo | Credenciais salvas (pending), canais carregando com skeleton |
+| 12d · Slack · conectado | Cabeçalho ✓ com Send test e Disconnect, passos resumidos com Change |
+| 12e · Kaneo · passo 1 com erro | Chave inválida, erro no campo, link para as API keys |
+| 12f · Kaneo · webhook em uso | Atenção: sincronização de um sentido só, links e Try again |
+| 12g · Webhook · configurado | URL, Save, Send test e Remove |
+| 12aL, 12b2L, 12fL | Mesmas telas no tema claro |
+| M6, M7 (375) | Visão geral e Slack passo 2 no celular |
 
 ## 8. Kaneo
 
