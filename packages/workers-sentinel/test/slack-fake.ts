@@ -178,7 +178,11 @@ export function installFakeSlack(): void {
 		: current;
 	vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
 		const url = new URL(input instanceof Request ? input.url : String(input));
-		if (url.origin === 'https://slack.com') return handle(url, init);
+		if (url.origin === 'https://slack.com') {
+			// The mock bypasses workerd's fetch, which throws on this value.
+			if (init?.redirect === 'error') throw new TypeError('Invalid redirect value');
+			return handle(url, init);
+		}
 		return previous(input, init);
 	});
 }

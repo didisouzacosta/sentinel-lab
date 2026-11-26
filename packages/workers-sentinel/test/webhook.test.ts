@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { buildWebhookPayload } from '../src/lib/webhook';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { buildWebhookPayload, sendWebhook } from '../src/lib/webhook';
 
 describe('Webhook Utility', () => {
 	const testProject = { id: 'proj-1', name: 'My App', slug: 'my-app' };
@@ -94,6 +94,35 @@ describe('Webhook Utility', () => {
 
 			expect(payload.timestamp >= before).toBe(true);
 			expect(payload.timestamp <= after).toBe(true);
+		});
+	});
+
+	describe('sendWebhook', () => {
+		afterEach(() => vi.restoreAllMocks());
+		const payload = buildWebhookPayload(testProject, {
+			id: 'issue-1',
+			title: 'Boom',
+			level: 'error',
+			culprit: null,
+		});
+
+		it('posts without following redirects, in a mode workerd accepts', async () => {
+			const fetchSpy = vi
+				.spyOn(globalThis, 'fetch')
+				.mockResolvedValue(new Response(null, { status: 204 }));
+			await sendWebhook('https://hooks.example.com/abc', payload);
+			expect(fetchSpy).toHaveBeenCalledOnce();
+			// workerd throws on redirect: 'error'
+			expect(fetchSpy.mock.calls[0][1]?.redirect).toBe('manual');
+		});
+
+		it('treats a redirect as a failed delivery', async () => {
+			vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+				new Response(null, { status: 302, headers: { Location: 'http://10.0.0.1/' } }),
+			);
+			const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+			await sendWebhook('https://hooks.example.com/abc', payload);
+			expect(logged).toHaveBeenCalledWith('Webhook delivery failed: 302');
 		});
 	});
 });

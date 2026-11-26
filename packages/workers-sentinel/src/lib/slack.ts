@@ -155,7 +155,9 @@ export function createSlackClient(credentials: SlackCredentials, fetcher?: typeo
 				method: options.body ? 'POST' : 'GET',
 				headers,
 				body: options.body ? JSON.stringify(options.body) : undefined,
-				redirect: 'error',
+				// Workers reject redirect: 'error'; 'manual' plus the 3xx check below
+				// refuses redirects the same way.
+				redirect: 'manual',
 				signal: AbortSignal.timeout(SLACK_TIMEOUT_MS),
 			});
 		} catch (error) {
@@ -166,6 +168,10 @@ export function createSlackClient(credentials: SlackCredentials, fetcher?: typeo
 			);
 		}
 
+		if (response.status >= 300 && response.status < 400) {
+			await response.body?.cancel();
+			throw new SlackError('bad_response', `Slack answered with a redirect (${response.status})`);
+		}
 		if (response.status === 429) {
 			await response.body?.cancel();
 			const retryAfter = Number.parseInt(response.headers.get('Retry-After') ?? '', 10);
