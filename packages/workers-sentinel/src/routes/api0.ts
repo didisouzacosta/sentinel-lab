@@ -364,6 +364,13 @@ interface NativeIssue {
 	metadata: Record<string, unknown>;
 }
 
+/** A Kaneo task or Slack message linked to an issue (ProjectState `IssueLink`). */
+interface NativeIssueLink {
+	type: string;
+	externalUrl: string;
+	externalKey: string | null;
+}
+
 interface MemberProject extends Project {
 	memberRole: string;
 }
@@ -410,7 +417,11 @@ function serializeGroup(
 	issue: NativeIssue,
 	project: Project,
 	requestUrl: string,
-	options?: { detail?: boolean; stats?: Array<{ bucket: string; count: number }> },
+	options?: {
+		detail?: boolean;
+		stats?: Array<{ bucket: string; count: number }>;
+		links?: NativeIssueLink[];
+	},
 ) {
 	const origin = new URL(requestUrl).origin;
 	const group: Record<string, unknown> = {
@@ -443,7 +454,7 @@ function serializeGroup(
 		isSubscribed: false,
 		subscriptionDetails: null,
 		hasSeen: false,
-		annotations: [],
+		annotations: annotationsOf(options?.links),
 		count: String(issue.count),
 		userCount: issue.userCount,
 		firstSeen: issue.firstSeen,
@@ -460,6 +471,37 @@ function serializeGroup(
 		group.tags = [];
 	}
 	return group;
+}
+
+/**
+ * Sentry `annotations`: where the issue is tracked outside Sentinel, as
+ * `{displayName, url}` (the Kaneo ticket key, the Slack channel).
+ */
+function annotationsOf(links?: NativeIssueLink[]): Array<{ displayName: string; url: string }> {
+	return (links ?? [])
+		.filter(
+			(link) => typeof link.externalUrl === 'string' && link.externalUrl.startsWith('https://'),
+		)
+		.map((link) => ({
+			displayName:
+				link.type === 'slack'
+					? `Slack ${link.externalKey ?? ''}`.trim()
+					: (link.externalKey ?? (link.type === 'kaneo' ? 'Kaneo task' : link.type)),
+			url: link.externalUrl,
+		}));
+}
+
+/** Links of a page of issues of one project, by issue id (best effort: none on failure). */
+async function fetchIssueLinks(
+	c: AppContext,
+	projectId: string,
+	issueIds: string[],
+): Promise<Record<string, NativeIssueLink[]>> {
+	if (issueIds.length === 0) return {};
+	const response = await projectStateFetch(c, projectId, '/issue-links', { issueIds });
+	if (!response.ok) return {};
+	const data = (await response.json()) as { links?: Record<string, NativeIssueLink[]> };
+	return data.links ?? {};
 }
 
 /** `[{bucket ISO, count}]` → Sentry `[[unixSeconds, count], ...]` ascending. */
@@ -682,7 +724,19 @@ async function handleIssueList(c: AppContext, scope: 'org' | 'project') {
 	const total = rows.length;
 	const window = rows.slice(offset, offset + limit);
 	c.header('Link', buildLinkHeader(c.req.url, offset, limit, total));
-	return c.json(window.map(({ issue, project }) => serializeGroup(issue, project, c.req.url)));
+	const idsByProject = new Map<string, string[]>();
+	for (const { issue, project } of window) {
+		idsByProject.set(project.id, [...(idsByProject.get(project.id) ?? []), issue.id]);
+	}
+	const linkMaps = await Promise.all(
+		[...idsByProject].map(([projectId, ids]) => fetchIssueLinks(c, projectId, ids)),
+	);
+	const links: Record<string, NativeIssueLink[]> = Object.assign({}, ...linkMaps);
+	return c.json(
+		window.map(({ issue, project }) =>
+			serializeGroup(issue, project, c.req.url, { links: links[issue.id] }),
+		),
+	);
 }
 
 function compareBySort(a: NativeIssue, b: NativeIssue, sort: string): number {
@@ -736,6 +790,7 @@ async function resolveIssue(
 	issue: NativeIssue;
 	project: MemberProject;
 	stats: Array<{ bucket: string; count: number }>;
+	links: NativeIssueLink[];
 } | null> {
 	const projects = await memberProjects(c);
 	for (const project of projects) {
@@ -744,8 +799,9 @@ async function resolveIssue(
 		const data = (await response.json()) as {
 			issue: NativeIssue;
 			stats?: Array<{ bucket: string; count: number }>;
+			links?: NativeIssueLink[];
 		};
-		return { issue: data.issue, project, stats: data.stats ?? [] };
+		return { issue: data.issue, project, stats: data.stats ?? [], links: data.links ?? [] };
 	}
 	return null;
 }
@@ -760,6 +816,7 @@ async function handleIssueDetail(c: AppContext) {
 		serializeGroup(resolved.issue, resolved.project, c.req.url, {
 			detail: true,
 			stats: resolved.stats,
+			links: resolved.links,
 		}),
 	);
 }
@@ -807,7 +864,12 @@ async function handleIssueUpdate(c: AppContext) {
 		return c.json({ detail: 'failed to update issue' }, response.status as 400);
 	}
 	const data = (await response.json()) as { issue: NativeIssue };
-	return c.json(serializeGroup(data.issue, resolved.project, c.req.url, { detail: true }));
+	return c.json(
+		serializeGroup(data.issue, resolved.project, c.req.url, {
+			detail: true,
+			links: resolved.links,
+		}),
+	);
 }
 
 /** DELETE issue: deletion is immediate here; 202 matches Sentry's contract. */

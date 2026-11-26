@@ -1,4 +1,4 @@
-import { env, runDurableObjectAlarm, runInDurableObject } from 'cloudflare:test';
+import { env, runDurableObjectAlarm, runInDurableObject, SELF } from 'cloudflare:test';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildKaneoTask, priorityForLevel } from '../src/lib/kaneo-task';
 import { FAKE_KANEO, fakeKaneo, installFakeKaneo } from './kaneo-fake';
@@ -211,6 +211,100 @@ describe('Kaneo tasks for issues', () => {
 		expect(detail.links).toEqual([
 			expect.objectContaining({ type: 'kaneo', externalKey: 'SNT-1' }),
 		]);
+	});
+
+	it('shows the task as a Sentry annotation in /api/0 lists and details', async () => {
+		await connect();
+		await sendError('Annotated boom');
+		await sendError('Plain boom');
+		const all = await issues();
+		const annotated = all.find((i) => i.title.includes('Annotated'))!;
+		const plain = all.find((i) => i.title.includes('Plain'))!;
+		const { link } = (await (await createTask(owner.token!, annotated.id)).json()) as {
+			link: { externalKey: string; externalUrl: string };
+		};
+		const expected = [{ displayName: link.externalKey, url: link.externalUrl }];
+
+		const list = await authFetch(
+			owner.token!,
+			`${BASE}/api/0/projects/sentinel/${project.slug}/issues/?query=`,
+		);
+		expect(list.status).toBe(200);
+		const groups = (await list.json()) as { id: string; annotations: unknown[] }[];
+		expect(groups.find((g) => g.id === annotated.id)?.annotations).toEqual(expected);
+		expect(groups.find((g) => g.id === plain.id)?.annotations).toEqual([]);
+
+		const detail = await authFetch(
+			owner.token!,
+			`${BASE}/api/0/organizations/sentinel/issues/${annotated.id}/`,
+		);
+		expect(((await detail.json()) as { annotations: unknown[] }).annotations).toEqual(expected);
+
+		const resolved = await authFetch(
+			owner.token!,
+			`${BASE}/api/0/organizations/sentinel/issues/${annotated.id}/`,
+			{ method: 'PUT', body: JSON.stringify({ status: 'resolved' }) },
+		);
+		expect(((await resolved.json()) as { annotations: unknown[] }).annotations).toEqual(expected);
+	});
+
+	it('creates tasks from the MCP create_kaneo_task tool, idempotently', async () => {
+		const minted = await authFetch(member.token!, `${BASE}/api/auth/tokens`, {
+			method: 'POST',
+			body: JSON.stringify({ name: 'kaneo mcp', scopes: ['read', 'write'] }),
+		});
+		expect(minted.status).toBe(200);
+		const { rawToken } = (await minted.json()) as { rawToken: string };
+		const callTool = async (args: Record<string, unknown>) => {
+			const response = await SELF.fetch(`${BASE}/mcp`, {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					Accept: 'application/json, text/event-stream',
+					Authorization: `Bearer ${rawToken}`,
+				},
+				body: JSON.stringify({
+					jsonrpc: '2.0',
+					id: 1,
+					method: 'tools/call',
+					params: { name: 'create_kaneo_task', arguments: args },
+				}),
+			});
+			const body = (await response.json()) as {
+				result: { content: { text: string }[]; isError?: boolean };
+			};
+			return { isError: body.result.isError === true, text: body.result.content[0].text };
+		};
+
+		await sendError('MCP boom');
+		const [issue] = await issues();
+		const args = { project: project.slug, issue_id: issue.id };
+
+		const unconnected = await callTool(args);
+		expect(unconnected.isError).toBe(true);
+		expect(unconnected.text).toContain('Kaneo is not connected');
+		expect(unconnected.text).toContain(`/projects/${project.slug}/settings#kaneo`);
+
+		await connect();
+		const first = await callTool(args);
+		expect(first.isError).toBe(false);
+		expect(JSON.parse(first.text)).toMatchObject({
+			created: true,
+			link: { type: 'kaneo', externalKey: 'SNT-1' },
+		});
+		const again = await callTool(args);
+		expect(JSON.parse(again.text)).toMatchObject({
+			created: false,
+			link: { externalKey: 'SNT-1' },
+		});
+		expect(fakeKaneo.tasks.size).toBe(1);
+
+		fakeKaneo.failWrites = true;
+		await sendError('MCP outage');
+		const outage = (await issues()).find((i) => i.title.includes('outage'))!;
+		const failed = await callTool({ project: project.slug, issue_id: outage.id });
+		expect(failed.isError).toBe(true);
+		expect(failed.text).toContain('Kaneo refused');
 	});
 
 	it('lets plain members create tasks', async () => {

@@ -91,6 +91,7 @@ const READ_TOOLS = [
 const WRITE_TOOLS = [
 	'add_issue_note',
 	'configure_slack',
+	'create_kaneo_task',
 	'delete_debug_file',
 	'disconnect_slack',
 	'get_debug_file_upload',
