@@ -491,3 +491,10 @@ export function setEventTag(event: Json, key: string, value: string): void {
 	}
 	event.tags = { ...(isObject(tags) ? tags : {}), [key]: value };
 }
+
+/** Whether an event already has a tag (object or `[key, value][]` tags). */
+export function hasTag(event: unknown, key: string): boolean {
+	const tags = (event as { tags?: unknown } | null)?.tags;
+	if (Array.isArray(tags)) return tags.some((pair) => Array.isArray(pair) && pair[0] === key);
+	return isObject(tags) && key in tags;
+}

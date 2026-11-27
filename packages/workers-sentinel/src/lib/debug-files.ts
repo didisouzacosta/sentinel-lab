@@ -302,3 +302,76 @@ export function eventDebugImages(event: unknown): EventDebugImage[] {
 	}
 	return out;
 }
+
+/**
+ * The debug images a crash cannot be read without: native images that hold
+ * an in-app frame (system libraries never ship a dSYM and are not needed),
+ * and every ProGuard mapping. Drives the "dSYM missing" / "Mapping missing"
+ * tag, the issue's Debug files card and reprocessing after an upload.
+ */
+export function neededDebugImages(event: unknown): EventDebugImage[] {
+	const all = eventDebugImages(event);
+	if (all.length === 0) return [];
+	const record = event as Record<string, unknown>;
+	const rawImages = ((record.debug_meta as { images?: unknown } | undefined)?.images ??
+		[]) as unknown[];
+	const ranges: Array<{ debugId: string; base: bigint; end: bigint | null }> = [];
+	for (const raw of rawImages) {
+		if (!raw || typeof raw !== 'object') continue;
+		const image = raw as Record<string, unknown>;
+		const debugId = normalizeDebugId(image.debug_id ?? image.uuid);
+		const base = toBigAddress(image.image_addr);
+		if (!debugId || base === null) continue;
+		const size =
+			typeof image.image_size === 'number' && image.image_size > 0
+				? BigInt(image.image_size)
+				: null;
+		ranges.push({ debugId, base, end: size === null ? null : base + size });
+	}
+	const neededNative = new Set<string>();
+	for (const frame of inAppFrames(record)) {
+		const addr = toBigAddress(frame.instruction_addr);
+		if (addr === null) continue;
+		let best: { debugId: string; base: bigint } | null = null;
+		for (const range of ranges) {
+			if (addr < range.base || (range.end !== null && addr >= range.end)) continue;
+			if (!best || range.base > best.base) best = range;
+		}
+		if (best) neededNative.add(best.debugId);
+	}
+	return all.filter((image) => image.kind === 'proguard' || neededNative.has(image.debugId));
+}
+
+function toBigAddress(value: unknown): bigint | null {
+	if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return BigInt(value);
+	if (typeof value === 'string' && /^0x[0-9a-f]{1,16}$/i.test(value)) return BigInt(value);
+	return null;
+}
+
+/** In-app frames of every stack trace (originals when the event was symbolicated). */
+function inAppFrames(event: Record<string, unknown>): Array<Record<string, unknown>> {
+	const holders: unknown[] = [];
+	const exception = event.exception as { values?: unknown[] } | undefined;
+	if (Array.isArray(exception?.values)) holders.push(...exception.values);
+	const threads = event.threads as { values?: unknown[] } | unknown[] | undefined;
+	const threadValues = Array.isArray(threads) ? threads : threads?.values;
+	if (Array.isArray(threadValues)) holders.push(...threadValues);
+	holders.push(event);
+	const frames: Array<Record<string, unknown>> = [];
+	for (const holder of holders) {
+		if (!holder || typeof holder !== 'object') continue;
+		const h = holder as Record<string, unknown>;
+		const trace = (h.raw_stacktrace ?? h.stacktrace) as { frames?: unknown[] } | undefined;
+		if (!Array.isArray(trace?.frames)) continue;
+		for (const frame of trace.frames) {
+			if (
+				frame &&
+				typeof frame === 'object' &&
+				(frame as Record<string, unknown>).in_app === true
+			) {
+				frames.push(frame as Record<string, unknown>);
+			}
+		}
+	}
+	return frames;
+}
