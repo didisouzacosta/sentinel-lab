@@ -1,6 +1,7 @@
 import { env, SELF } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { handleQueue } from '../src/queue';
+import { SYMBOLICATE_LAST_ATTEMPT } from '../src/symbolication-job';
 import type { Env, ProcessJob } from '../src/types';
 import thinB64 from './fixtures/dif/crashdemo-arm64.dsym.b64?raw';
 import { nativeEvent } from './fixtures/symbolicator/events';
@@ -163,6 +164,28 @@ describe('Symbolication failure modes', () => {
 		expect(stored).not.toBeNull();
 		expect(tagsOf(stored)).toContain('failed');
 		expect(await parkedKeys(project.id)).toEqual([]);
+	});
+
+	it('retries when no instance can start (capacity), then stores the event as received', async () => {
+		const project = await newProjectWithDsym('Sym capacity');
+		const event = { ...nativeEvent(), event_id: 'd7'.repeat(16) };
+		expect((await sendEvent(project, event)).status).toBe(200);
+		const [key] = await parkedKeys(project.id);
+		const full = () => {
+			throw new Error('Maximum number of running container instances exceeded');
+		};
+
+		expect(
+			await runJob(project, key, 1, { SYMBOLICATOR: fakeSymbolicator(full) as never }),
+		).toEqual({ acked: false, retried: true });
+		expect(await storedEvent(project.id, event.event_id)).toBeNull();
+
+		expect(
+			await runJob(project, key, SYMBOLICATE_LAST_ATTEMPT, {
+				SYMBOLICATOR: fakeSymbolicator(full) as never,
+			}),
+		).toEqual({ acked: true, retried: false });
+		expect(tagsOf(await storedEvent(project.id, event.event_id))).toContain('failed');
 	});
 
 	it('stores the event as received when ProjectState refuses the symbolicated one', async () => {

@@ -94,15 +94,17 @@
 	// Symbolicator (getsentry/symbolicator) for dSYM and ProGuard/R8
 	// symbolication. Needs Workers Paid (Containers) and Docker wherever
 	// `wrangler deploy` runs (it builds and pushes the image). One instance
-	// for every project; it sleeps after 10 minutes without work. The
-	// container has no internet: it reads debug files from the Worker
-	// (outbound interception of http://sentinel.internal).
+	// per project (src/symbolicator.ts `symbolicatorFor`), each sleeping 3
+	// minutes after its last request; `max_instances` caps how many run at
+	// once. The container has no internet: it reads debug files from the
+	// Worker (outbound interception of http://sentinel.internal), which
+	// serves a project's files only to that project's instance.
 	"containers": [
 		{
 			"class_name": "Symbolicator",
 			"image": "./symbolicator/Dockerfile",
 			"instance_type": "standard-1",
-			"max_instances": 1
+			"max_instances": 10
 		}
 	],
 	// Migrations for SQLite-backed Durable Objects

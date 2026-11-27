@@ -335,7 +335,7 @@ Symbolication runs [Symbolicator](https://github.com/getsentry/symbolicator) (FS
 - **Docker** wherever `wrangler deploy` runs: it builds the image and pushes it to your account (GitHub's `ubuntu-latest` runners have it);
 - an API token that can deploy Containers, if you deploy from CI.
 
-No extra secret or R2 token: the container has no internet access, and the only address it can reach is `http://sentinel.internal`, which the Worker answers from the debug-files bucket (outbound interception). One instance serves every project, each request reads only its own project's files, and it sleeps after 10 minutes without work.
+No extra secret or R2 token: the container has no internet access, and the only address it can reach is `http://sentinel.internal`, which the Worker answers from the debug-files bucket (outbound interception). Each project gets its own instance (up to 10 running at once), and the Worker serves a project's debug files only to that project's instance, so a malicious debug file could at worst reach its own project's files. An instance sleeps 3 minutes after its last crash; the first crash after that waits a few seconds for it to start (the SDK is not kept waiting).
 
 How events flow:
 

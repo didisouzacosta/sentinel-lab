@@ -255,7 +255,10 @@ describe('Slack messages for issues', () => {
 		expect(first.status).toBe(201);
 		const again = await authFetch(member.token!, link, { method: 'POST', body: '{}' });
 		expect(again.status).toBe(200);
-		expect(fakeSlack.posts()).toHaveLength(1);
+		// Only this issue's posts: every test shares the fake channel, and a
+		// delivery retry left by an earlier test's project can land here
+		// (its alarm fires on real time), which made this test flaky in CI.
+		expect(fakeSlack.posts().filter((post) => post.text.includes('Manual boom'))).toHaveLength(1);
 	});
 
 	it('waits out Slack rate limits without counting an attempt', async () => {
