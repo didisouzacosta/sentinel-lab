@@ -11,6 +11,7 @@ import {
 	verifyRegistrationResponse,
 } from '@simplewebauthn/server';
 import { hashPassword, hashToken, verifyPassword } from '../lib/password';
+import { firstRegistrationRefusal } from '../lib/setup-token';
 import { DEFAULT_API_TOKEN_SCOPES, parseStoredScopes } from '../lib/token-scopes';
 import { validateWebhookUrl } from '../lib/webhook';
 import type {
@@ -474,11 +475,12 @@ export class AuthState extends DurableObject<Env> {
 	}
 
 	private async handleRegister(request: Request): Promise<Response> {
-		const { email, password, name, ip, setupToken } = (await request.json()) as {
+		const { email, password, name, ip, host, setupToken } = (await request.json()) as {
 			email?: string;
 			password?: string;
 			name?: string;
 			ip?: string;
+			host?: string;
 			setupToken?: string;
 		};
 
@@ -547,15 +549,14 @@ export class AuthState extends DurableObject<Env> {
 				403,
 			);
 		}
-		const envSetupToken = this.env.SETUP_TOKEN;
-		if (isFirstUser && envSetupToken && setupToken !== envSetupToken) {
-			return this.jsonResponse(
-				{
-					error: 'setup_token_required',
-					message: 'First registration requires the server setup token',
-				},
-				403,
-			);
+		const refusal = firstRegistrationRefusal({
+			isFirstUser,
+			host,
+			envSetupToken: this.env.SETUP_TOKEN,
+			setupToken,
+		});
+		if (refusal) {
+			return this.jsonResponse(refusal, 403);
 		}
 
 		// Hash password (argon2id)

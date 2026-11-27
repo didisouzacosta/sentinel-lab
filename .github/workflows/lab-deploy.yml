@@ -1,6 +1,7 @@
 # Sentinel Lab: every push or merge to main is linted, tested and, only if
 # both pass, deployed to Cloudflare (sentinel.adrianosouzacosta.com.br), then
 # checked against production and rolled back automatically if a check fails.
+# After a good deploy the package is packed for the Deploy to Cloudflare button.
 # Pull requests to main run lint and tests only, never the deploy.
 #
 # The upstream workflows (ci.yml, release.yml, changeset-check.yml) also react
@@ -147,3 +148,44 @@ jobs:
             echo "| New version | \`${{ steps.deploy.outputs.version || 'not deployed' }}\` |"
             echo "| Smoke checks | ${{ steps.smoke.outcome || 'skipped' }} |"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # The Deploy to Cloudflare button (template/) installs this fork's package from
+  # the rolling "template" release, so it only ever gets code that passed the
+  # tests and the production smoke checks above.
+  template-package:
+    name: Package for the Deploy button
+    needs: deploy
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup
+
+      # Worker bundle (dist/) and the dashboard copied into the package (dashboard/).
+      - name: Build the package
+        run: pnpm --filter workers-sentinel build
+
+      - name: Pack
+        working-directory: packages/workers-sentinel
+        run: |
+          npm pack --pack-destination "$RUNNER_TEMP"
+          mv "$RUNNER_TEMP"/workers-sentinel-*.tgz "$RUNNER_TEMP/workers-sentinel.tgz"
+
+      - name: Upload to the "template" release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          notes="Pacote do Sentinel deste fork, usado pelo botão Deploy to Cloudflare (template/). Commit ${GITHUB_SHA::7}; atualizado a cada deploy da main."
+          if gh release view template --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit template --repo "$GITHUB_REPOSITORY" --notes "$notes"
+          else
+            gh release create template --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+              --title "Template (Deploy to Cloudflare)" --notes "$notes" --latest=false
+          fi
+          gh release upload template "$RUNNER_TEMP/workers-sentinel.tgz" --repo "$GITHUB_REPOSITORY" --clobber

@@ -37,6 +37,9 @@ authRoutes.post('/register', async (c) => {
 			body: JSON.stringify({
 				...body,
 				ip: c.req.header('CF-Connecting-IP') ?? undefined,
+				// From the request URL, never from the body: the first-registration gate
+				// refuses an open bootstrap on workers.dev (lib/setup-token.ts).
+				host: new URL(c.req.url).hostname,
 			}),
 		}),
 	);

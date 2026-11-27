@@ -1,343 +1,277 @@
-<div align="center">
-  <a href="#">
-    <h1 style="font-size: 4rem;">🛡️</h1>
-    <h1>Workers Sentinel</h1>
-  </a>
-</div>
+# Sentinel na Cloudflare
 
-<p align="center">
-    <em>A self-hosted, Sentry-compatible error tracking system running entirely on Cloudflare Workers</em>
-</p>
+Rastreador de erros compatível com o Sentry (os SDKs do Sentry funcionam trocando só o DSN), rodando
+inteiro na sua conta da Cloudflare: um Worker, Durable Objects com SQLite, R2 e uma fila. Sem servidor
+para cuidar.
 
-<p align="center">
-    <a href="https://github.com/G4brym/workers-sentinel/commits/main" target="_blank">
-      <img src="https://img.shields.io/github/commit-activity/m/G4brym/workers-sentinel?label=Commits&style=social" alt="Workers Sentinel Commits">
-    </a>
-    <a href="https://github.com/G4brym/workers-sentinel/issues" target="_blank">
-      <img src="https://img.shields.io/github/issues/G4brym/workers-sentinel?style=social" alt="Issues">
-    </a>
-    <a href="https://github.com/G4brym/workers-sentinel/blob/main/LICENSE" target="_blank">
-      <img src="https://img.shields.io/badge/license-MIT-brightgreen.svg?style=social" alt="Software License">
-    </a>
-</p>
+Esta pasta é o modelo do botão. Ela instala o Sentinel do fork
+[didisouzacosta/sentinel-lab](https://github.com/didisouzacosta/sentinel-lab): painel novo, MCP,
+integrações com Slack e Kaneo, anexos e arquivos de depuração (dSYM e ProGuard/R8).
 
-# Workers Sentinel
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/didisouzacosta/sentinel-lab/tree/main/template)
 
-> **⚠️ Disclaimer:** This is a toy project and a very poor imitation of Sentry. It doesn't even represent 0.1% of all Sentry features. This should not be taken seriously or used in any production environment where you actually care about error tracking. Please use the real [Sentry](https://sentry.io) for production workloads.
+## Sumário
 
-Workers Sentinel is a lightweight, self-hosted error tracking and monitoring solution that runs entirely on your Cloudflare account. It accepts events using the Sentry SDK wire format, allowing you to use existing Sentry SDKs by simply changing the DSN endpoint. All your error data is stored securely in SQLite-backed Durable Objects, giving you full control over your information.
+- [Arquitetura](#arquitetura)
+- [Como funciona](#como-funciona)
+- [Antes de começar](#antes-de-começar)
+- [Instalar com o botão](#instalar-com-o-botão)
+- [Instalar na mão](#instalar-na-mão)
+- [Depois do deploy (obrigatório)](#depois-do-deploy-obrigatório)
+- [Segurança](#segurança)
+- [Ligar um app ou site](#ligar-um-app-ou-site)
+- [Prompts para a IA](#prompts-para-a-ia)
+- [Simbolicação (opcional)](#simbolicação-opcional)
+- [Atualizar](#atualizar)
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/G4brym/workers-sentinel/tree/main/template)
+## Arquitetura
 
-## Table of Contents
+```mermaid
+flowchart LR
+    subgraph Origem
+        SDK[SDKs do Sentry<br/>web, back, iOS, Android]
+        CLI[sentry-cli<br/>dSYM e mapeamentos]
+        IA[Agente de IA<br/>MCP]
+        P[Você no painel]
+    end
 
-- [Overview](#overview)
-- [Why Workers Sentinel?](#why-workers-sentinel)
-- [Key Features](#key-features)
-- [Prerequisites](#prerequisites)
-- [Getting Started](#getting-started)
-- [SDK Configuration](#sdk-configuration)
-- [Architecture](#architecture)
-- [Roadmap & Future Enhancements](#roadmap--future-enhancements)
-- [Known Limitations](#known-limitations)
-- [Contributing](#contributing)
-- [License](#license)
+    subgraph Cloudflare
+        ACC{{Cloudflare Access<br/>painel: só quem você liberar<br/>ingestão e API com token: liberadas}}
+        W[Worker workers-sentinel<br/>Hono]
+        AS[(Assets<br/>painel Vue)]
+        A[(AuthState<br/>usuários, sessões, tokens)]
+        PS[(ProjectState<br/>um por projeto:<br/>issues e eventos)]
+        R2[(R2<br/>anexos e<br/>arquivos de depuração)]
+        Q[[Fila<br/>trabalhos em<br/>segundo plano]]
+    end
 
-## Overview
+    SDK --> ACC
+    CLI --> ACC
+    IA --> ACC
+    P --> ACC
+    ACC --> W
+    W --> AS
+    W --> A
+    W --> PS
+    W --> R2
+    W --> Q --> W
+```
 
-Workers Sentinel gives you a private, self-hosted error tracking solution with a modern web dashboard. By leveraging the Cloudflare ecosystem, it offers a cost-effective and scalable alternative to hosted error tracking services. All your data is stored in your own Durable Objects with SQLite storage, giving you complete control and privacy.
+| Peça | Papel |
+|---|---|
+| Worker `workers-sentinel` | Recebe os eventos (`/api/{projeto}/envelope`), serve a API do painel, a API `/api/0` no formato do Sentry e o MCP (`/mcp`) |
+| Assets | O painel (Vue), servido direto da borda |
+| Durable Object `AuthState` | Um só: usuários, sessões, chaves de acesso (passkeys), tokens de API e o registro de auditoria |
+| Durable Object `ProjectState` | Um por projeto: issues, eventos, filtros, integrações e limites, em SQLite |
+| R2 `ATTACHMENTS` | Anexos enviados junto com os eventos |
+| R2 `DEBUG_FILES` | dSYM, mapeamentos ProGuard/R8 e pedaços de upload do `sentry-cli` |
+| Fila `PROCESS_QUEUE` | Monta os uploads grandes do `sentry-cli` fora do pedido |
 
-## Why Workers Sentinel?
+## Como funciona
 
-**🔒 Privacy First**
-- All data stays in YOUR Cloudflare account
-- No third-party tracking or data sharing
-- You control your error data completely
+1. **Ingestão.** O SDK manda o evento para o DSN do projeto
+   (`https://{chave}@{seu-host}/{projeto}`). O Worker confere a chave, limpa o que é sensível (cabeçalhos
+   de autorização, cookies, parâmetros com cara de segredo) e entrega ao `ProjectState` do projeto.
+2. **Agrupamento.** O `ProjectState` calcula a impressão digital do erro, junta na issue certa e guarda o
+   evento em SQLite. Os anexos vão para o R2.
+3. **Painel.** Você entra com senha e depois com passkey, e vê issues, eventos, releases e avisos. A
+   administração só abre em sessão aberta com passkey.
+4. **Avisos.** Cada projeto pode mandar para o Slack, criar tarefa no Kaneo ou chamar um webhook. As
+   credenciais ficam cifradas com o `INTEGRATIONS_KEY`.
+5. **Agentes.** Com um token de API, um agente (Claude Code, por exemplo) usa o MCP para criar projetos,
+   pegar o DSN, mandar um evento de teste e tratar as issues.
 
-**💰 Cost-Effective**
-- Runs on Cloudflare's generous free tier
-- Pay only for what you use beyond free limits
-- No monthly subscription fees
+## Antes de começar
 
-**⚡ Performance**
-- Built on Cloudflare's global edge network
-- Fast error ingestion worldwide
-- Serverless architecture scales automatically
+- Conta na Cloudflare. O plano grátis do Workers serve para começar (Durable Objects com SQLite, R2 e
+  filas estão nele). O pago (US$ 5/mês) dá mais volume e é obrigatório para a simbolicação.
+- O R2 habilitado na conta (painel da Cloudflare → R2; pede a confirmação uma vez, mesmo no plano grátis).
+- Um domínio na Cloudflare para pôr o Access na frente. Dá para começar no `workers.dev`.
 
-**🔌 SDK Compatible**
-- Works with existing Sentry SDKs
-- Just change your DSN endpoint
-- Supports JavaScript, Python, Go, and more
+## Instalar com o botão
 
-**🎨 Modern Dashboard**
-- Clean, intuitive interface
-- Stack trace visualization
-- Issue grouping and management
+1. Clique em **Deploy to Cloudflare** acima.
+2. A Cloudflare cria uma cópia desta pasta no seu GitHub e mostra a configuração:
+   - **SETUP_TOKEN:** gere com `openssl rand -hex 24` e **guarde**. Ele é pedido no primeiro cadastro,
+     que vira o admin. No endereço `workers.dev`, sem ele ninguém consegue se cadastrar.
+   - **INTEGRATIONS_KEY:** gere com `openssl rand -hex 32`. Cifra as credenciais do Slack e do Kaneo.
+   - Os buckets R2 e a fila já vêm com nome; pode deixar.
+3. A Cloudflare instala, publica e mostra o endereço (`https://workers-sentinel.<sua-conta>.workers.dev`).
+4. Siga [Depois do deploy](#depois-do-deploy-obrigatório).
 
-**🛠️ Easy Setup**
-- Deploy with one click
-- Automatic project creation
-- Smart authentication setup
+Cada push na branch principal da sua cópia publica de novo. O código do Sentinel vem do pacote do release
+[`template`](https://github.com/didisouzacosta/sentinel-lab/releases/tag/template) do fork, gerado a cada
+versão que passou nos testes e entrou em produção.
 
-## Key Features
-
-- **🔌 Sentry SDK Compatible**: Use existing Sentry SDKs by changing only the DSN endpoint
-- **🔒 Secure & Private**: Self-hosted on your Cloudflare account with no third-party data access
-- **🔐 Smart Authentication**: Automatic first-user admin setup with session-based auth
-- **📊 Issue Grouping**: Automatic fingerprinting groups similar errors into issues
-- **📈 Event Statistics**: Track error frequency with hourly aggregations
-- **🔍 Stack Traces**: Full stack trace visualization with code context
-- **👥 User Tracking**: See how many users are affected by each issue
-- **🏷️ Tags & Context**: View tags, breadcrumbs, and contextual data
-- **✅ Issue Management**: Mark issues as resolved or ignored
-- **🌐 Multi-Project**: Create multiple projects with isolated data storage
-
-## Prerequisites
-
-Before deploying Workers Sentinel, make sure you have:
-
-- **Cloudflare Account** - [Sign up for free](https://dash.cloudflare.com/sign-up)
-- **Node.js 20+** - For local development (not required for one-click deployment)
-
-**Cloudflare Services Used:**
-- Workers (Compute)
-- Durable Objects with SQLite (State management)
-- Workers Assets (Dashboard hosting)
-
-All these services have generous free tiers sufficient for most use cases.
-
-## Getting Started
-
-### One-Click Deploy
-
-Use the "Deploy to Cloudflare" button above, or run:
+## Instalar na mão
 
 ```bash
-npm create cloudflare@latest -- --template=https://github.com/G4brym/workers-sentinel/tree/main/template
+npx degit didisouzacosta/sentinel-lab/template meu-sentinel
+cd meu-sentinel
+npm install
+npx wrangler login
+npx wrangler secret put SETUP_TOKEN        # cole: openssl rand -hex 24 (guarde)
+npx wrangler secret put INTEGRATIONS_KEY   # cole: openssl rand -hex 32
+npx wrangler deploy                        # cria os buckets e a fila, se faltarem
 ```
 
-### Manual Deployment
+Para rodar no seu computador: `cp .dev.vars.example .dev.vars`, troque os valores e rode `npx wrangler dev`.
 
-```bash
-# Clone the repository
-git clone https://github.com/G4brym/workers-sentinel.git
-cd workers-sentinel
+## Depois do deploy (obrigatório)
 
-# Install dependencies
-pnpm install
+1. **Crie o admin** com o `SETUP_TOKEN` (a tela de cadastro ainda não tem campo para ele):
+   ```bash
+   curl -X POST https://SEU-HOST/api/auth/register \
+     -H 'content-type: application/json' \
+     -d '{"email":"voce@empresa.com","name":"Seu nome","password":"uma-senha-forte","setupToken":"SEU_SETUP_TOKEN"}'
+   ```
+2. **Entre no painel** com esse e-mail e senha, cadastre uma **passkey** em *Settings* e entre de novo
+   com ela: a administração só abre em sessão de passkey.
+3. **Feche o cadastro** se só a sua equipe vai usar: *Administration → Settings → Open registration*
+   desligado. Os outros entram pelo admin (*Administration → Users*).
+4. **Ponha um domínio**: Workers → `workers-sentinel` → Settings → Domains & Routes → Custom domain
+   (ex.: `sentinel.suaempresa.com.br`).
+5. **Ponha o Cloudflare Access na frente** do domínio (Zero Trust → Access → Applications, self-hosted),
+   com política *Allow* para os e-mails da equipe e estes caminhos **públicos** (SDKs e ferramentas não
+   fazem login no Access; cada um tem a própria autenticação):
+   `/api/*/envelope`, `/api/*/envelope/`, `/api/*/store`, `/api/*/store/`, `/api/health`, `/api/0/*`,
+   `/mcp` e `/api/hooks/*`.
+6. **Desligue o `workers.dev`** (senão o painel continua aberto por lá, sem Access): Settings → Domains &
+   Routes → workers.dev → Disable, e `"workers_dev": false` no `wrangler.jsonc` da sua cópia.
 
-# Build and deploy
-pnpm deploy
-```
+## Segurança
 
-### First-Time Setup
+O que já vem no código:
 
-1. **Deploy your worker** to Cloudflare
-2. **Visit your worker URL** in a browser
-3. **Register the first user** - this becomes your admin account
-4. **Create your first project** - you'll receive a DSN
-5. **Configure your Sentry SDK** with the DSN
+| Camada | O que faz |
+|---|---|
+| Primeiro cadastro | Exige o `SETUP_TOKEN`; no `workers.dev` sem token, o cadastro é recusado |
+| Senhas | argon2id; 5 erros por e-mail bloqueiam 15 min; 5 cadastros por hora por IP |
+| Passkeys | WebAuthn; a administração só abre em sessão de passkey |
+| Tokens e sessões | Guardados como hash; trocar a senha derruba todas as sessões |
+| Ingestão | Limites de tamanho (inclusive gzip), dados sensíveis limpos antes de guardar, cota de eventos por hora por projeto |
+| Integrações | Credenciais cifradas com o `INTEGRATIONS_KEY`; webhooks só HTTPS e nunca para endereços internos |
+| Painel | CSP estrita e cabeçalhos de segurança |
 
-## SDK Configuration
+O que ligar na Cloudflare (cabe no plano grátis):
 
-Workers Sentinel is compatible with official Sentry SDKs. Simply use your Sentinel DSN instead of a Sentry DSN.
+1. **Cloudflare Access** como em [Depois do deploy](#depois-do-deploy-obrigatório).
+2. **Regra de rate limiting** da zona na ingestão (Security → WAF → Rate limiting rules): caminhos que
+   terminam em `/envelope` ou `/store` no seu host, 300 pedidos em 10 s por IP, bloqueio de 10 s. O plano
+   grátis tem uma regra só: se ela já existe para outro serviço, junte as condições com `or`.
+3. **TLS mínimo 1.2** e **HSTS** no host (SSL/TLS → Edge Certificates; Rules → Transform Rules).
+4. **Alerta de ataque DDoS** (Notifications → HTTP DDoS Attack Alert).
 
-### Cloudflare Workers (Service Binding with RPC)
+O que **não** ligar: **Bot Fight Mode** e **"Under Attack"** no domínio inteiro. Eles bloqueiam os SDKs
+dos apps e dos servidores, que não rodam o desafio em JavaScript.
 
-For Cloudflare Workers, you can use [service bindings](https://developers.cloudflare.com/workers/runtime-apis/bindings/service-bindings/) with RPC for optimal performance. This routes requests internally within Cloudflare's network, avoiding external HTTP roundtrips and reducing latency.
+## Ligar um app ou site
 
-**Step 1:** Add a service binding to your worker's `wrangler.jsonc`:
+Crie o projeto no painel (ou pelo MCP) e use o DSN em qualquer SDK do Sentry:
 
-```jsonc
-{
-  "name": "my-worker",
-  "main": "src/index.ts",
-  "compatibility_flags": ["nodejs_als"],
-  "services": [
-    { "binding": "SENTINEL", "service": "workers-sentinel", "entrypoint": "SentinelRpc" }
-  ]
-}
-```
-
-**Step 2:** Initialize Sentry with the RPC transport:
-
-```typescript
-import * as Sentry from '@sentry/cloudflare';
-import { waitUntil } from 'cloudflare:workers';
-
-const DSN = 'https://<public_key>@<your-worker>.workers.dev/<project_id>';
-
-export default Sentry.withSentry(
-  (env: Env) => ({
-    dsn: DSN,
-    transport: () => ({
-      send: async (envelope) => {
-        const rpcPromise = env.SENTINEL.captureEnvelope(DSN, envelope);
-        waitUntil(rpcPromise);
-        const result = await rpcPromise;
-        return { statusCode: result.status };
-      },
-      flush: async () => true,
-    }),
-  }),
-  {
-    async fetch(request, env, ctx) {
-      // Your worker code here
-      return new Response('Hello!');
-    },
-  }
-);
-```
-
-The `waitUntil` call ensures the RPC completes even after the HTTP response returns. The `captureEnvelope` method takes the DSN and envelope, handling authentication and ingestion internally.
-
-### JavaScript / Browser
-
-```javascript
+```js
 import * as Sentry from '@sentry/browser';
 
-Sentry.init({
-  dsn: 'https://<public_key>@<your-worker>.workers.dev/<project_id>',
-});
+Sentry.init({ dsn: 'https://CHAVE@sentinel.suaempresa.com.br/PROJETO' });
 ```
 
-### Node.js
+- **iOS:** o SDK [`sentinel-ios`](https://github.com/didisouzacosta/sentinel-ios) (Swift, SPM) ou o
+  `sentry-cocoa`. Para ver os crashes com nome de função, mande os dSYMs com o `sentry-cli`.
+- **Android:** o `sentry-android` com o DSN; mande o `mapping.txt` do R8 com o `sentry-cli`.
+- **Back (Node, Deno, Workers, Python, Go…):** o SDK do Sentry da linguagem, com o DSN.
+- A tela *Setup* do painel tem o passo a passo de cada plataforma e o comando do MCP.
 
-```javascript
-const Sentry = require('@sentry/node');
+## Prompts para a IA
 
-Sentry.init({
-  dsn: 'https://<public_key>@<your-worker>.workers.dev/<project_id>',
-});
+Para colar num assistente com acesso ao terminal e ao código (Claude Code, Cursor…). Troque o que está
+entre `<>`.
+
+### 1. Instalar do zero até a Cloudflare
+
+```text
+Quero instalar o Sentinel (rastreador de erros compatível com o Sentry) na minha conta da Cloudflare,
+usando o modelo https://github.com/didisouzacosta/sentinel-lab/tree/main/template. Leia o README.md dele
+antes e siga "Instalar na mão" e "Depois do deploy", me mostrando cada comando antes de rodar.
+
+Dados:
+- Domínio: <sentinel.suaempresa.com.br> (a zona já está na minha conta)
+- E-mails da equipe que podem entrar no painel: <voce@suaempresa.com.br>
+
+Regras:
+1. Confira `npx wrangler whoami` e se o R2 está habilitado na conta.
+2. Gere o SETUP_TOKEN e o INTEGRATIONS_KEY com openssl e grave como segredos do Worker
+   (wrangler secret put); nunca em arquivo versionado. Me mostre o SETUP_TOKEN uma vez para eu guardar.
+3. Publique, crie o admin com o curl do README e me diga como cadastrar a passkey.
+4. Ponha o domínio, crie a aplicação do Cloudflare Access com os caminhos públicos do README e a regra
+   de rate limiting na ingestão, e desligue o workers.dev.
+5. Confira: /api/health responde 200 sem login, o painel pede o login do Access e um envelope com chave
+   inventada dá 401.
+6. Me entregue um resumo do que foi criado (Worker, buckets, fila, Access, regra) e onde está cada coisa.
 ```
 
-### Python
+### 2. Ligar um site ou back-end
 
-```python
-import sentry_sdk
+```text
+Quero mandar os erros deste projeto para o meu Sentinel, em https://<sentinel.suaempresa.com.br>.
+O Sentinel fala o protocolo do Sentry: use o SDK oficial do Sentry da linguagem com o DSN
+<https://CHAVE@sentinel.suaempresa.com.br/PROJETO> (painel → Setup).
 
-sentry_sdk.init(
-    dsn="https://<public_key>@<your-worker>.workers.dev/<project_id>",
-)
+Faça:
+1. Descubra a linguagem e o framework e instale o SDK do Sentry certo, com o DSN vindo de variável de
+   ambiente (nunca fixo no código) e desligado em desenvolvimento e nos testes.
+2. Se o projeto já tem uma camada de erros (interface, adapter), ponha o Sentinel atrás dela.
+3. Ligue release (versão do app) e environment (produção, staging). Desligue o envio de dados pessoais
+   (sendDefaultPii: false) e não mande nome, e-mail, telefone nem corpo de requisição.
+4. Se o site tem Content-Security-Policy, libere o host do Sentinel em connect-src.
+5. Teste com um erro de propósito e me diga onde ver a issue no painel.
 ```
 
-### Go
+### 3. Ligar um app (iOS ou Android)
 
-```go
-import "github.com/getsentry/sentry-go"
+```text
+Quero mandar os crashes deste app para o meu Sentinel, em https://<sentinel.suaempresa.com.br>, com o
+DSN <https://CHAVE@sentinel.suaempresa.com.br/PROJETO>. Leia o README de
+https://github.com/didisouzacosta/sentinel-lab/tree/main/template ("Ligar um app ou site").
 
-sentry.Init(sentry.ClientOptions{
-    Dsn: "https://<public_key>@<your-worker>.workers.dev/<project_id>",
-})
+Faça:
+1. iOS: use o SDK sentinel-ios (SPM, https://github.com/didisouzacosta/sentinel-ios) ou o sentry-cocoa.
+   Android: o sentry-android. DSN por configuração de build, desligado em debug.
+2. Ligue release (versão + build) e environment.
+3. Configure o envio dos símbolos no build de release: dSYMs (iOS) ou mapping.txt do R8 (Android) com
+   o sentry-cli apontando para o Sentinel (URL do Sentinel e um token de API com acesso Projects),
+   sem o token no repositório.
+4. Não mande dado pessoal. Me diga o que declarar nas lojas (App Store: "Dados de diagnóstico";
+   Google Play: segurança dos dados).
+5. Teste num simulador com um crash de propósito e me diga onde conferir.
 ```
 
-The DSN is displayed when you create a project in the dashboard, or you can find it in the project settings.
+### 4. Conectar o MCP
 
-## Architecture
-
-Workers Sentinel is built with modern web technologies:
-
-**Backend (Worker):**
-- **Hono** - Fast, lightweight web framework
-- **Cloudflare Durable Objects** - Distributed state with SQLite storage
-- **Sentry Envelope Parser** - Compatible with Sentry SDK wire format
-
-**Frontend (Dashboard):**
-- **Vue.js 3** - Progressive JavaScript framework
-- **TypeScript** - Type-safe development
-- **Tailwind CSS** - Utility-first styling
-- **Pinia** - State management
-- **Vite** - Fast build tooling
-
-**Data Architecture:**
-- **AuthState DO** (singleton) - Users, sessions, project registry
-- **ProjectState DO** (per-project) - Issues, events, statistics
-
-Each project has its own isolated Durable Object with SQLite storage, ensuring data isolation and scalability.
-
-## Roadmap & Future Enhancements
-
-Planned features for future releases:
-
-- [ ] Source map support for JavaScript errors
-- [ ] Release tracking and deployment correlation
-- [ ] Performance monitoring (transactions, spans)
-- [ ] Alerting integrations (webhook, email)
-- [ ] Session replay support
-- [ ] Team/organization support
-- [ ] Issue assignment
-- [ ] Search functionality
-- [ ] Time-series charts
-- [ ] Rate limiting per project
-- [ ] Event retention policies
-
-## Known Limitations
-
-**Current Limitations:**
-- No source map support yet (stack traces show minified code)
-- No performance monitoring (error tracking only)
-- No alerting/notifications
-- Single-user admin (no team management yet)
-
-**Sentry Feature Parity:**
-Workers Sentinel focuses on core error tracking. Advanced Sentry features like:
-- Session replay
-- Performance monitoring
-- Profiling
-- Crons monitoring
-
-Are not currently supported but may be added in future versions.
-
-**Browser Compatibility:**
-- Modern browsers required (Chrome 90+, Firefox 88+, Safari 14+)
-- JavaScript must be enabled
-- Cookies must be enabled for authentication
-
-## Contributing
-
-We welcome contributions from the community!
-
-**🐛 Bug Reports**
-- Use the [GitHub Issues](https://github.com/G4brym/workers-sentinel/issues) page
-- Include reproduction steps
-- Specify your environment
-
-**✨ Feature Requests**
-- Check existing issues first
-- Explain the use case and benefit
-
-**💻 Code Contributions**
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Submit a Pull Request
-
-**Development Setup:**
-```bash
-# Clone and install
-git clone https://github.com/G4brym/workers-sentinel.git
-cd workers-sentinel
-pnpm install
-
-# Start development (runs wrangler dev)
-pnpm dev
-
-# Build dashboard
-pnpm --filter @workers-sentinel/dashboard build
-
-# Typecheck
-pnpm typecheck
-
-# Lint
-pnpm lint
+```text
+Conecte o MCP do meu Sentinel a este agente: endereço https://<sentinel.suaempresa.com.br>/mcp, com um
+token de API que eu vou colar no terminal (painel → Settings → API tokens, acesso "Read & write").
+Use `claude mcp add --transport http sentinel <url>/mcp --header "Authorization: Bearer <token>"`,
+sem gravar o token em arquivo versionado, e teste listando os projetos.
 ```
 
-## License
+## Simbolicação (opcional)
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+Para ver crashes nativos com nome de função, arquivo e linha (iOS) e com as classes reais (Android), o
+Sentinel roda o [Symbolicator](https://github.com/getsentry/symbolicator) num contêiner da Cloudflare. O
+botão não cria contêiner, então este modelo vem com `SYMBOLICATION=off`: os arquivos de depuração são
+guardados e o painel avisa quais faltam, mas os eventos ficam como chegaram.
 
----
+Para ligar (Workers Paid e Docker na máquina que publica): siga a seção "Symbolication" do
+[README do fork](https://github.com/didisouzacosta/sentinel-lab#symbolication), copie a configuração
+`containers`, o binding `SYMBOLICATOR` e a migração `v2` de `packages/workers-sentinel/wrangler.jsonc`,
+exporte `Symbolicator` e `ContainerProxy` (do pacote `workers-sentinel`) em `src/index.ts`, tire o
+`SYMBOLICATION=off` e publique com `npx wrangler deploy` do seu computador.
 
-**Made with ❤️ for the self-hosted community**
+## Atualizar
 
-If you find Workers Sentinel useful, please consider giving it a ⭐ on GitHub!
+O pacote vem de uma URL fixa (`releases/download/template/workers-sentinel.tgz`), atualizada a cada versão
+do fork. Para pegar a mais nova, rode o build de novo (Workers → `workers-sentinel` → Deployments →
+Retry, ou um push qualquer na sua cópia), ou rode `npm install && npx wrangler deploy` na mão.
+
+Origem: [G4brym/workers-sentinel](https://github.com/G4brym/workers-sentinel) (MIT), com as mudanças do
+fork [didisouzacosta/sentinel-lab](https://github.com/didisouzacosta/sentinel-lab).

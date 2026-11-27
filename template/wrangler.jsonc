@@ -1,43 +1,62 @@
 /**
- * For more details on how to configure Wrangler, refer to:
- * https://developers.cloudflare.com/workers/wrangler/configuration/
+ * Sentinel pelo botão Deploy to Cloudflare. A Cloudflare cria sozinha os Durable Objects,
+ * os buckets R2 e a fila na conta de quem clicou. Sobe no endereço workers.dev; depois,
+ * ponha um domínio e o Cloudflare Access na frente (README, "Depois do deploy").
  */
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
-	"compatibility_date": "2026-01-16",
-	"main": "src/index.ts",
 	"name": "workers-sentinel",
-	"upload_source_maps": true,
+	"main": "src/index.ts",
+	"compatibility_date": "2026-01-18",
 	"compatibility_flags": ["nodejs_compat"],
+	"workers_dev": true,
+	"preview_urls": false,
+	"upload_source_maps": true,
 	"observability": {
 		"enabled": true
 	},
-	// Durable Object bindings
 	"durable_objects": {
 		"bindings": [
-			{
-				"name": "AUTH_STATE",
-				"class_name": "AuthState"
-			},
-			{
-				"name": "PROJECT_STATE",
-				"class_name": "ProjectState"
-			}
+			{ "name": "AUTH_STATE", "class_name": "AuthState" },
+			{ "name": "PROJECT_STATE", "class_name": "ProjectState" }
 		]
 	},
-	// Migrations for SQLite-backed Durable Objects
 	"migrations": [
 		{
 			"tag": "v1",
 			"new_sqlite_classes": ["AuthState", "ProjectState"]
 		}
 	],
-	// Serve dashboard static assets
+	"r2_buckets": [
+		// Anexos dos eventos (os metadados ficam no Durable Object do projeto).
+		{ "binding": "ATTACHMENTS", "bucket_name": "workers-sentinel-attachments" },
+		// Arquivos de depuração: dSYM, mapeamentos ProGuard/R8 e pedaços de upload do sentry-cli.
+		{ "binding": "DEBUG_FILES", "bucket_name": "workers-sentinel-debug-files" }
+	],
+	"queues": {
+		"producers": [{ "binding": "PROCESS_QUEUE", "queue": "workers-sentinel-process" }],
+		"consumers": [
+			{
+				"queue": "workers-sentinel-process",
+				"max_batch_size": 1,
+				"max_retries": 5,
+				"max_concurrency": 4
+			}
+		]
+	},
+	"vars": {
+		// Sem o contêiner Symbolicator (o botão não cria contêiner): eventos guardados como chegam.
+		// Para simbolicar dSYM e ProGuard, veja o README, "Simbolicação".
+		"SYMBOLICATION": "off"
+	},
+	// Segredos (o botão pede os dois; na mão, `npx wrangler secret put NOME`):
+	//   SETUP_TOKEN       exigido no primeiro cadastro, que vira o admin
+	//   INTEGRATIONS_KEY  32+ caracteres; cifra as credenciais do Slack e do Kaneo
 	"assets": {
 		"directory": "node_modules/workers-sentinel/dashboard",
 		"binding": "ASSETS",
 		"html_handling": "auto-trailing-slash",
 		"not_found_handling": "single-page-application",
-		"run_worker_first": ["/api/*", "/mcp", "/docs", "/openapi.json"]
+		"run_worker_first": ["/api/*", "/mcp"]
 	}
 }

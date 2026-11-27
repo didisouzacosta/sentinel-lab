@@ -27,7 +27,12 @@
 
 Workers Sentinel is a lightweight, self-hosted error tracking and monitoring solution that runs entirely on your Cloudflare account. It accepts events using the Sentry SDK wire format, allowing you to use existing Sentry SDKs by simply changing the DSN endpoint. All your error data is stored securely in SQLite-backed Durable Objects, giving you full control over your information.
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/G4brym/workers-sentinel/tree/main/template)
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/didisouzacosta/sentinel-lab/tree/main/template)
+
+> **Instalar na sua conta (este fork):** o botão acima instala o Sentinel **deste fork** (painel novo,
+> MCP, Slack, Kaneo, arquivos de depuração), não o pacote original. Guia completo em português, com a
+> arquitetura, os passos obrigatórios depois do deploy, a segurança e prompts para IA (instalar, ligar
+> um site, um app iOS/Android e o MCP): [template/README.md](template/README.md).
 
 ## Table of Contents
 
@@ -129,11 +134,13 @@ All these services have generous free tiers sufficient for most use cases.
 
 ### One-Click Deploy
 
-Use the "Deploy to Cloudflare" button above, or run:
-
-```bash
-npm create cloudflare@latest -- --template=https://github.com/G4brym/workers-sentinel/tree/main/template
-```
+Use the "Deploy to Cloudflare" button above. It copies [`template/`](template/) into your GitHub account and
+deploys it; the template installs this fork's package from the rolling
+[`template` release](https://github.com/didisouzacosta/sentinel-lab/releases/tag/template), rebuilt after
+every production deploy of `main`. The button asks for `SETUP_TOKEN` (required for the first
+registration — on `*.workers.dev` an install without it refuses to register anyone) and
+`INTEGRATIONS_KEY`, and creates the Durable Objects, both R2 buckets and the queue. Symbolication is off
+there (the button cannot create containers). Step-by-step guide: [template/README.md](template/README.md).
 
 ### Manual Deployment
 
@@ -168,9 +175,12 @@ The supervisor (in `_devenv/cloudflare/`) is loopback-only, persists Durable Obj
 
 ### First-Time Setup
 
-1. **Deploy your worker** to Cloudflare
-2. **Visit your worker URL** in a browser
-3. **Register the first user** - this becomes your admin account
+1. **Deploy your worker** to Cloudflare, with the `SETUP_TOKEN` secret set
+2. **Register the first user** with that token — this becomes your admin account. The dashboard's sign-up
+   form has no token field yet, so use the API:
+   `curl -X POST https://YOUR-HOST/api/auth/register -H 'content-type: application/json' -d '{"email":"…","name":"…","password":"…","setupToken":"…"}'`
+   (without `SETUP_TOKEN`, a custom domain or local install keeps the open first-user bootstrap; `*.workers.dev` refuses it)
+3. **Sign in, add a passkey** (Settings) and sign in again with it to unlock Administration
 4. **Create your first project** - you'll receive a DSN
 5. **Configure your Sentry SDK** with the DSN
 
