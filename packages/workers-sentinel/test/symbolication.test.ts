@@ -26,10 +26,10 @@ type Json = Record<string, unknown>;
  */
 function fakeSymbolicator(mode: 'ok' | 'down', calls: string[] = []) {
 	return {
-		getByName: () => ({
+		getByName: (name: string) => ({
 			fetch: async (request: Request) => {
 				const url = new URL(request.url);
-				calls.push(url.pathname + url.search);
+				calls.push(`${name} ${url.pathname}${url.search}`);
 				if (mode === 'down') return new Response('container not running', { status: 503 });
 				const body = url.pathname === '/symbolicate-jvm' ? jvmResponseRaw : nativeResponseRaw;
 				return new Response(body, { headers: { 'Content-Type': 'application/json' } });
@@ -135,36 +135,68 @@ describe('Symbolication', () => {
 		expect(typeof Symbolicator.outboundByHost?.['sentinel.internal']).toBe('function');
 	});
 
+	/** The container id the runtime gives the outbound handler for a project's instance. */
+	const instanceOf = (projectId: string) => env.SYMBOLICATOR!.idFromName(projectId).toString();
+	const serve = (url: string, fromProject: string) =>
+		serveDebugFiles(new Request(url), env as unknown as Env, instanceOf(fromProject));
+
 	it('serves debug files to Symbolicator through the sentry source protocol', async () => {
-		const lookup = await serveDebugFiles(
-			new Request(
-				`http://sentinel.internal/dif/${project.id}/?debug_id=${DSYM_DEBUG_ID}&code_id=${DSYM_DEBUG_ID.replace(/-/g, '')}`,
-			),
-			env as unknown as Env,
+		const lookup = await serve(
+			`http://sentinel.internal/dif/${project.id}/?debug_id=${DSYM_DEBUG_ID}&code_id=${DSYM_DEBUG_ID.replace(/-/g, '')}`,
+			project.id,
 		);
 		const files = (await lookup.json()) as Array<{ id: string; symbolType: string }>;
 		expect(files).toHaveLength(1);
 		expect(files[0].symbolType).toBe('macho');
 
-		const download = await serveDebugFiles(
-			new Request(`http://sentinel.internal/dif/${project.id}/?id=${files[0].id}`),
-			env as unknown as Env,
+		const download = await serve(
+			`http://sentinel.internal/dif/${project.id}/?id=${files[0].id}`,
+			project.id,
 		);
 		expect(new Uint8Array(await download.arrayBuffer())).toEqual(bytesOf(thinB64));
 
 		// Another project's source never sees these files.
-		const elsewhere = await serveDebugFiles(
-			new Request(`http://sentinel.internal/dif/${bare.id}/?id=${files[0].id}`),
-			env as unknown as Env,
+		const elsewhere = await serve(
+			`http://sentinel.internal/dif/${bare.id}/?id=${files[0].id}`,
+			bare.id,
 		);
 		expect(elsewhere.status).toBe(404);
-		const unknown = await serveDebugFiles(
-			new Request(
-				`http://sentinel.internal/dif/${project.id}/?debug_id=${MAPPING_UUID.replace('1', '9')}`,
-			),
-			env as unknown as Env,
+		const unknown = await serve(
+			`http://sentinel.internal/dif/${project.id}/?debug_id=${MAPPING_UUID.replace('1', '9')}`,
+			project.id,
 		);
 		expect(await unknown.json()).toEqual([]);
+	});
+
+	it("refuses one project's instance access to another project's files", async () => {
+		const lookupUrl = `http://sentinel.internal/dif/${project.id}/?debug_id=${DSYM_DEBUG_ID}`;
+		const [file] = (await (await serve(lookupUrl, project.id)).json()) as Array<{ id: string }>;
+		const warnings: string[] = [];
+		const original = console.warn;
+		console.warn = (message: unknown) => warnings.push(String(message));
+		try {
+			// A compromised instance of `bare` forging the path of `project`.
+			expect((await serve(lookupUrl, bare.id)).status).toBe(403);
+			expect(
+				(await serve(`http://sentinel.internal/dif/${project.id}/?id=${file.id}`, bare.id)).status,
+			).toBe(403);
+			// The old shared instance and arbitrary ids get nothing either.
+			expect((await serve(lookupUrl, 'symbolicator')).status).toBe(403);
+			const forged = await serveDebugFiles(
+				new Request(lookupUrl),
+				env as unknown as Env,
+				'not-an-id',
+			);
+			expect(forged.status).toBe(403);
+		} finally {
+			console.warn = original;
+		}
+		expect(warnings).toHaveLength(4);
+		expect(JSON.parse(warnings[0])).toMatchObject({
+			event: 'symbolication.isolation_violation',
+			projectId: project.id,
+			containerId: instanceOf(bare.id),
+		});
 	});
 
 	it('stores events without stored debug files right away', async () => {
@@ -186,7 +218,8 @@ describe('Symbolication', () => {
 		const calls: string[] = [];
 		const outcome = await runJob(keys[0], 1, fakeSymbolicator('ok', calls));
 		expect(outcome).toEqual({ acked: true, retried: false });
-		expect(calls[0]).toBe(`/symbolicate?timeout=30&scope=${project.id}`);
+		// The project's own instance, never a shared one.
+		expect(calls[0]).toBe(`${project.id} /symbolicate?timeout=30&scope=${project.id}`);
 
 		const stored = await storedEvent(event.event_id as string);
 		expect(stored).not.toBeNull();

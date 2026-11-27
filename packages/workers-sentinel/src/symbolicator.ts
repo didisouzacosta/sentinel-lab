@@ -1,4 +1,4 @@
-import { Container } from '@cloudflare/containers';
+import { Container, type OutboundHandlerContext } from '@cloudflare/containers';
 import type { DebugFileRecord } from './lib/debug-files';
 import { debugFileKey, normalizeDebugId } from './lib/debug-files';
 import {
@@ -12,18 +12,22 @@ import type { Env } from './types';
 
 /**
  * Symbolicator (getsentry/symbolicator, image in `symbolicator/`) as a
- * Cloudflare Container. One instance serves every project: each request
- * names its project's debug-file source, and Symbolicator's cache is scoped
- * per project (`scope` query parameter).
+ * Cloudflare Container, one instance per project
+ * (`SYMBOLICATOR.getByName(projectId)`), so a project's debug files only
+ * ever reach that project's process (docs/plano-riscos-simbolizacao.md,
+ * phase 1).
  *
  * The container has no internet access. Its only way out is
  * `http://sentinel.internal/…`, intercepted below and answered by Worker
  * code from the `DEBUG_FILES` bucket — no R2 credentials enter the
- * container.
+ * container. The handler serves `/dif/{projectId}/` only to the instance
+ * named after that project.
  */
 export class Symbolicator extends Container<Env> {
 	defaultPort = 3021;
-	sleepAfter = '10m';
+	// Per-project instances: sleep soon after a crash burst so idle cost
+	// does not add up across projects.
+	sleepAfter = '3m';
 	enableInternet = false;
 	pingEndpoint = 'container/healthcheck';
 }
@@ -31,9 +35,18 @@ export class Symbolicator extends Container<Env> {
 // Assigned after the class, not as a `static` field: a class field is
 // defined with [[DefineOwnProperty]] and skips the setter on Container that
 // registers the handler — the container then gets 520 for every request.
+// `ctx.containerId` is set by the runtime (the instance's Durable Object
+// id), never by the process inside the container.
 Symbolicator.outboundByHost = {
-	[DIF_SOURCE_HOST]: (request: Request, env: unknown) => serveDebugFiles(request, env as Env),
+	[DIF_SOURCE_HOST]: (request: Request, env: unknown, ctx: OutboundHandlerContext) =>
+		serveDebugFiles(request, env as Env, ctx.containerId),
 };
+
+/** The instance that symbolicates a project's events. */
+export function symbolicatorFor(env: Env, projectId: string) {
+	if (!env.SYMBOLICATOR) throw new SymbolicatorError('symbolicator_unconfigured');
+	return env.SYMBOLICATOR.getByName(projectId);
+}
 
 function json(data: unknown, status = 200): Response {
 	return new Response(JSON.stringify(data), {
@@ -49,13 +62,30 @@ function json(data: unknown, status = 200): Response {
  * - `GET /dif/{projectId}/?debug_id=…&code_id=…` → `[{id, symbolType}]`
  * - `GET /dif/{projectId}/?id=…` → the file's bytes
  */
-export async function serveDebugFiles(request: Request, env: Env): Promise<Response> {
+export async function serveDebugFiles(
+	request: Request,
+	env: Env,
+	containerId: string,
+): Promise<Response> {
 	const url = new URL(request.url);
 	const match = /^\/dif\/([A-Za-z0-9-]{1,64})\/?$/.exec(url.pathname);
 	if (request.method !== 'GET' || !match || !env.DEBUG_FILES) {
 		return json({ error: 'not_found' }, 404);
 	}
 	const projectId = match[1];
+	// Only the project's own instance may read its files. A mismatch means
+	// the process inside a container asked for another project's files:
+	// refuse and leave a trace.
+	if (!env.SYMBOLICATOR || env.SYMBOLICATOR.idFromName(projectId).toString() !== containerId) {
+		console.warn(
+			JSON.stringify({
+				event: 'symbolication.isolation_violation',
+				projectId,
+				containerId: String(containerId).slice(0, 64),
+			}),
+		);
+		return json({ error: 'forbidden' }, 403);
+	}
 	const projectState = env.PROJECT_STATE.get(env.PROJECT_STATE.idFromName(projectId));
 	const call = (path: string, body: unknown) =>
 		projectState.fetch(
@@ -108,17 +138,16 @@ export class SymbolicatorRejected extends SymbolicatorError {}
 
 type Json = Record<string, unknown>;
 
-/** POST a request to the Symbolicator container and wait for its answer. */
+/** POST a request to the project's Symbolicator instance and wait for its answer. */
 async function callSymbolicator(
 	env: Env,
 	path: '/symbolicate' | '/symbolicate-jvm',
 	body: Json,
-	scope: string,
+	projectId: string,
 ): Promise<Json> {
-	if (!env.SYMBOLICATOR) throw new SymbolicatorError('symbolicator_unconfigured');
-	const stub = env.SYMBOLICATOR.getByName('symbolicator');
+	const stub = symbolicatorFor(env, projectId);
 	const deadline = Date.now() + SYMBOLICATION_DEADLINE_MS;
-	const query = `timeout=${POLL_TIMEOUT_SECONDS}&scope=${encodeURIComponent(scope)}`;
+	const query = `timeout=${POLL_TIMEOUT_SECONDS}&scope=${encodeURIComponent(projectId)}`;
 	let response = await stub.fetch(
 		new Request(`http://symbolicator${path}?${query}`, {
 			method: 'POST',

@@ -6,7 +6,7 @@ A simbolização (fase 4 de [`plano-debug-files.md`](plano-debug-files.md)) e o 
 
 | Fase | Risco | Estado |
 |---|---|---|
-| 1 — Um Symbolicator por projeto | Isolamento | pendente |
+| 1 — Um Symbolicator por projeto | Isolamento | ✅ 27/11/2026, branch `lab/symbolicator-per-project`: verificado ponta a ponta com dois projetos (duas instâncias, nenhum pedido barrado por engano) |
 | 2 — Orçamento de simbolização por projeto | Custo | pendente |
 | 3 — Contrapressão global | Custo | pendente |
 | 4 — Cache de resultados | Custo | opcional, decidir depois de medir a fase 2 |
