@@ -253,7 +253,14 @@ describe('Symbolication', () => {
 	});
 
 	it('retries while Symbolicator is down, then stores the event unsymbolicated', async () => {
-		const event = { ...nativeEvent(), event_id: '3'.repeat(32) };
+		// A crash site not seen before: the same crash as the earlier tests
+		// would be answered from the symbolication cache.
+		const event = { ...nativeEvent(), event_id: '3'.repeat(32) } as Json;
+		const exception = (event.exception as { values: Json[] }).values[0];
+		(exception.stacktrace as { frames: Json[] }).frames.push({
+			instruction_addr: '0x104b2c468',
+			in_app: true,
+		});
 		expect((await sendEvent(project, event)).status).toBe(200);
 		const [key] = await parkedKeys(project.id);
 

@@ -9,7 +9,7 @@ A simbolização (fase 4 de [`plano-debug-files.md`](plano-debug-files.md)) e o 
 | 1 — Um Symbolicator por projeto | Isolamento | ✅ 27/11/2026, branch `lab/symbolicator-per-project`: verificado ponta a ponta com dois projetos (duas instâncias, nenhum pedido barrado por engano) |
 | 2 — Orçamento de simbolização por projeto | Custo | ✅ 27/11/2026, branch `lab/symbolication-budget` (com a decisão 3: cota de 5000 eventos/h para projetos móveis novos) |
 | 3 — Contrapressão global | Custo | ✅ 27/11/2026, branch `lab/symbolication-backpressure`: `max_concurrency` 4, espera máxima de 10 min |
-| 4 — Cache de resultados | Custo | opcional, decidir depois de medir a fase 2 |
+| 4 — Cache de resultados | Custo | ✅ 27/11/2026, branch `lab/symbolication-cache` (pedido do dono): chave por offsets relativos à imagem + versão dos debug files, 24 h, 2000 entradas por projeto |
 | 5 — Documentação e sinais | Os dois | ✅ README, AGENTS.md, `lab/` e plano de debug files atualizados a cada fase. A regra de WAF segue opcional (ação do dono) |
 
 ## Os riscos

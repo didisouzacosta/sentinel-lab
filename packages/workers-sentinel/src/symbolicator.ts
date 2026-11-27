@@ -8,6 +8,13 @@ import {
 	mergeJvmResult,
 	mergeNativeResult,
 } from './lib/symbolicate';
+import {
+	type CachedAnswer,
+	type CacheKey,
+	cacheKey,
+	rebaseAnswer,
+	type SymbolicatorPath,
+} from './lib/symbolication-cache';
 import type { Env } from './types';
 
 /**
@@ -141,7 +148,7 @@ type Json = Record<string, unknown>;
 /** POST a request to the project's Symbolicator instance and wait for its answer. */
 async function callSymbolicator(
 	env: Env,
-	path: '/symbolicate' | '/symbolicate-jvm',
+	path: SymbolicatorPath,
 	body: Json,
 	projectId: string,
 ): Promise<Json> {
@@ -184,6 +191,66 @@ async function callSymbolicator(
 export interface SymbolicationOutcome {
 	/** Frames that gained function/file/line information. */
 	frames: number;
+	/** Answers that came from the cache instead of the container. */
+	cacheHits: number;
+}
+
+type ProjectStub = { fetch(request: Request): Promise<Response> };
+
+function projectStub(env: Env, projectId: string): ProjectStub {
+	return env.PROJECT_STATE.get(env.PROJECT_STATE.idFromName(projectId));
+}
+
+async function postJson(stub: ProjectStub, path: string, body: unknown): Promise<Json | null> {
+	const response = await stub.fetch(
+		new Request(`http://internal${path}`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(body),
+		}),
+	);
+	return response.ok ? ((await response.json()) as Json) : null;
+}
+
+/**
+ * callSymbolicator through the project's answer cache
+ * (lib/symbolication-cache.ts). Cache trouble never fails symbolication:
+ * it just goes to the container.
+ */
+async function symbolicateCached(
+	env: Env,
+	path: SymbolicatorPath,
+	body: Json,
+	projectId: string,
+): Promise<{ result: Json; hit: boolean }> {
+	const stub = projectStub(env, projectId);
+	let key: CacheKey | null = null;
+	try {
+		key = cacheKey(path, body);
+		const cached = await postJson(stub, '/symbolication/cache/get', {
+			key: key.key,
+			debugIds: key.debugIds,
+		});
+		if (cached?.hit === true && cached.value && typeof cached.value === 'object') {
+			return { result: rebaseAnswer(cached.value as CachedAnswer, key), hit: true };
+		}
+	} catch (error) {
+		console.error(
+			'Symbolication cache read failed:',
+			error instanceof Error ? error.message.slice(0, 120) : 'unknown',
+		);
+	}
+
+	const result = await callSymbolicator(env, path, body, projectId);
+	if (key && result.status === 'completed') {
+		const value: CachedAnswer = { result, bases: key.bases };
+		await postJson(stub, '/symbolication/cache/put', {
+			key: key.key,
+			debugIds: key.debugIds,
+			value,
+		}).catch(() => null);
+	}
+	return { result, hit: false };
 }
 
 /**
@@ -197,20 +264,18 @@ export async function symbolicateEvent(
 	event: Json,
 ): Promise<SymbolicationOutcome> {
 	let frames = 0;
+	let cacheHits = 0;
 	const native = buildNativeRequest(event, projectId);
 	if (native) {
-		frames += mergeNativeResult(
-			event,
-			native,
-			await callSymbolicator(env, '/symbolicate', native.body, projectId),
-		);
+		const { result, hit } = await symbolicateCached(env, '/symbolicate', native.body, projectId);
+		frames += mergeNativeResult(event, native, result);
+		if (hit) cacheHits++;
 	}
 	const jvm = buildJvmRequest(event, projectId);
 	if (jvm) {
-		frames += mergeJvmResult(
-			jvm,
-			await callSymbolicator(env, '/symbolicate-jvm', jvm.body, projectId),
-		);
+		const { result, hit } = await symbolicateCached(env, '/symbolicate-jvm', jvm.body, projectId);
+		frames += mergeJvmResult(jvm, result);
+		if (hit) cacheHits++;
 	}
-	return { frames };
+	return { frames, cacheHits };
 }

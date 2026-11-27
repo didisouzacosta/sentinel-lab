@@ -189,6 +189,7 @@ export async function processSymbolicateJob(
 			const outcome = await symbolicateEvent(env, parked.project.id, event);
 			symbolicated = outcome.frames > 0;
 			setEventTag(event, 'symbolication', symbolicated ? 'done' : 'missing');
+			if (outcome.cacheHits > 0) setEventTag(event, 'symbolication_cache', 'hit');
 		} catch (error) {
 			// Input Symbolicator rejects never gets better with retries.
 			if (!(error instanceof SymbolicatorRejected) && attempt < SYMBOLICATE_LAST_ATTEMPT) {
