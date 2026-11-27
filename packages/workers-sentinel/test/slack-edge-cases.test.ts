@@ -98,6 +98,13 @@ describe('Slack edge cases in delivery', () => {
 		expect(response.status).toBe(201);
 	});
 
+	// Same fake channel for every test: drop this project's pending
+	// deliveries so a retry cannot fire during a later test.
+	afterEach(async () => {
+		if (!project) return;
+		await authFetch(owner.token!, settings(), { method: 'DELETE' }).catch(() => {});
+	});
+
 	async function postedIssue() {
 		await sendTestEvent(project.id, project.publicKey, {
 			level: 'error',
