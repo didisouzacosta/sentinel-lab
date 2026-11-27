@@ -345,10 +345,11 @@ How events flow:
 
 Things to know:
 
-- **Nothing is lost.** If the container cannot answer, the job is retried every minute; after about 4 minutes the event is stored as received, tagged `symbolication:failed`.
+- **Nothing is lost.** If the container cannot answer, the job is retried every minute; after about 4 minutes the event is stored as received, tagged `symbolication:failed`. If Symbolicator refuses the request itself, or the symbolicated event is too big to store, the event is stored as received right away.
+- **Malformed fields are left out, not fatal.** Symbolicator refuses a whole request when one field has the wrong shape, and events come from anyone holding the DSN. Sentinel forwards only well-formed addresses, names and line numbers; the frames it leaves out stay as they were.
 - **Grouping follows the real code.** Issues are grouped by the symbolicated frames, so a crash reported before its dSYM was uploaded and the same crash after the upload end up in different issues (older issues are not regrouped).
 - **Events with no stored files** skip the queue and are stored immediately, as before.
-- For queued events, quota (`429`) and purge answers are applied by the consumer, after the SDK already got its `200`.
+- An event only waits in the queue when its project would accept it right now: over the hourly quota or being deleted, the SDK gets `429`/`503` as before. The quota is checked again when the event is stored, and an event whose project was deleted while it waited is dropped.
 - Local `wrangler dev` (and CI) do not build the container (`dev.enable_containers: false` in `wrangler.jsonc`, plus `--var SYMBOLICATION:off` in `just dev-up` and the integration suite). To try it locally, run `wrangler dev` with a copy of the config where `enable_containers` is `true`, with Docker running.
 
 ### What you need

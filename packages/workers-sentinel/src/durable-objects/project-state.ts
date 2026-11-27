@@ -1,5 +1,6 @@
 import { DurableObject } from 'cloudflare:workers';
 import { createAttachmentStore, migrationKey, projectPrefix } from '../lib/attachment-store';
+import { normalizeDebugId } from '../lib/debug-files';
 import { sanitizeEvent } from '../lib/envelope-parser';
 import {
 	extractCulprit,
@@ -42,6 +43,9 @@ import type {
 import { DEBUG_FILES_MIGRATIONS, handleDebugFilesRequest } from './debug-files-state';
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+/** Debug ids one symbolication admission check looks at (lib/symbolicate.ts). */
+const SYMBOLICATION_ADMIT_MAX_IDS = 2000;
 /** GC alarm cadence floor: an alarm is always scheduled within an hour. */
 const ALARM_INTERVAL_MS = 60 * 60 * 1000;
 /** Orphaned blobs younger than this are never GC'd (in-flight protection). */
@@ -527,6 +531,8 @@ export class ProjectState extends DurableObject<Env> {
 					return this.handleIngest(request);
 				case '/ingest-with-attachments':
 					return this.handleIngestWithAttachments(request);
+				case '/symbolication/admit':
+					return this.handleSymbolicationAdmit(request);
 				case '/touch':
 					return this.handleTouch(request);
 				case '/issues':
@@ -860,6 +866,34 @@ export class ProjectState extends DurableObject<Env> {
 			} while (cursor);
 		}
 		return true;
+	}
+
+	/**
+	 * Whether an event may wait in the symbolication queue
+	 * (src/symbolication-job.ts): one of its debug ids has a stored file, and
+	 * the event would be accepted right now. An over-quota or purging project
+	 * is answered by the normal ingest path instead (429 / 503 to the SDK), so
+	 * the queue and the container never take work the project would drop.
+	 * Read-only.
+	 */
+	private async handleSymbolicationAdmit(request: Request): Promise<Response> {
+		const { debugIds } = (await request.json().catch(() => ({}))) as { debugIds?: unknown };
+		if (this.getConfigValue('purge_pending') === '1' || !this.checkRateLimit().allowed) {
+			return this.jsonResponse({ admit: false });
+		}
+		// Apple crashes list every loaded image (hundreds of system ones), so
+		// the app's own may come late: scan them all, up to a generous cap,
+		// and stop at the first stored file.
+		const ids = Array.isArray(debugIds) ? debugIds.slice(0, SYMBOLICATION_ADMIT_MAX_IDS) : [];
+		for (const raw of ids) {
+			const debugId = normalizeDebugId(raw);
+			if (!debugId) continue;
+			const hit = this.sql
+				.exec('SELECT 1 FROM debug_files WHERE debug_id = ? LIMIT 1', debugId)
+				.toArray();
+			if (hit.length > 0) return this.jsonResponse({ admit: true });
+		}
+		return this.jsonResponse({ admit: false });
 	}
 
 	private async handleIngest(request: Request): Promise<Response> {

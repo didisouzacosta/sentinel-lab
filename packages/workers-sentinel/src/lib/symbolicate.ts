@@ -97,22 +97,55 @@ export function symbolicationKinds(event: unknown): { native: boolean; jvm: bool
 	return { native, jvm };
 }
 
-function hasAddress(frame: Json): boolean {
-	return typeof frame.instruction_addr === 'string' || typeof frame.instruction_addr === 'number';
-}
+// Symbolicator rejects a whole request (422) when a single field has the
+// wrong shape, and every field here comes from the SDK, i.e. from anyone
+// holding the (public) DSN. Only values of the exact accepted shape are
+// forwarded; anything else is left out (test/symbolicate-hardening.test.ts).
 
-function hex(value: unknown): string | undefined {
-	if (typeof value === 'number' && Number.isFinite(value)) return `0x${value.toString(16)}`;
-	if (typeof value === 'string' && value !== '') return value;
+const HEX_U64 = /^0x[0-9a-f]{1,16}$/i;
+/** Longest string forwarded for names and paths. */
+const MAX_FIELD_CHARS = 1024;
+
+/** An address Symbolicator accepts: a u64 as `0x…` hex or a safe non-negative integer. */
+function address(value: unknown): string | undefined {
+	if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) {
+		return `0x${value.toString(16)}`;
+	}
+	if (typeof value === 'string' && HEX_U64.test(value)) return value.toLowerCase();
 	return undefined;
 }
 
+function hasAddress(frame: Json): boolean {
+	return address(frame.instruction_addr) !== undefined;
+}
+
+function text(value: unknown): string | undefined {
+	return typeof value === 'string' && value.length <= MAX_FIELD_CHARS ? value : undefined;
+}
+
+/** Copy the keys whose values are strings Symbolicator accepts. */
+function pickText(source: Json, keys: string[]): Json {
+	const out: Json = {};
+	for (const key of keys) {
+		const value = text(source[key]);
+		if (value !== undefined) out[key] = value;
+	}
+	return out;
+}
+
+/** Copy present keys (for Symbolicator's own answers). */
 function pick(source: Json, keys: string[]): Json {
 	const out: Json = {};
 	for (const key of keys) {
 		if (source[key] !== undefined && source[key] !== null) out[key] = source[key];
 	}
 	return out;
+}
+
+function u32(value: unknown): number | undefined {
+	return typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 0xffffffff
+		? value
+		: undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -136,39 +169,70 @@ export function buildNativeRequest(event: Json, projectId: string): NativePlan |
 	const images = debugImages(event);
 	const modules: Json[] = [];
 	const imageIndexes: number[] = [];
+	/** Event image index → index in `modules`, for `rel:N` addressing. */
+	const moduleIndexOf = new Map<number, number>();
 	images.forEach((image, index) => {
 		if (!isNativeImage(image)) return;
 		const debugId = imageDebugId(image);
-		if (!debugId) return;
+		const imageAddr = address(image.image_addr);
+		if (!debugId || imageAddr === undefined) return;
+		const vmaddr = address(image.image_vmaddr);
+		const size = image.image_size;
+		moduleIndexOf.set(index, modules.length);
 		modules.push({
-			...pick(image, ['code_id', 'code_file', 'debug_file', 'arch', 'image_size']),
+			...pickText(image, ['code_id', 'code_file', 'debug_file', 'arch']),
 			type: 'macho',
 			debug_id: debugId,
-			image_addr: hex(image.image_addr) ?? '0x0',
-			...(image.image_vmaddr !== undefined ? { image_vmaddr: hex(image.image_vmaddr) } : {}),
+			image_addr: imageAddr,
+			...(Number.isSafeInteger(size) && (size as number) >= 0 ? { image_size: size } : {}),
+			...(vmaddr !== undefined ? { image_vmaddr: vmaddr } : {}),
 		});
 		imageIndexes.push(index);
 	});
 	if (modules.length === 0) return null;
 
+	/** The frame as sent, or null when Symbolicator could not take it. */
+	const requestFrame = (frame: Json): Json | null => {
+		const instructionAddr = address(frame.instruction_addr);
+		if (instructionAddr === undefined) return null;
+		const out: Json = { ...pickText(frame, ['function', 'package', 'trust']) };
+		if (typeof frame.addr_mode === 'string') {
+			if (frame.addr_mode === 'abs') {
+				out.addr_mode = 'abs';
+			} else {
+				const rel = /^rel:(\d{1,6})$/.exec(frame.addr_mode);
+				const target = rel ? moduleIndexOf.get(Number(rel[1])) : undefined;
+				if (target === undefined) return null; // relative to an image not sent
+				out.addr_mode = `rel:${target}`;
+			}
+		}
+		out.instruction_addr = instructionAddr;
+		return out;
+	};
+
 	const slots: NativeSlotPlan[] = [];
 	const stacktraces: Json[] = [];
 	for (const slot of stackSlots(event)) {
 		const positions: number[] = [];
+		const frames: Json[] = [];
 		for (let i = slot.frames.length - 1; i >= 0; i--) {
-			if (hasAddress(slot.frames[i])) positions.push(i);
+			const sent = requestFrame(slot.frames[i]);
+			if (!sent) continue;
+			positions.push(i);
+			frames.push(sent);
 		}
 		if (positions.length === 0) continue;
 		const stacktrace = slot.holder.stacktrace as Json;
+		const registers: Json = {};
+		if (isObject(stacktrace.registers)) {
+			for (const [name, value] of Object.entries(stacktrace.registers)) {
+				const sent = address(value);
+				if (sent !== undefined && name.length <= 32) registers[name] = sent;
+			}
+		}
 		stacktraces.push({
-			frames: positions.map((position) => {
-				const frame = slot.frames[position];
-				return {
-					...pick(frame, ['addr_mode', 'function', 'package', 'trust']),
-					instruction_addr: hex(frame.instruction_addr),
-				};
-			}),
-			...(isObject(stacktrace.registers) ? { registers: stacktrace.registers } : {}),
+			frames,
+			...(Object.keys(registers).length > 0 ? { registers } : {}),
 		});
 		slots.push({ slot, positions });
 	}
@@ -176,7 +240,7 @@ export function buildNativeRequest(event: Json, projectId: string): NativePlan |
 
 	return {
 		body: {
-			platform: typeof event.platform === 'string' ? event.platform : 'native',
+			platform: event.platform === 'cocoa' ? 'cocoa' : 'native',
 			sources: [
 				{ type: 'sentry', id: 'sentinel', url: difSourceUrl(projectId), token: 'internal' },
 			],
@@ -284,7 +348,28 @@ export interface JvmPlan {
 	exceptions: Json[];
 }
 
-const JVM_FRAME_FIELDS = ['function', 'module', 'lineno', 'abs_path', 'filename', 'in_app'];
+/** An exception Symbolicator accepts (`type` and `module` are both required). */
+function jvmException(exception: Json): Json | null {
+	const type = text(exception.type);
+	const module = text(exception.module);
+	return type !== undefined && module !== undefined ? { type, module } : null;
+}
+
+/** A frame Symbolicator accepts (`function` and `module` required, `lineno` a u32). */
+function jvmFrame(frame: Json, index: number): Json | null {
+	const fn = text(frame.function);
+	const module = text(frame.module);
+	if (fn === undefined || module === undefined) return null;
+	const lineno = u32(frame.lineno);
+	return {
+		function: fn,
+		module,
+		...pickText(frame, ['filename', 'abs_path']),
+		...(lineno !== undefined ? { lineno } : {}),
+		...(typeof frame.in_app === 'boolean' ? { in_app: frame.in_app } : {}),
+		index,
+	};
+}
 
 export function buildJvmRequest(event: Json, projectId: string): JvmPlan | null {
 	const modules = debugImages(event)
@@ -294,22 +379,35 @@ export function buildJvmRequest(event: Json, projectId: string): JvmPlan | null 
 		.map((uuid) => ({ type: 'proguard', uuid }));
 	if (modules.length === 0) return null;
 
-	const exceptions = exceptionValues(event);
-	const slots = stackSlots(event);
+	const exceptions: Json[] = [];
+	const exceptionRefs: Json[] = [];
+	for (const exception of exceptionValues(event)) {
+		const ref = jvmException(exception);
+		if (!ref) continue;
+		exceptions.push(exception);
+		exceptionRefs.push(ref);
+	}
+	const slots: StackSlot[] = [];
+	const stacktraces: Json[] = [];
+	for (const slot of stackSlots(event)) {
+		const frames = slot.frames
+			.map((frame, index) => jvmFrame(frame, index))
+			.filter((frame): frame is Json => frame !== null);
+		if (frames.length === 0) continue;
+		const exceptionRef = slot.exception ? jvmException(slot.exception) : null;
+		slots.push(slot);
+		stacktraces.push({ ...(exceptionRef ? { exception: exceptionRef } : {}), frames });
+	}
 	if (slots.length === 0 && exceptions.length === 0) return null;
-	const exceptionRef = (exception: Json): Json => pick(exception, ['type', 'module']);
 
 	return {
 		body: {
-			platform: typeof event.platform === 'string' ? event.platform : 'java',
+			platform: 'java',
 			sources: [
 				{ type: 'sentry', id: 'sentinel', url: difSourceUrl(projectId), token: 'internal' },
 			],
-			exceptions: exceptions.map(exceptionRef),
-			stacktraces: slots.map((slot) => ({
-				...(slot.exception ? { exception: exceptionRef(slot.exception) } : {}),
-				frames: slot.frames.map((frame, index) => ({ ...pick(frame, JVM_FRAME_FIELDS), index })),
-			})),
+			exceptions: exceptionRefs,
+			stacktraces,
 			modules,
 			classes: [],
 			options: { apply_source_context: false, frame_order: 'caller_first' },
