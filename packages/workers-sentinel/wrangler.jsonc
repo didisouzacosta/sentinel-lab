@@ -69,7 +69,12 @@
 			{
 				"queue": "sentinel-lab-process",
 				"max_batch_size": 1,
-				"max_retries": 5
+				"max_retries": 5,
+				// At most 4 jobs at once across all projects: with max_instances
+				// this caps symbolication work (and cost) during a crash storm.
+				// Events that wait too long are stored unsymbolicated
+				// (src/symbolication-job.ts SYMBOLICATE_MAX_WAIT_MS).
+				"max_concurrency": 4
 			}
 		]
 	},
