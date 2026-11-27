@@ -30,6 +30,7 @@ import {
 	buildSlackRegressionReply,
 	type SlackIssue,
 } from '../lib/slack-message';
+import { MAX_CACHED_ANSWER_CHARS, SYMBOLICATION_CACHE_TTL_MS } from '../lib/symbolication-cache';
 import type {
 	DroppedAttachment,
 	Env,
@@ -53,6 +54,9 @@ const SYMBOLICATION_ADMIT_MAX_IDS = 2000;
  * docs/plano-riscos-simbolizacao.md, phase 2.
  */
 const DEFAULT_MAX_SYMBOLICATIONS_PER_HOUR = 500;
+
+/** Cached Symbolicator answers kept per project (lib/symbolication-cache.ts). */
+const SYMBOLICATION_CACHE_MAX_ENTRIES = 2000;
 /** GC alarm cadence floor: an alarm is always scheduled within an hour. */
 const ALARM_INTERVAL_MS = 60 * 60 * 1000;
 /** Orphaned blobs younger than this are never GC'd (in-flight protection). */
@@ -282,6 +286,13 @@ CREATE TABLE IF NOT EXISTS symbolication_counters (
   bucket TEXT PRIMARY KEY,
   count INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS symbolication_cache (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_symbolication_cache_created ON symbolication_cache(created_at);
 
 CREATE TABLE IF NOT EXISTS event_tags (
   event_id TEXT NOT NULL,
@@ -545,6 +556,10 @@ export class ProjectState extends DurableObject<Env> {
 					return this.handleIngestWithAttachments(request);
 				case '/symbolication/admit':
 					return this.handleSymbolicationAdmit(request);
+				case '/symbolication/cache/get':
+					return this.handleSymbolicationCacheGet(request);
+				case '/symbolication/cache/put':
+					return this.handleSymbolicationCachePut(request);
 				case '/touch':
 					return this.handleTouch(request);
 				case '/issues':
@@ -2878,6 +2893,71 @@ export class ProjectState extends DurableObject<Env> {
 			.toArray();
 		this.rateLimitBucket = bucket;
 		this.rateLimitCount = row.length > 0 ? (row[0].count as number) : 0;
+	}
+
+	/**
+	 * Final cache key: the normalized request (lib/symbolication-cache.ts)
+	 * plus the stored debug files it can use, so an upload or delete never
+	 * serves an answer computed without (or with) that file.
+	 */
+	private symbolicationCacheKey(key: unknown, debugIds: unknown): string | null {
+		if (typeof key !== 'string' || !/^[0-9a-f]{64}$/.test(key)) return null;
+		const ids = Array.isArray(debugIds) ? debugIds.slice(0, SYMBOLICATION_ADMIT_MAX_IDS) : [];
+		const files: string[] = [];
+		for (const raw of ids) {
+			const debugId = normalizeDebugId(raw);
+			if (!debugId) continue;
+			for (const row of this.sql
+				.exec('SELECT id, created_at FROM debug_files WHERE debug_id = ?', debugId)
+				.toArray()) {
+				files.push(`${String(row.id)}@${String(row.created_at)}`);
+			}
+		}
+		return `${key}|${[...new Set(files)].sort().join(',')}`;
+	}
+
+	private async handleSymbolicationCacheGet(request: Request): Promise<Response> {
+		const { key, debugIds } = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+		const fullKey = this.symbolicationCacheKey(key, debugIds);
+		if (!fullKey) return this.jsonResponse({ hit: false });
+		const rows = this.sql
+			.exec(
+				'SELECT value FROM symbolication_cache WHERE key = ? AND created_at > ?',
+				fullKey,
+				Date.now() - SYMBOLICATION_CACHE_TTL_MS,
+			)
+			.toArray();
+		if (rows.length === 0) return this.jsonResponse({ hit: false });
+		return this.jsonResponse({ hit: true, value: JSON.parse(String(rows[0].value)) });
+	}
+
+	private async handleSymbolicationCachePut(request: Request): Promise<Response> {
+		const { key, debugIds, value } = (await request.json().catch(() => ({}))) as Record<
+			string,
+			unknown
+		>;
+		const fullKey = this.symbolicationCacheKey(key, debugIds);
+		const text = value === undefined ? '' : JSON.stringify(value);
+		if (!fullKey || !text || text.length > MAX_CACHED_ANSWER_CHARS) {
+			return this.jsonResponse({ stored: false });
+		}
+		const now = Date.now();
+		this.sql.exec(
+			'INSERT INTO symbolication_cache (key, value, created_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, created_at = excluded.created_at',
+			fullKey,
+			text,
+			now,
+		);
+		this.sql.exec(
+			'DELETE FROM symbolication_cache WHERE created_at <= ?',
+			now - SYMBOLICATION_CACHE_TTL_MS,
+		);
+		// Bounded size: keep the newest entries.
+		this.sql.exec(
+			'DELETE FROM symbolication_cache WHERE key NOT IN (SELECT key FROM symbolication_cache ORDER BY created_at DESC LIMIT ?)',
+			SYMBOLICATION_CACHE_MAX_ENTRIES,
+		);
+		return this.jsonResponse({ stored: true });
 	}
 
 	private maxSymbolicationsPerHour(): number {
