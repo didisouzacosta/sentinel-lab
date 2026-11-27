@@ -208,6 +208,38 @@ describe('Reprocessing after an upload', () => {
 		expect(after.id).toBe(issue.id); // same issue: grouping does not change
 		expect(after.missingDebugFiles).toEqual([]);
 		expect(after.culprit).toContain('crash_here');
+
+		// The next crash arrives with the dSYM stored: it is symbolicated at
+		// ingest (new fingerprint) and still lands in the same issue.
+		const nextId = 'e3'.repeat(16);
+		await sendEvent(project, { ...nativeEvent(), event_id: nextId });
+		const [parked] = (await env.DEBUG_FILES!.list({ prefix: `staging/${project.id}/event-` }))
+			.objects;
+		await handleQueue(
+			{
+				queue: 'sentinel-lab-process',
+				messages: [
+					{
+						id: '2',
+						timestamp: new Date(),
+						attempts: 1,
+						body: {
+							type: 'event.symbolicate',
+							projectId: project.id,
+							key: parked.key,
+						} satisfies ProcessJob,
+						ack: () => {},
+						retry: () => {},
+					},
+				],
+				ackAll: () => {},
+				retryAll: () => {},
+			} as unknown as MessageBatch<ProcessJob>,
+			{ ...env, SYMBOLICATOR: fakeSymbolicator } as unknown as Env,
+		);
+		const all = await issues(project);
+		expect(all).toHaveLength(1);
+		expect(all[0].id).toBe(issue.id);
 	});
 
 	it('gives an Android issue its real exception name once the mapping is uploaded', async () => {

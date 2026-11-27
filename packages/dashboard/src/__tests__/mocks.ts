@@ -63,6 +63,8 @@ export const api = {
 	put: vi.fn((url: string, body?: unknown) => Promise.resolve(dispatch('put', url, body))),
 	patch: vi.fn((url: string, body?: unknown) => Promise.resolve(dispatch('patch', url, body))),
 	delete: vi.fn((url: string) => Promise.resolve(dispatch('delete', url))),
+	/** File uploads are routed like POSTs (the body is the Blob). */
+	upload: vi.fn((url: string, body?: unknown) => Promise.resolve(dispatch('post', url, body))),
 };
 
 export const ApiError = MockApiError;

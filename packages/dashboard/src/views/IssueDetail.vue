@@ -13,9 +13,11 @@ import {
 	Trash2,
 } from 'lucide-vue-next';
 import { computed, onMounted, ref, watch } from 'vue';
-import { useRoute } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 import { api } from '../api/client';
 import AttachmentList from '../components/AttachmentList.vue';
+import AppIssueDebugFiles from '../components/app/AppIssueDebugFiles.vue';
+import AppMissingDebugFileTag from '../components/app/AppMissingDebugFileTag.vue';
 import AppStackFrame from '../components/app/AppStackFrame.vue';
 import {
 	UiAlert,
@@ -31,10 +33,18 @@ import {
 	UiSegmented,
 	UiSelect,
 	UiSkeleton,
+	UiStatus,
 	UiTag,
 } from '../components/ui';
 import { useConfirm } from '../composables/useConfirm';
 import { useToast } from '../composables/useToast';
+import {
+	FILE_NOUN,
+	type MissingDebugFile,
+	missingByPlatform,
+	platformOf,
+	uploadLink,
+} from '../lib/debug-files';
 import { timeAgo } from '../lib/format';
 import { issueExportFilename, issueExportJson } from '../lib/issue-export';
 import { renderMarkdown } from '../lib/markdown';
@@ -58,10 +68,14 @@ interface Issue {
 		type: string;
 		value: string;
 	};
+	missingDebugFiles?: MissingDebugFile[];
 }
 
 interface StackFrame {
 	filename?: string;
+	package?: string;
+	instruction_addr?: string;
+	module?: string;
 	function?: string;
 	lineno?: number;
 	colno?: number;
@@ -90,6 +104,9 @@ interface Event {
 			type: string;
 			value: string;
 			stacktrace?: {
+				frames: StackFrame[];
+			};
+			raw_stacktrace?: {
 				frames: StackFrame[];
 			};
 		}>;
@@ -124,6 +141,7 @@ interface Activity {
 }
 
 const route = useRoute();
+const router = useRouter();
 const authStore = useAuthStore();
 const toast = useToast();
 const askConfirm = useConfirm();
@@ -475,10 +493,42 @@ function toggleFrame(index: number) {
 	expandedFrames.value = next;
 }
 
+/** Native crashes: the symbolicated frames, or what the SDK sent (raw). */
+const symbolicationView = ref<'symbolicated' | 'raw'>('symbolicated');
+const hasRawFrames = computed(
+	() => !!selectedEvent.value?.exception?.values?.[0]?.raw_stacktrace?.frames,
+);
+const missingFiles = computed(() => missingByPlatform(issue.value?.missingDebugFiles));
+const firstMissing = computed(() => missingFiles.value[0] ?? null);
+/** Symbolication state of the selected event, from its tags. */
+const symbolication = computed(() => {
+	const tags = selectedEvent.value?.tags ?? {};
+	switch (tags.symbolication) {
+		case 'done':
+			return { state: 'connected' as const, label: 'Symbolicated' };
+		case 'missing':
+			return { state: 'attention' as const, label: 'Not symbolicated' };
+		case 'failed':
+			return { state: 'attention' as const, label: 'Symbolication failed' };
+		case 'skipped':
+			return {
+				state: 'off' as const,
+				label:
+					tags.symbolication_reason === 'backlog'
+						? 'Skipped (queue busy)'
+						: 'Skipped (hourly budget)',
+			};
+		default:
+			return null;
+	}
+});
+
 function getStackFrames(): StackFrame[] {
 	const exc = selectedEvent.value?.exception?.values?.[0];
-	if (!exc?.stacktrace?.frames) return [];
-	return [...exc.stacktrace.frames].reverse();
+	const trace =
+		symbolicationView.value === 'raw' && exc?.raw_stacktrace ? exc.raw_stacktrace : exc?.stacktrace;
+	if (!trace?.frames) return [];
+	return [...trace.frames].reverse();
 }
 
 onMounted(() => loadIssue());
@@ -508,6 +558,12 @@ onMounted(() => loadIssue());
 					<UiBadge :status="issue.status" />
 					<UiTag v-if="selectedEvent.environment">{{ selectedEvent.environment }}</UiTag>
 					<UiTag v-if="selectedEvent.release">{{ selectedEvent.release }}</UiTag>
+					<AppMissingDebugFileTag
+						v-for="file in missingFiles"
+						:key="file.debugId"
+						:platform="platformOf(file.kind)"
+						:to="uploadLink(slug, file, issue.id)"
+					/>
 				</div>
 				<div class="flex flex-wrap items-start gap-3">
 					<div class="min-w-0 flex-1">
@@ -586,8 +642,18 @@ onMounted(() => loadIssue());
 					<!-- Stack trace -->
 					<UiCard title="Stack Trace">
 						<template #actions>
+							<UiStatus v-if="symbolication" :state="symbolication.state" :label="symbolication.label" />
 							<UiSegmented
-								v-if="anyMapped"
+								v-if="hasRawFrames"
+								v-model="symbolicationView"
+								label="Frames"
+								:options="[
+									{ value: 'symbolicated', label: 'Symbolicated' },
+									{ value: 'raw', label: 'Raw' },
+								]"
+							/>
+							<UiSegmented
+								v-else-if="anyMapped"
 								v-model="sourceView"
 								label="Source"
 								:options="[
@@ -597,6 +663,18 @@ onMounted(() => loadIssue());
 							/>
 							<span v-else-if="resolving" class="text-caption text-fg-subtle" aria-live="polite">Resolving source maps…</span>
 						</template>
+						<UiAlert
+							v-if="firstMissing"
+							tone="warning"
+							:action-label="`Upload ${FILE_NOUN[platformOf(firstMissing.kind)]}`"
+							class="rounded-none border-b border-border"
+							data-testid="stack-missing-debug-file"
+							@action="router.push(uploadLink(slug, firstMissing, issue.id))"
+						>
+							This crash can’t be read: the {{ FILE_NOUN[platformOf(firstMissing.kind)] }}
+							{{ firstMissing.image ? `for ${firstMissing.image} ` : '' }}({{ firstMissing.debugId.slice(0, 8) }}…) isn’t
+							uploaded.
+						</UiAlert>
 						<p v-if="getStackFrames().length === 0" class="px-4 py-4 text-body-s text-fg-muted">No stack trace available</p>
 						<div v-else>
 							<AppStackFrame
@@ -610,6 +688,14 @@ onMounted(() => loadIssue());
 							/>
 						</div>
 					</UiCard>
+
+					<!-- Debug files the selected event needs (native crashes) -->
+					<AppIssueDebugFiles
+						v-if="selectedEvent.event_id"
+						:slug="slug"
+						:issue-id="issue.id"
+						:event-id="selectedEvent.event_id"
+					/>
 
 					<!-- Attachments (per selected event) -->
 					<AttachmentList v-if="selectedEvent.event_id" :slug="slug" :event-id="selectedEvent.event_id" />

@@ -6,6 +6,11 @@ import UiTag from '../ui/UiTag.vue';
 
 export interface StackFrameData {
 	filename?: string;
+	/** Native frames: the binary the address belongs to, and the address. */
+	package?: string;
+	instruction_addr?: string;
+	/** JVM frames: the class (shown when there is no file name). */
+	module?: string;
 	function?: string;
 	lineno?: number;
 	colno?: number;
@@ -26,15 +31,23 @@ defineEmits<{ toggle: [] }>();
 
 const contextId = `frame-ctx-${useId()}`;
 const mapped = computed(() => props.showOriginal && props.resolved?.resolved);
+/** A native frame nothing could name: shown as binary + address. */
+const unsymbolicated = computed(
+	() => !mapped.value && !props.frame.filename && !!props.frame.instruction_addr,
+);
 const fn = computed(() =>
 	mapped.value
 		? props.resolved?.originalFunction || props.frame.function || '(anonymous)'
-		: props.frame.function || '(anonymous)',
+		: props.frame.function || (unsymbolicated.value ? '(no debug file)' : '(anonymous)'),
 );
-const file = computed(
-	() => (mapped.value ? props.resolved?.originalFilename : props.frame.filename) ?? '',
-);
+const file = computed(() => {
+	if (mapped.value) return props.resolved?.originalFilename ?? '';
+	if (props.frame.filename) return props.frame.filename;
+	if (props.frame.module) return props.frame.module;
+	return props.frame.package?.split('/').pop() ?? '';
+});
 const position = computed(() => {
+	if (unsymbolicated.value) return props.frame.instruction_addr ?? '';
 	const line = mapped.value ? props.resolved?.originalLineno : props.frame.lineno;
 	const col = mapped.value ? props.resolved?.originalColno : props.frame.colno;
 	return `${line ? `:${line}` : ''}${col ? `:${col}` : ''}`;
@@ -83,7 +96,7 @@ const inApp = computed(() => props.frame.in_app !== false);
 				<span class="min-w-0 truncate" :class="inApp ? 'text-fg' : 'text-fg-subtle'">{{ file }}</span>
 				<span class="text-fg-subtle">{{ position }}</span>
 				<span class="font-sans text-caption text-fg-subtle">in</span>
-				<span class="min-w-0 truncate text-accent-text">{{ fn }}</span>
+				<span class="min-w-0 truncate" :class="unsymbolicated && !frame.function ? 'text-fg-subtle' : 'text-accent-text'">{{ fn }}</span>
 				<span v-if="mapped" class="font-sans text-caption text-success" title="Resolved via source map">mapped</span>
 			</span>
 			<UiTag v-if="inApp">in-app</UiTag>

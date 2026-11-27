@@ -3120,6 +3120,25 @@ export class ProjectState extends DurableObject<Env> {
 					issue,
 				);
 				this.rememberMissingDebugFiles(issue, this.missingNeededDebugFiles(newest));
+				// Crashes symbolicated at ingest from now on group by their real
+				// frames, i.e. by a new fingerprint: point it at this issue (the
+				// merge redirect table), unless another issue already owns it.
+				const symbolicatedFingerprint = generateFingerprint(newest);
+				const owned = this.sql
+					.exec(
+						'SELECT 1 FROM issues WHERE fingerprint = ? UNION SELECT 1 FROM fingerprint_redirects WHERE fingerprint = ?',
+						symbolicatedFingerprint,
+						symbolicatedFingerprint,
+					)
+					.toArray();
+				if (owned.length === 0) {
+					this.sql.exec(
+						'INSERT INTO fingerprint_redirects (fingerprint, target_issue_id, created_at) VALUES (?, ?, ?)',
+						symbolicatedFingerprint,
+						issue,
+						new Date().toISOString(),
+					);
+				}
 			}
 		});
 		return this.jsonResponse({ updated });

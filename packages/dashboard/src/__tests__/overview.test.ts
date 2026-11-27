@@ -99,9 +99,12 @@ describe('project overview', () => {
 		onGet('/api/projects/web-frontend/summary', () => SUMMARY);
 		const wrapper = await mountOverview();
 		await flushPromises();
-		const row = wrapper.get('ul a');
-		expect(row.attributes('href')).toBe('/projects/web-frontend/issues/i1');
-		expect(row.text()).toContain('TypeError');
+		const link = wrapper.get('ul a');
+		expect(link.attributes('href')).toBe('/projects/web-frontend/issues/i1');
+		expect(link.text()).toContain('TypeError');
+		// The link is stretched over the row (so a missing-debug-file tag can
+		// be a link of its own); culprit and age sit in the row around it.
+		const row = wrapper.get('ul li');
 		expect(row.text()).toContain('src/routes/checkout.ts in handleSubmit');
 		expect(row.text()).toContain('first seen 13h ago');
 		wrapper.unmount();
