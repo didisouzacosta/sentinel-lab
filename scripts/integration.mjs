@@ -121,6 +121,9 @@ const wrangler = spawn(
 		`SETUP_TOKEN:${SETUP_TOKEN}`,
 		'--var',
 		`WEBAUTHN_ORIGINS:http://localhost:${port}`,
+		// No Symbolicator container locally (wrangler.jsonc dev.enable_containers).
+		'--var',
+		'SYMBOLICATION:off',
 	],
 	{
 		cwd: ROOT,

@@ -266,6 +266,9 @@ export async function start({ root, mode = 'dev', timeoutMs = 180000 }) {
 				// tooling (demo seeding's passkey bootstrap) uses.
 				'--var',
 				`WEBAUTHN_ORIGINS:http://localhost:${info.port}`,
+				// No Symbolicator container locally (wrangler.jsonc dev.enable_containers).
+				'--var',
+				'SYMBOLICATION:off',
 			],
 			{ cwd: info.wranglerDir, env, stdio: 'inherit', detached: true },
 		);

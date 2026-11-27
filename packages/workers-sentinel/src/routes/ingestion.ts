@@ -28,6 +28,7 @@ import {
 } from '../lib/envelope-parser';
 import { isProjectIdForProject } from '../lib/project-access';
 import { buildWebhookPayload, sendWebhook } from '../lib/webhook';
+import { parkEvent, shouldSymbolicate, symbolicationEnabled } from '../symbolication-job';
 import type { DroppedAttachment, Env, Project, SentryEvent } from '../types';
 
 export const ingestionRoutes = new Hono<{ Bindings: Env }>();
@@ -833,6 +834,43 @@ async function handleIngestion(c: Context<{ Bindings: Env }>): Promise<Response>
 	const attachmentMeta = rawEvent ? [] : ingest.attachmentMeta;
 	let dropped: DroppedAttachment[];
 
+	// Symbolication: an event whose debug images have stored debug files
+	// waits in the queue for Symbolicator (src/symbolication-job.ts) and the
+	// SDK gets its id right away. Quota and purge answers for such events
+	// are applied by the consumer, after this 200. If parking fails, the
+	// event is ingested as received below.
+	const parkedIds: string[] = [];
+	let directEvents = events;
+	if (symbolicationEnabled(c.env)) {
+		directEvents = [];
+		for (const event of events) {
+			let parked = false;
+			if (await shouldSymbolicate(c.env, projectState, event)) {
+				try {
+					parkedIds.push(
+						await parkEvent(
+							c.env,
+							project,
+							event,
+							event === singleEvent ? attachmentMeta : [],
+							event === singleEvent ? ingest.uploadedKeys : [],
+						),
+					);
+					parked = true;
+				} catch (error) {
+					console.error(
+						'Parking for symbolication failed:',
+						error instanceof Error ? error.message.slice(0, 120) : 'unknown',
+					);
+				}
+			}
+			if (!parked) directEvents.push(event);
+		}
+		if (singleEvent && parkedIds.length === 1) {
+			return c.json({ id: parkedIds[0], droppedAttachments: [...ingest.droppedEarly] });
+		}
+	}
+
 	if (singleEvent) {
 		dropped = [...ingest.droppedEarly];
 	} else {
@@ -848,7 +886,7 @@ async function handleIngestion(c: Context<{ Bindings: Env }>): Promise<Response>
 
 	// Ingest each event
 	const results = [];
-	for (const event of events) {
+	for (const event of directEvents) {
 		try {
 			const response = await projectState.fetch(
 				new Request(
@@ -950,7 +988,7 @@ async function handleIngestion(c: Context<{ Bindings: Env }>): Promise<Response>
 	// Return the first event ID (standard Sentry response)
 	const firstResult = results[0] as { eventId: string; duplicate?: boolean } | undefined;
 	return c.json({
-		id: firstResult?.eventId || events[0]?.event_id || null,
+		id: firstResult?.eventId || parkedIds[0] || events[0]?.event_id || null,
 		...(firstResult?.duplicate ? { duplicate: true } : {}),
 		droppedAttachments: dropped,
 	});

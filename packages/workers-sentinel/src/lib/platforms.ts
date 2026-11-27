@@ -337,7 +337,7 @@ export const PLATFORMS: readonly PlatformGuide[] = [
 			'Requires iOS 15+ and Swift 6.0+ (Xcode 16+). The app itself may stay in the Swift 5 language mode.',
 			'Nothing is sent until Sentinel.grantConsent() (GDPR default). Use options.consent = .notRequired if your app relies on another legal basis.',
 			'Native crashes arrive through MetricKit on a later launch, on real devices only.',
-			'Sentinel stores your dSYMs (sentry-cli, API or MCP) and shows which ones a crash needs. Applying them to the frames is the next step; until then native frames show binary and address.',
+			'Upload your dSYMs (sentry-cli, API or MCP) and crashes that arrive afterwards are symbolicated: function names, files and lines instead of binary and address. Crashes from builds without a stored dSYM keep the addresses.',
 		],
 		steps: ({ dsn = DSN_PLACEHOLDER, project = PROJECT_PLACEHOLDER }) => [
 			{
@@ -389,7 +389,7 @@ export const PLATFORMS: readonly PlatformGuide[] = [
 		verifiedBy: 'lab/native-test.mjs (simulated crashes)',
 		browser: false,
 		notes: [
-			'Sentinel stores R8/ProGuard mappings (Gradle plugin, sentry-cli, API or MCP) and shows which one a crash needs. Applying them to the frames is the next step; until then obfuscated builds show obfuscated names.',
+			'Upload your R8/ProGuard mappings (Gradle plugin, sentry-cli, API or MCP) and crashes that arrive afterwards are deobfuscated: real class, method and exception names. Builds without a stored mapping keep the obfuscated names.',
 		],
 		steps: ({ dsn = DSN_PLACEHOLDER, project = PROJECT_PLACEHOLDER }) => [
 			{

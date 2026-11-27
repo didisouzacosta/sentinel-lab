@@ -1,0 +1,16 @@
+# The container has no internet access: every request carries one "sentry"
+# source pointing at http://sentinel.internal/dif/{projectId}/, which the
+# Worker answers from R2 (outbound interception, src/symbolicator.ts).
+bind: "0.0.0.0:3021"
+# Ephemeral disk: caches last while the container is awake (sleepAfter).
+cache_dir: "/tmp/symbolicator"
+logging:
+  level: "info"
+  format: "json"
+  enable_backtraces: false
+caches:
+  downloaded:
+    # A debug file uploaded right after a crash is found on the next event.
+    retry_misses_after: "60s"
+  derived:
+    retry_misses_after: "60s"

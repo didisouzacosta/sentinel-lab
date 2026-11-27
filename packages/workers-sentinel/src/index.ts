@@ -21,12 +21,15 @@ import { sourcemapRoutes } from './routes/sourcemaps';
 import { webauthnRoutes } from './routes/webauthn';
 import type { AuthContext, Env, ProcessJob } from './types';
 
+// Symbolicator container (Durable Object class) and the proxy entrypoint
+// its outbound interception needs (src/symbolicator.ts).
+export { ContainerProxy } from '@cloudflare/containers';
 // Re-export Durable Objects
 export { AuthState } from './durable-objects/auth-state';
 export { ProjectState } from './durable-objects/project-state';
-
 // Re-export RPC entrypoint for service bindings
 export { SentinelRpc } from './rpc';
+export { Symbolicator } from './symbolicator';
 
 type Variables = {
 	auth?: AuthContext;
