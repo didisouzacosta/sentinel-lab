@@ -347,7 +347,9 @@ Things to know:
 
 - **Nothing is lost.** If the container cannot answer, the job is retried every minute; after about 4 minutes the event is stored as received, tagged `symbolication:failed`. If Symbolicator refuses the request itself, or the symbolicated event is too big to store, the event is stored as received right away.
 - **Malformed fields are left out, not fatal.** Symbolicator refuses a whole request when one field has the wrong shape, and events come from anyone holding the DSN. Sentinel forwards only well-formed addresses, names and line numbers; the frames it leaves out stay as they were.
-- **Grouping follows the real code.** Issues are grouped by the symbolicated frames, so a crash reported before its dSYM was uploaded and the same crash after the upload end up in different issues (older issues are not regrouped).
+- **Grouping follows the real code.** Issues are grouped by the symbolicated frames. An issue first seen without its dSYM is not split when the file arrives: reprocessing (below) points the new grouping at the same issue.
+- **Missing files are flagged.** A crash whose app image (iOS) or mapping (Android) has no stored file gets a **dSYM missing** / **Mapping missing** tag in the issue list and on the issue, plus a warning on its stack trace. The tag opens Project settings → Debug files on the right platform tab, naming the file. That page has one tab per platform, each with how to get the file (Xcode archive, R8 `mapping.txt` and its UUID), the upload and the stored files. System libraries never need a dSYM and are not flagged.
+- **Uploading reprocesses.** When a dSYM or mapping is stored (dashboard, API, sentry-cli or MCP), every issue that was waiting for it is reprocessed in the background: its 20 newest events are symbolicated again from the frames the SDK sent, and the issue's title and culprit follow (an Android `b: boom` becomes `BoomException: boom`). Reprocessed events carry `symbolication_reprocessed: yes`; the upload answer says how many issues were queued (`reprocessing`).
 - **Events with no stored files** skip the queue and are stored immediately, as before.
 - **Budget per project.** A project symbolicates at most 500 crashes per hour by default; past that, crashes are stored right away with their raw frames, tagged `symbolication:skipped`. Owners and admins change it with `PATCH /api/projects/:slug {"maxSymbolicationsPerHour": n}` (or the MCP tool `update_project`, `max_symbolications_per_hour`); `0` turns symbolication off. `GET /api/projects/:slug/settings` shows the limit and this hour's count.
 - **Cache.** The same crash from many devices is symbolicated once: answers are kept for 24 hours per project, keyed by the crash with its addresses made relative to each image (ASLR moves the absolute ones), and by the debug files stored at the time, so uploading or deleting a file never reuses an old answer. Events answered from it carry `symbolication_cache:hit`.
@@ -419,6 +421,130 @@ export SENTRY_URL="https://your-sentinel.example.com" SENTRY_ORG="sentinel" SENT
 sentry-cli debug-files upload "$DWARF_DSYM_FOLDER_PATH" || echo "warning: dSYM upload to Sentinel failed"
 ```
 
+### Sending dSYMs automatically (Xcode Cloud, terminal, scripts)
+
+Every build you ship has new dSYMs, so the upload should happen by itself, right after the archive. [`examples/ios/ci_scripts/`](examples/ios/ci_scripts/) has two scripts for that:
+
+- **`sentinel-upload-dsyms.sh`** uploads every dSYM under a folder. It only needs `curl`, so no Homebrew or sentry-cli. It works in Xcode Cloud, GitHub Actions, an Xcode post-action and the terminal. Each DWARF file is sent gzipped, and the debug ids are printed.
+- **`ci_post_xcodebuild.sh`** is the Xcode Cloud hook that calls it after an Archive.
+
+Both scripts read the same three variables:
+
+| Variable | Value |
+|---|---|
+| `SENTINEL_URL` | Your Sentinel, e.g. `https://your-sentinel.example.com` |
+| `SENTINEL_PROJECT` | The project slug, e.g. `my-app` |
+| `SENTINEL_AUTH_TOKEN` | An API token with the `write` scope. Keep it a **secret**, never in the repository. |
+
+A failed upload prints a `warning:` and the build goes on. Set `SENTINEL_STRICT=1` to make it fail the build instead. Crashes that arrived before the upload are symbolicated again automatically, and the **dSYM missing** tag goes away. Each file can be up to 95 MB compressed. For anything bigger, use `sentry-cli debug-files upload`, which uploads in chunks.
+
+These scripts were tested on a Mac against a local server, including with Xcode Cloud's variables. They have not run in an Xcode Cloud build yet.
+
+#### Xcode Cloud
+
+Xcode Cloud runs `ci_scripts/ci_post_xcodebuild.sh` after every action. The `ci_scripts` folder must sit next to your `.xcodeproj` or `.xcworkspace`. After an **Archive** action, `$CI_ARCHIVE_PATH/dSYMs` holds the dSYMs of the build that goes to TestFlight/App Store.
+
+1. Add the scripts to the repository (from the folder that has the `.xcodeproj`):
+
+   ```bash
+   mkdir -p ci_scripts
+   for f in sentinel-upload-dsyms.sh ci_post_xcodebuild.sh; do
+     curl -fsSL "https://raw.githubusercontent.com/didisouzacosta/sentinel-lab/main/examples/ios/ci_scripts/$f" -o "ci_scripts/$f"
+   done
+   chmod +x ci_scripts/*.sh
+   git add ci_scripts && git commit -m "Upload dSYMs to Sentinel from Xcode Cloud"
+   ```
+
+   If you already have a `ci_post_xcodebuild.sh`, keep it. Copy only `sentinel-upload-dsyms.sh` and add the archive check and the call from [ours](examples/ios/ci_scripts/ci_post_xcodebuild.sh). The scripts must be executable (`chmod +x`), and `git` keeps that bit.
+
+2. Set the variables in the workflow: **Xcode → Report navigator → Cloud → (workflow) → Edit Workflow → Environment**, or **App Store Connect → Xcode Cloud → Manage Workflows**. Add the three variables from the table. Tick **Secret** for `SENTINEL_AUTH_TOKEN`; Xcode Cloud then shows it as `**********` in logs.
+
+3. Make sure the workflow has an **Archive** action. Build and test actions have no archive, so the script says so and exits.
+
+After the next build, the log of the **ci_post_xcodebuild.sh** step shows one `uploaded … → <debug id>` line per dSYM.
+
+#### Terminal
+
+```bash
+export SENTINEL_URL=https://your-sentinel.example.com
+export SENTINEL_PROJECT=my-app
+export SENTINEL_AUTH_TOKEN=…   # or: $(security find-generic-password -s sentinel-auth-token -w)
+
+# Archive and upload:
+xcodebuild archive -scheme MyApp -configuration Release \
+  -destination "generic/platform=iOS" -archivePath build/MyApp.xcarchive
+./ci_scripts/sentinel-upload-dsyms.sh build/MyApp.xcarchive/dSYMs
+
+# Or the latest archive made in Xcode (Product → Archive):
+latest="$(ls -td ~/Library/Developer/Xcode/Archives/*/*.xcarchive | head -1)"
+./ci_scripts/sentinel-upload-dsyms.sh "$latest/dSYMs"
+```
+
+To keep the token out of your shell history and dotfiles, store it once in the login Keychain. `security` prompts for the value:
+
+```bash
+security add-generic-password -a "$USER" -s sentinel-auth-token -w
+```
+
+To check that Sentinel has them, take the UUIDs from `dwarfdump` and ask `/debug-files/check`. Every image should be `found`:
+
+```bash
+ids=$(dwarfdump --uuid build/MyApp.xcarchive/dSYMs/*.dSYM | awk '{printf "%s\"%s\"", (n++ ? "," : ""), $2}')
+curl -sS -X POST "$SENTINEL_URL/api/0/projects/sentinel/$SENTINEL_PROJECT/debug-files/check" \
+  -H "Authorization: Bearer $SENTINEL_AUTH_TOKEN" -H "Content-Type: application/json" \
+  -d "{\"debugIds\":[$ids]}"
+# → {"images":[{"debugId":"…","status":"found",…}],"found":2,"missing":0,"processing":0}
+```
+
+The same list is in the dashboard under **Project settings → Debug files → iOS · dSYMs**.
+
+#### Every archive made on your Mac (scheme post-action)
+
+This uploads the dSYMs of every **Product → Archive** made on your Mac. Set it up in **Edit Scheme → Archive → Post-actions → + → New Run Script Action**, with *Provide build settings from* set to the app target. Post-actions do not see your shell's variables, so the token comes from the Keychain entry above. The output goes to a log file, because Xcode shows none.
+
+```bash
+export SENTINEL_URL="https://your-sentinel.example.com" SENTINEL_PROJECT="my-app"
+export SENTINEL_AUTH_TOKEN="$(security find-generic-password -s sentinel-auth-token -w)"
+"$SRCROOT/ci_scripts/sentinel-upload-dsyms.sh" "$ARCHIVE_DSYMS_PATH" > /tmp/sentinel-dsyms.log 2>&1
+```
+
+Not yet run from Xcode; check `/tmp/sentinel-dsyms.log` after the first archive.
+
+#### Other CI
+
+The same command works on GitHub Actions or any macOS runner, after `xcodebuild archive`:
+
+```yaml
+- name: Upload dSYMs to Sentinel
+  env:
+    SENTINEL_URL: https://your-sentinel.example.com
+    SENTINEL_PROJECT: my-app
+    SENTINEL_AUTH_TOKEN: ${{ secrets.SENTINEL_AUTH_TOKEN }}
+  run: ./ci_scripts/sentinel-upload-dsyms.sh "$RUNNER_TEMP/MyApp.xcarchive/dSYMs"
+```
+
+With fastlane, call it after `build_app`/`gym`: `sh("../ci_scripts/sentinel-upload-dsyms.sh", "#{lane_context[SharedValues::XCODEBUILD_ARCHIVE]}/dSYMs")`.
+
+#### A prompt to set it up with an agent
+
+Paste this into Claude Code or Claude in Xcode, from the app's repository, after you fill in the URL and slug. With the [Sentinel MCP](#agents-mcp-and-claude-in-xcode) connected, the agent also gets the filled-in commands (`get_debug_file_upload`) and can confirm the upload (`check_debug_files`). Without the MCP, it uses the scripts and the API above.
+
+```text
+Set up automatic dSYM uploads to Sentinel for this iOS app, so every build that ships has its crashes symbolicated.
+
+Sentinel: https://your-sentinel.example.com — project slug: my-app.
+The upload token is in the environment variable SENTINEL_AUTH_TOKEN (an API token with the "write" scope). Never write its value into a file, a commit, a log or this chat.
+
+1. Find the .xcodeproj/.xcworkspace and the targets that ship (app, extensions, embedded frameworks). Check that their Release configuration uses DEBUG_INFORMATION_FORMAT = dwarf-with-dsym. Ask me before changing any build setting.
+2. Find out where release builds are made: Xcode Cloud (a ci_scripts folder, or I say so), GitHub Actions (.github/workflows), fastlane (fastlane/Fastfile), or archives on this Mac. Ask me if it is unclear.
+3. Add sentinel-upload-dsyms.sh from https://github.com/didisouzacosta/sentinel-lab/tree/main/examples/ios/ci_scripts to a ci_scripts folder next to the project, executable. Then wire it in:
+   - Xcode Cloud: add ci_post_xcodebuild.sh from the same folder. If one exists, keep its content and add only the archive check and the call. Make sure the workflow has an Archive action.
+   - GitHub Actions / fastlane: run the script on the archive's dSYMs folder right after the archive step, with SENTINEL_AUTH_TOKEN coming from the CI's secrets.
+   - Archives on this Mac: add an Archive post-action to the shared scheme that reads the token from the Keychain (service "sentinel-auth-token") and runs the script on $ARCHIVE_DSYMS_PATH.
+4. Prove it works: archive (or use the latest archive in ~/Library/Developer/Xcode/Archives), run the script on its dSYMs folder with SENTINEL_URL and SENTINEL_PROJECT set, then check the UUIDs from `dwarfdump --uuid` with POST /api/0/projects/sentinel/my-app/debug-files/check (or the check_debug_files MCP tool). Show me that every image is "found".
+5. Tell me exactly which variables and secrets I must add myself, and where (Xcode Cloud workflow → Environment, with SENTINEL_AUTH_TOKEN marked Secret; GitHub → Settings → Secrets and variables → Actions). Do not try to create them.
+```
+
 ### Android: R8/ProGuard mapping
 
 A mapping is matched by a UUID the app itself reports. The [Sentry Android Gradle plugin](https://docs.sentry.io/platforms/android/configuration/gradle/) generates it, embeds it in the APK/AAB and uploads `mapping.txt` with it over the sentry-cli protocol Sentinel speaks (the plugin itself has not been run against Sentinel yet; the protocol has, with sentry-cli):
@@ -457,7 +583,7 @@ The [Sentinel MCP](#mcp-ai-agents) has the whole flow:
 
 | Tool / prompt | What it does |
 |---|---|
-| `get_debug_file_upload` | sentry-cli variables, Xcode build phase, GitHub Actions steps, Gradle config and curl commands for a project, filled in (token always `$SENTINEL_AUTH_TOKEN`) |
+| `get_debug_file_upload` | sentry-cli variables, Xcode Cloud `ci_scripts`, archive post-action, Xcode build phase, GitHub Actions steps, Gradle config and curl commands for a project, filled in (token always `$SENTINEL_AUTH_TOKEN`) |
 | `check_debug_files` | For an issue (its latest event), an event or a list of UUIDs: which debug files are `found`, `missing` or `processing` |
 | `list_debug_files` | What is stored, with storage used |
 | `upload_debug_file` | Uploads one small file (≤ 8 MB) given as base64 |

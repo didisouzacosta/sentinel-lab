@@ -14,6 +14,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { RouterLink, useRoute } from 'vue-router';
 import { api } from '../api/client';
 import AppIssueFilters, { type TagFacet } from '../components/app/AppIssueFilters.vue';
+import AppMissingDebugFileTag from '../components/app/AppMissingDebugFileTag.vue';
 import AppPageHeader from '../components/app/AppPageHeader.vue';
 import {
 	UiAlert,
@@ -29,6 +30,12 @@ import {
 } from '../components/ui';
 import { useConfirm } from '../composables/useConfirm';
 import { useToast } from '../composables/useToast';
+import {
+	type MissingDebugFile,
+	missingByPlatform,
+	platformOf,
+	uploadLink,
+} from '../lib/debug-files';
 import { formatNumber, timeAgo } from '../lib/format';
 import { useProjectsStore } from '../stores/projects';
 
@@ -48,6 +55,7 @@ interface Issue {
 		type: string;
 		value: string;
 	};
+	missingDebugFiles?: MissingDebugFile[];
 }
 
 const route = useRoute();
@@ -553,6 +561,15 @@ watch(
 									<span class="text-fg-subtle">{{ timeAgo(issue.lastSeen) }}</span>
 								</span>
 							</RouterLink>
+							<!-- Missing dSYM / mapping: a link of its own, next to (not inside) the issue link -->
+							<span v-if="issue.missingDebugFiles?.length" class="mt-1.5 flex flex-wrap gap-1.5">
+								<AppMissingDebugFileTag
+									v-for="file in missingByPlatform(issue.missingDebugFiles)"
+									:key="file.debugId"
+									:platform="platformOf(file.kind)"
+									:to="uploadLink(slug, file, issue.id)"
+								/>
+							</span>
 							<!-- Quick actions: on hover/focus (desktop), always on phones -->
 							<div
 								class="mt-1.5 flex items-center gap-1 sm:pointer-events-none sm:absolute sm:top-2 sm:right-2 sm:mt-0 sm:rounded-lg sm:border sm:border-border sm:bg-surface sm:p-0.5 sm:opacity-0 sm:shadow-xs sm:transition-opacity sm:group-focus-within:pointer-events-auto sm:group-focus-within:opacity-100 sm:group-hover:pointer-events-auto sm:group-hover:opacity-100">

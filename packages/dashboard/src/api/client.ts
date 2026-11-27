@@ -16,8 +16,10 @@ function getToken(): string | null {
 }
 
 async function request<T>(method: string, url: string, body?: unknown): Promise<T> {
+	// A Blob (file upload) goes as is; anything else as JSON.
+	const raw = body instanceof Blob;
 	const headers: Record<string, string> = {
-		'Content-Type': 'application/json',
+		'Content-Type': raw ? 'application/octet-stream' : 'application/json',
 	};
 
 	const token = getToken();
@@ -28,7 +30,7 @@ async function request<T>(method: string, url: string, body?: unknown): Promise<
 	const response = await fetch(url, {
 		method,
 		headers,
-		body: body ? JSON.stringify(body) : undefined,
+		body: raw ? (body as Blob) : body ? JSON.stringify(body) : undefined,
 	});
 
 	const data = await response.json();
@@ -57,6 +59,8 @@ export const api = {
 	put: <T>(url: string, body: unknown) => request<T>('PUT', url, body),
 	patch: <T>(url: string, body: unknown) => request<T>('PATCH', url, body),
 	delete: <T>(url: string) => request<T>('DELETE', url),
+	/** POST a file's bytes as the request body (debug file upload). */
+	upload: <T>(url: string, file: Blob) => request<T>('POST', url, file),
 };
 
 export { ApiError };

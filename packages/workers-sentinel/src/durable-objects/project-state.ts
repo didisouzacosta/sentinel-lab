@@ -1,6 +1,6 @@
 import { DurableObject } from 'cloudflare:workers';
 import { createAttachmentStore, migrationKey, projectPrefix } from '../lib/attachment-store';
-import { normalizeDebugId } from '../lib/debug-files';
+import { type EventDebugImage, neededDebugImages, normalizeDebugId } from '../lib/debug-files';
 import { sanitizeEvent } from '../lib/envelope-parser';
 import {
 	extractCulprit,
@@ -30,6 +30,7 @@ import {
 	buildSlackRegressionReply,
 	type SlackIssue,
 } from '../lib/slack-message';
+import { hasTag, setEventTag } from '../lib/symbolicate';
 import { MAX_CACHED_ANSWER_CHARS, SYMBOLICATION_CACHE_TTL_MS } from '../lib/symbolication-cache';
 import type {
 	DroppedAttachment,
@@ -38,6 +39,7 @@ import type {
 	FilterType,
 	InboundFilter,
 	Issue,
+	MissingDebugFile,
 	ProjectSettings,
 	SentryEvent,
 } from '../types';
@@ -54,6 +56,11 @@ const SYMBOLICATION_ADMIT_MAX_IDS = 2000;
  * docs/plano-riscos-simbolizacao.md, phase 2.
  */
 const DEFAULT_MAX_SYMBOLICATIONS_PER_HOUR = 500;
+
+/** Reprocessing after an upload (src/symbolication-job.ts processReprocessJob). */
+const REPROCESS_MAX_ISSUES = 200;
+const REPROCESS_EVENTS_PER_ISSUE = 20;
+const REPROCESS_MAX_EVENT_CHARS = 1_500_000;
 
 /** Cached Symbolicator answers kept per project (lib/symbolication-cache.ts). */
 const SYMBOLICATION_CACHE_MAX_ENTRIES = 2000;
@@ -286,6 +293,16 @@ CREATE TABLE IF NOT EXISTS symbolication_counters (
   bucket TEXT PRIMARY KEY,
   count INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS issue_missing_debug_files (
+  issue_id TEXT NOT NULL,
+  debug_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  image TEXT,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (issue_id, debug_id)
+);
+CREATE INDEX IF NOT EXISTS idx_issue_missing_debug_id ON issue_missing_debug_files(debug_id);
 
 CREATE TABLE IF NOT EXISTS symbolication_cache (
   key TEXT PRIMARY KEY,
@@ -547,6 +564,9 @@ export class ProjectState extends DurableObject<Env> {
 				const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
 				if (body.projectId) this.persistProjectId(body.projectId);
 				const handled = handleDebugFilesRequest(this.sql, path, body);
+				if (handled && path === '/debug-files/register' && handled.ok) {
+					return this.reprocessAfterUpload(handled);
+				}
 				if (handled) return handled;
 			}
 			switch (path) {
@@ -556,6 +576,10 @@ export class ProjectState extends DurableObject<Env> {
 					return this.handleIngestWithAttachments(request);
 				case '/symbolication/admit':
 					return this.handleSymbolicationAdmit(request);
+				case '/symbolication/reprocess/events':
+					return this.handleReprocessEvents(request);
+				case '/symbolication/reprocess/apply':
+					return this.handleReprocessApply(request);
 				case '/symbolication/cache/get':
 					return this.handleSymbolicationCacheGet(request);
 				case '/symbolication/cache/put':
@@ -1020,6 +1044,13 @@ export class ProjectState extends DurableObject<Env> {
 		}
 
 		const event = this.redactEvent(sanitizeEvent(rawEvent));
+		// Debug files this crash needs and the project does not have yet
+		// (lib/debug-files.ts neededDebugImages): tagged here, remembered per
+		// issue after the commit, and cleared by reprocessing on upload.
+		const missingDebugFiles = this.missingNeededDebugFiles(event);
+		if (missingDebugFiles.length > 0 && !hasTag(event, 'symbolication')) {
+			setEventTag(event as unknown as Record<string, unknown>, 'symbolication', 'missing');
+		}
 
 		const eventId = event.event_id || crypto.randomUUID();
 		const now = new Date().toISOString();
@@ -1052,6 +1083,7 @@ export class ProjectState extends DurableObject<Env> {
 		// Refresh the in-memory rate-limit cache from the persisted counter
 		// only after the transaction commits.
 		if (outcome.kind === 'stored') {
+			this.rememberMissingDebugFiles(outcome.issueId, missingDebugFiles);
 			this.refreshRateLimitCount();
 			if (outcome.queuedIntegration) {
 				await this.scheduleNextAlarm();
@@ -2860,6 +2892,7 @@ export class ProjectState extends DurableObject<Env> {
 			status: row.status as Issue['status'],
 			snoozedUntil: (row.snoozed_until as string) || null,
 			metadata: JSON.parse((row.metadata as string) || '{}'),
+			missingDebugFiles: this.missingDebugFilesFor(row.id as string),
 		};
 	}
 
@@ -2958,6 +2991,202 @@ export class ProjectState extends DurableObject<Env> {
 			SYMBOLICATION_CACHE_MAX_ENTRIES,
 		);
 		return this.jsonResponse({ stored: true });
+	}
+
+	/**
+	 * After debug files are stored: the issues waiting for one of them are
+	 * queued for reprocessing (src/symbolication-job.ts processReprocessJob),
+	 * so their latest events are symbolicated again. The register answer
+	 * gains `reprocessing` (issues queued).
+	 */
+	private async reprocessAfterUpload(handled: Response): Promise<Response> {
+		const data = (await handled.json()) as { files?: Array<{ debugId: string }> } & Record<
+			string,
+			unknown
+		>;
+		const debugIds = [...new Set((data.files ?? []).map((file) => file.debugId))];
+		let issueIds: string[] = [];
+		if (debugIds.length > 0) {
+			issueIds = this.sql
+				.exec(
+					`SELECT DISTINCT issue_id FROM issue_missing_debug_files WHERE debug_id IN (${debugIds.map(() => '?').join(',')}) LIMIT ${REPROCESS_MAX_ISSUES}`,
+					...debugIds,
+				)
+				.toArray()
+				.map((row) => String(row.issue_id));
+		}
+		const projectId = this.getConfigValue('project_id');
+		const queue = this.env.PROCESS_QUEUE;
+		let queued = 0;
+		if (
+			issueIds.length > 0 &&
+			projectId &&
+			queue &&
+			this.env.SYMBOLICATOR &&
+			this.env.SYMBOLICATION !== 'off'
+		) {
+			try {
+				await queue.sendBatch(
+					issueIds.map((issueId) => ({
+						body: { type: 'issue.reprocess' as const, projectId, issueId },
+					})),
+				);
+				queued = issueIds.length;
+			} catch (error) {
+				console.error(
+					'Queueing reprocessing failed:',
+					error instanceof Error ? error.message.slice(0, 120) : 'unknown',
+				);
+			}
+		}
+		return this.jsonResponse({ ...data, reprocessing: queued });
+	}
+
+	/** The newest stored events of an issue, for reprocessing. */
+	private async handleReprocessEvents(request: Request): Promise<Response> {
+		const { issueId, limit } = (await request.json()) as { issueId?: string; limit?: number };
+		const rows = this.sql
+			.exec(
+				'SELECT id, data FROM events WHERE issue_id = ? ORDER BY received_at DESC LIMIT ?',
+				String(issueId ?? ''),
+				Math.min(
+					Math.max(Number(limit) || REPROCESS_EVENTS_PER_ISSUE, 1),
+					REPROCESS_EVENTS_PER_ISSUE,
+				),
+			)
+			.toArray();
+		return this.jsonResponse({
+			events: rows.map((row) => ({ id: String(row.id), data: JSON.parse(String(row.data)) })),
+		});
+	}
+
+	/**
+	 * Store reprocessed events in place (newest first): event JSON, tags,
+	 * and the issue's title/culprit/metadata from the newest one. The issue
+	 * keeps its fingerprint (grouping does not change).
+	 */
+	private async handleReprocessApply(request: Request): Promise<Response> {
+		const { issueId, events } = (await request.json()) as {
+			issueId?: string;
+			events?: Array<{ id: string; data: SentryEvent }>;
+		};
+		const issue = String(issueId ?? '');
+		const list = Array.isArray(events) ? events : [];
+		let updated = 0;
+		this.ctx.storage.transactionSync(() => {
+			for (const { id, data } of list) {
+				const text = JSON.stringify(data);
+				if (text.length > REPROCESS_MAX_EVENT_CHARS) continue;
+				const exists = this.sql
+					.exec('SELECT 1 FROM events WHERE id = ? AND issue_id = ?', id, issue)
+					.toArray();
+				if (exists.length === 0) continue;
+				this.sql.exec(
+					'UPDATE events SET data = ?, tags = ? WHERE id = ?',
+					text,
+					data.tags ? JSON.stringify(data.tags) : null,
+					id,
+				);
+				this.sql.exec(
+					"DELETE FROM event_tags WHERE event_id = ? AND key LIKE 'symbolication%'",
+					id,
+				);
+				if (data.tags && typeof data.tags === 'object' && !Array.isArray(data.tags)) {
+					for (const [key, value] of Object.entries(data.tags)) {
+						if (
+							key.startsWith('symbolication') &&
+							typeof value === 'string' &&
+							value.length <= 200
+						) {
+							this.sql.exec(
+								'INSERT OR IGNORE INTO event_tags (event_id, issue_id, key, value) VALUES (?, ?, ?, ?)',
+								id,
+								issue,
+								key,
+								value,
+							);
+						}
+					}
+				}
+				updated++;
+			}
+			const newest = list[0]?.data;
+			if (newest && updated > 0) {
+				this.sql.exec(
+					'UPDATE issues SET title = ?, culprit = ?, metadata = ? WHERE id = ?',
+					extractTitle(newest),
+					extractCulprit(newest),
+					JSON.stringify(extractMetadata(newest)),
+					issue,
+				);
+				this.rememberMissingDebugFiles(issue, this.missingNeededDebugFiles(newest));
+				// Crashes symbolicated at ingest from now on group by their real
+				// frames, i.e. by a new fingerprint: point it at this issue (the
+				// merge redirect table), unless another issue already owns it.
+				const symbolicatedFingerprint = generateFingerprint(newest);
+				const owned = this.sql
+					.exec(
+						'SELECT 1 FROM issues WHERE fingerprint = ? UNION SELECT 1 FROM fingerprint_redirects WHERE fingerprint = ?',
+						symbolicatedFingerprint,
+						symbolicatedFingerprint,
+					)
+					.toArray();
+				if (owned.length === 0) {
+					this.sql.exec(
+						'INSERT INTO fingerprint_redirects (fingerprint, target_issue_id, created_at) VALUES (?, ?, ?)',
+						symbolicatedFingerprint,
+						issue,
+						new Date().toISOString(),
+					);
+				}
+			}
+		});
+		return this.jsonResponse({ updated });
+	}
+
+	/** Needed debug images of an event without a stored debug file. */
+	private missingNeededDebugFiles(event: unknown): EventDebugImage[] {
+		const needed = neededDebugImages(event);
+		return needed.filter(
+			(image) =>
+				this.sql
+					.exec(
+						'SELECT 1 FROM debug_files WHERE debug_id = ? AND kind = ? LIMIT 1',
+						image.debugId,
+						image.kind,
+					)
+					.toArray().length === 0,
+		);
+	}
+
+	/** The issue's missing debug files, as of its latest event. */
+	private rememberMissingDebugFiles(issueId: string, missing: EventDebugImage[]): void {
+		this.sql.exec('DELETE FROM issue_missing_debug_files WHERE issue_id = ?', issueId);
+		const now = new Date().toISOString();
+		for (const image of missing.slice(0, 50)) {
+			this.sql.exec(
+				'INSERT OR REPLACE INTO issue_missing_debug_files (issue_id, debug_id, kind, image, updated_at) VALUES (?, ?, ?, ?, ?)',
+				issueId,
+				image.debugId,
+				image.kind,
+				image.codeFile ? (image.codeFile.split('/').pop()?.slice(0, 200) ?? null) : null,
+				now,
+			);
+		}
+	}
+
+	private missingDebugFilesFor(issueId: string): MissingDebugFile[] {
+		return this.sql
+			.exec(
+				'SELECT debug_id, kind, image FROM issue_missing_debug_files WHERE issue_id = ? ORDER BY kind, debug_id',
+				issueId,
+			)
+			.toArray()
+			.map((row) => ({
+				debugId: String(row.debug_id),
+				kind: row.kind as MissingDebugFile['kind'],
+				image: row.image == null ? null : String(row.image),
+			}));
 	}
 
 	private maxSymbolicationsPerHour(): number {

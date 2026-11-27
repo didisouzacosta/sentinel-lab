@@ -17,6 +17,13 @@ import type { Env, Project, SentryEvent } from './types';
  * ATTACHMENTS; the job finishes well inside the orphan GC's 1-hour grace.
  */
 
+/** Re-symbolicate an issue's latest events after a debug file it needed arrived. */
+export interface ReprocessJob {
+	type: 'issue.reprocess';
+	projectId: string;
+	issueId: string;
+}
+
 export interface SymbolicateJob {
 	type: 'event.symbolicate';
 	projectId: string;
@@ -288,4 +295,105 @@ async function projectExists(env: Env, projectId: string): Promise<boolean> {
 	if (!response.ok) throw new Error(`project lookup answered ${response.status}`);
 	const { exists } = (await response.json()) as { exists?: boolean };
 	return exists === true;
+}
+
+/**
+ * Undo an earlier symbolication pass so the event can be symbolicated again
+ * from what the SDK sent: original frames back from `raw_stacktrace`,
+ * original exception type/module, symbolication tags dropped.
+ */
+export function restoreReceivedEvent(event: Record<string, unknown>): void {
+	const holders: Array<Record<string, unknown>> = [];
+	const exception = event.exception as { values?: unknown[] } | undefined;
+	if (Array.isArray(exception?.values))
+		holders.push(...(exception.values as Array<Record<string, unknown>>));
+	const threads = event.threads as { values?: unknown[] } | unknown[] | undefined;
+	const threadValues = Array.isArray(threads) ? threads : threads?.values;
+	if (Array.isArray(threadValues))
+		holders.push(...(threadValues as Array<Record<string, unknown>>));
+	holders.push(event);
+	for (const holder of holders) {
+		if (!holder || typeof holder !== 'object') continue;
+		if (holder.raw_stacktrace !== undefined) {
+			holder.stacktrace = holder.raw_stacktrace;
+			delete holder.raw_stacktrace;
+		}
+		if (holder.raw_type !== undefined) {
+			holder.type = holder.raw_type;
+			delete holder.raw_type;
+		}
+		if (holder.raw_module !== undefined) {
+			holder.module = holder.raw_module;
+			delete holder.raw_module;
+		}
+	}
+	const tags = event.tags;
+	if (Array.isArray(tags)) {
+		event.tags = tags.filter(
+			(pair) => !(Array.isArray(pair) && String(pair[0]).startsWith('symbolication')),
+		);
+	} else if (tags && typeof tags === 'object') {
+		for (const key of Object.keys(tags))
+			if (key.startsWith('symbolication')) delete (tags as Record<string, unknown>)[key];
+	}
+	const meta = event.debug_meta as { images?: unknown[] } | undefined;
+	for (const image of meta?.images ?? []) {
+		if (image && typeof image === 'object') delete (image as Record<string, unknown>).debug_status;
+	}
+}
+
+/**
+ * Queue consumer for reprocessing: the issue's newest events are restored
+ * to what the SDK sent and symbolicated again with the files stored now,
+ * then written back in place (ProjectState /symbolication/reprocess/apply).
+ * Throws to retry while Symbolicator is unavailable; from the last attempt
+ * on it gives up and leaves the events as they were.
+ */
+export async function processReprocessJob(
+	env: Env,
+	job: ReprocessJob,
+	attempt: number,
+): Promise<void> {
+	if (!symbolicationEnabled(env)) return;
+	if (!(await projectExists(env, job.projectId))) return;
+	const projectState = env.PROJECT_STATE.get(env.PROJECT_STATE.idFromName(job.projectId));
+	const post = async (path: string, body: unknown) => {
+		const response = await projectState.fetch(
+			new Request(`http://internal${path}`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify(body),
+			}),
+		);
+		if (!response.ok) throw new Error(`${path} answered ${response.status}`);
+		return response.json();
+	};
+	const { events } = (await post('/symbolication/reprocess/events', { issueId: job.issueId })) as {
+		events: Array<{ id: string; data: Record<string, unknown> }>;
+	};
+	if (events.length === 0) return;
+	const reprocessed: Array<{ id: string; data: Record<string, unknown> }> = [];
+	for (const { id, data } of events) {
+		restoreReceivedEvent(data);
+		try {
+			const outcome = await symbolicateEvent(env, job.projectId, data);
+			setEventTag(data, 'symbolication', outcome.frames > 0 ? 'done' : 'missing');
+			setEventTag(data, 'symbolication_reprocessed', 'yes');
+			if (outcome.cacheHits > 0) setEventTag(data, 'symbolication_cache', 'hit');
+		} catch (error) {
+			if (error instanceof SymbolicatorRejected) {
+				setEventTag(data, 'symbolication', 'failed');
+			} else if (attempt < SYMBOLICATE_LAST_ATTEMPT) {
+				throw error;
+			} else {
+				console.error(
+					'Reprocessing gave up:',
+					error instanceof Error ? error.message.slice(0, 120) : 'unknown',
+				);
+				return;
+			}
+		}
+		reprocessed.push({ id, data });
+	}
+	await post('/symbolication/reprocess/apply', { issueId: job.issueId, events: reprocessed });
 }

@@ -75,7 +75,8 @@ export type ProcessJob =
 			debugId: string | null;
 			chunks: string[];
 	  }
-	| import('./symbolication-job').SymbolicateJob;
+	| import('./symbolication-job').SymbolicateJob
+	| import('./symbolication-job').ReprocessJob;
 
 // User types
 export interface User {
@@ -161,6 +162,15 @@ export interface Issue {
 	status: 'unresolved' | 'resolved' | 'ignored';
 	snoozedUntil: string | null;
 	metadata: IssueMetadata;
+	/** Debug files the latest event needs and the project lacks (dSYM / mapping). */
+	missingDebugFiles?: MissingDebugFile[];
+}
+
+export interface MissingDebugFile {
+	debugId: string;
+	kind: 'macho' | 'proguard';
+	/** Image name (e.g. MyApp), when the event names it. */
+	image: string | null;
 }
 
 export interface IssueMetadata {

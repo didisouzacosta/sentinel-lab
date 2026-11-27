@@ -564,6 +564,12 @@ describe('Debug files', () => {
 				SENTRY_PROJECT: project.slug,
 				SENTRY_AUTH_TOKEN: '$SENTINEL_AUTH_TOKEN',
 			});
+			expect(guide.json.xcodeCloud.environment).toMatchObject({
+				SENTINEL_URL: 'http://localhost',
+				SENTINEL_PROJECT: project.slug,
+			});
+			expect(guide.json.xcodeCloud.ciPostXcodebuild).toContain('$CI_ARCHIVE_PATH/dSYMs');
+			expect(guide.json.archivePostAction).toContain('$ARCHIVE_DSYMS_PATH');
 			expect(guide.text).not.toContain(owner.token!);
 		});
 

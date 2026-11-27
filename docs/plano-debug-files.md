@@ -21,7 +21,7 @@ Decisões já tomadas com o usuário: escopo = envio + simbolização; API próp
 | 2 — sentry-cli | ✅ branch `lab/debug-files` (sem o upload legado multipart, ver abaixo) |
 | 3 — MCP | ✅ branch `lab/debug-files` |
 | 4 — Simbolização | ✅ 27/11/2026, branch `lab/symbolication`: Symbolicator 26.11.0 num Container, fila, fallback sem perda. Sem token R2 S3 (ver abaixo) |
-| 5–6 — Painel e reprocessamento | pendente |
+| 5–6 — Painel e reprocessamento | ✅ 27/11/2026, branch `lab/debug-files-dashboard` (Figma 13a–13e aprovado; SNT-17): abas iOS/Android com dica e upload, tag de ausência clicável na issue e na lista, card de debug files, frames nativos e alternância Symbolicated/Raw, orçamento no painel. Reprocessamento automático a cada upload (sem botão manual) |
 | 7 — SentinelKit | pendente (repositório `sentinel-ios`) |
 | 8 — Documentação | README "Debug files", AGENTS.md, guias iOS/Android, `lab/` atualizados para as fases 1–4 |
 

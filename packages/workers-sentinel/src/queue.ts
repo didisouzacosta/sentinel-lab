@@ -1,5 +1,9 @@
 import { assembleDebugFile } from './lib/dif-assembly';
-import { processSymbolicateJob, SYMBOLICATE_RETRY_DELAY_SECONDS } from './symbolication-job';
+import {
+	processReprocessJob,
+	processSymbolicateJob,
+	SYMBOLICATE_RETRY_DELAY_SECONDS,
+} from './symbolication-job';
 import type { Env, ProcessJob } from './types';
 
 /**
@@ -30,6 +34,8 @@ export async function handleQueue(
 				await assembleDebugFile(env, env.DEBUG_FILES, job);
 			} else if (job?.type === 'event.symbolicate') {
 				await processSymbolicateJob(env, job, message.attempts, waitUntil);
+			} else if (job?.type === 'issue.reprocess') {
+				await processReprocessJob(env, job, message.attempts);
 			}
 			message.ack();
 		} catch (error) {
@@ -38,7 +44,10 @@ export async function handleQueue(
 				error instanceof Error ? error.message.slice(0, 120) : 'unknown',
 			);
 			message.retry({
-				delaySeconds: job?.type === 'event.symbolicate' ? SYMBOLICATE_RETRY_DELAY_SECONDS : 30,
+				delaySeconds:
+					job?.type === 'event.symbolicate' || job?.type === 'issue.reprocess'
+						? SYMBOLICATE_RETRY_DELAY_SECONDS
+						: 30,
 			});
 		}
 	}

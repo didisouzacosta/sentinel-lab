@@ -11,6 +11,7 @@ import {
 	MAX_DEBUG_FILE_BYTES,
 	MAX_DEBUG_FILE_NAME,
 	MAX_DIRECT_UPLOAD_BYTES,
+	neededDebugImages,
 	normalizeDebugId,
 	proguardIdFromName,
 	serializeSentryDebugFile,
@@ -208,7 +209,7 @@ async function handleUpload(c: AppContext, access: Access): Promise<Response> {
 	if (!result.ok) return errorJson(c, result.status, result.error, result.message);
 	const registered = await registerStoredFiles(c.env, bucket, access.project.id, result.files);
 	if (!registered.ok) return errorJson(c, registered.status, registered.error, registered.message);
-	return c.json({ debugFiles: registered.files }, 201);
+	return c.json({ debugFiles: registered.files, reprocessing: registered.reprocessing }, 201);
 }
 
 async function handleGet(c: AppContext, access: Access, id: string): Promise<Response> {
@@ -246,6 +247,8 @@ interface CheckImage {
 	arch: string | null;
 	status: 'found' | 'missing' | 'processing';
 	debugFile: DebugFileRecord | null;
+	/** The crash cannot be read without it (an in-app image or a mapping). */
+	needed: boolean;
 }
 
 /**
@@ -268,6 +271,8 @@ async function handleCheck(c: AppContext, access: Access): Promise<Response> {
 		arch: string | null;
 	}> = [];
 	let eventId: string | null = null;
+	/** Images the crash needs (in-app code, mappings); null when only ids were sent. */
+	let neededIds: Set<string> | null = null;
 	if (Array.isArray(body.debugIds)) {
 		for (const raw of body.debugIds.slice(0, 200)) {
 			const debugId = normalizeDebugId(raw);
@@ -301,6 +306,7 @@ async function handleCheck(c: AppContext, access: Access): Promise<Response> {
 		}
 		eventId = ((event as { event_id?: string }).event_id as string | undefined) ?? null;
 		images = eventDebugImages(event);
+		neededIds = new Set(neededDebugImages(event).map((image) => `${image.kind}:${image.debugId}`));
 	} else {
 		return errorJson(c, 400, 'invalid_request', 'Send {debugIds} or {eventId} or {issueId}');
 	}
@@ -320,6 +326,7 @@ async function handleCheck(c: AppContext, access: Access): Promise<Response> {
 			kind: image.kind ?? match?.kind ?? null,
 			status: match ? 'found' : data.processing.includes(image.debugId) ? 'processing' : 'missing',
 			debugFile: match ?? null,
+			needed: neededIds ? neededIds.has(`${image.kind}:${image.debugId}`) : true,
 		};
 	});
 	return c.json({

@@ -27,7 +27,11 @@ export async function projectStateCall<T>(
 }
 
 export type RegisterOutcome =
-	| { ok: true; files: DebugFileRecord[] }
+	| {
+			ok: true;
+			files: DebugFileRecord[] /** Issues queued for reprocessing. */;
+			reprocessing: number;
+	  }
 	| { ok: false; status: number; error: string; message: string };
 
 /** Register what an ingest stored; on a quota refusal, delete the new objects. */
@@ -42,8 +46,11 @@ export async function registerStoredFiles(
 		error?: string;
 		message?: string;
 		orphanKeys?: string[];
+		reprocessing?: number;
 	}>(env, projectId, '/debug-files/register', { files });
-	if (status === 200 && data.files) return { ok: true, files: data.files };
+	if (status === 200 && data.files) {
+		return { ok: true, files: data.files, reprocessing: data.reprocessing ?? 0 };
+	}
 	if (data.orphanKeys?.length) await bucket.delete(data.orphanKeys);
 	return {
 		ok: false,

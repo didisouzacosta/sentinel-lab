@@ -137,7 +137,7 @@ watch(slug, () => loadSummary());
 				/>
 				<ul v-else class="divide-y divide-border">
 					<li v-for="issue in summary.topIssues" :key="issue.id">
-						<AppIssueRow :issue="issue" :to="`/projects/${slug}/issues/${issue.id}`" />
+						<AppIssueRow :issue="issue" :to="`/projects/${slug}/issues/${issue.id}`" :slug="slug" />
 					</li>
 				</ul>
 			</UiCard>

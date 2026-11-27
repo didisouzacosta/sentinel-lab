@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { Funnel, KeyRound, Plug, Trash2, Upload } from 'lucide-vue-next';
-import { computed, onMounted, ref } from 'vue';
+import { computed, nextTick, onMounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { api } from '../api/client';
+import AppDebugFilesSettings from '../components/app/AppDebugFilesSettings.vue';
+import AppFileRow from '../components/app/AppFileRow.vue';
 import AppPageHeader from '../components/app/AppPageHeader.vue';
 import AppSectionNav, { type SectionNavItem } from '../components/app/AppSectionNav.vue';
 import {
@@ -18,6 +20,7 @@ import {
 	UiSkeleton,
 	UiTag,
 } from '../components/ui';
+import UiMeter from '../components/ui/UiMeter.vue';
 import { useConfirm } from '../composables/useConfirm';
 import { useToast } from '../composables/useToast';
 import { formatNumber } from '../lib/format';
@@ -69,6 +72,8 @@ const ALL_SECTIONS: (SectionNavItem & { managersOnly?: boolean })[] = [
 	{ id: 'retention', label: 'Data retention' },
 	{ id: 'api-tokens', label: 'API tokens' },
 	{ id: 'source-maps', label: 'Source maps' },
+	{ id: 'debug-files', label: 'Debug files' },
+	{ id: 'symbolication', label: 'Symbolication' },
 	{ id: 'inbound-filters', label: 'Inbound filters' },
 	{ id: 'danger', label: 'Danger zone', danger: true },
 ];
@@ -99,6 +104,9 @@ const rateLimitStatus = ref<{ currentHourCount: number; isLimited: boolean } | n
 const savingRateLimit = ref(false);
 
 const retentionDays = ref(0);
+const maxSymbolicationsPerHour = ref(500);
+const symbolicationsThisHour = ref(0);
+const savingSymbolication = ref(false);
 const savingRetention = ref(false);
 
 const sourceMaps = ref<SourceMap[]>([]);
@@ -114,11 +122,6 @@ const smError = ref<string | null>(null);
 const members = ref<ProjectMember[]>([]);
 const membersLoading = ref(false);
 const membersError = ref<string | null>(null);
-
-const usagePercent = computed(() => {
-	if (!rateLimitStatus.value || maxEventsPerHour.value <= 0) return 0;
-	return Math.min(100, (rateLimitStatus.value.currentHourCount / maxEventsPerHour.value) * 100);
-});
 
 const projectInfo = computed(() =>
 	project.value
@@ -146,10 +149,14 @@ async function loadProject() {
 		project.value = response.project;
 		dsn.value = response.dsn;
 
-		const settings = await api.get<{ retentionDays: number }>(
-			`/api/projects/${slug.value}/settings`,
-		);
+		const settings = await api.get<{
+			retentionDays: number;
+			maxSymbolicationsPerHour?: number;
+			symbolicationsThisHour?: number;
+		}>(`/api/projects/${slug.value}/settings`);
 		retentionDays.value = settings.retentionDays;
+		maxSymbolicationsPerHour.value = settings.maxSymbolicationsPerHour ?? 500;
+		symbolicationsThisHour.value = settings.symbolicationsThisHour ?? 0;
 		loadSourceMaps();
 	} catch (err) {
 		loadError.value = message(err, 'Failed to load project');
@@ -208,6 +215,20 @@ async function saveRateLimit() {
 		toast.error(message(err, 'Failed to save'));
 	} finally {
 		savingRateLimit.value = false;
+	}
+}
+
+async function saveSymbolication() {
+	savingSymbolication.value = true;
+	try {
+		await api.patch(`/api/projects/${slug.value}`, {
+			maxSymbolicationsPerHour: maxSymbolicationsPerHour.value,
+		});
+		toast.success('Symbolication budget saved');
+	} catch (err) {
+		toast.error(message(err, 'Failed to save'));
+	} finally {
+		savingSymbolication.value = false;
 	}
 }
 
@@ -310,10 +331,16 @@ function formatDate(dateString: string): string {
 	});
 }
 
-onMounted(() => {
-	loadProject();
+onMounted(async () => {
 	loadRateLimitStatus();
 	loadMembers();
+	await loadProject();
+	// A link to a section (#debug-files from a crash missing its dSYM)
+	// arrives before the cards exist: scroll once they are rendered.
+	if (route.hash) {
+		await nextTick();
+		document.getElementById(route.hash.slice(1))?.scrollIntoView({ block: 'start' });
+	}
 });
 </script>
 
@@ -410,20 +437,7 @@ onMounted(() => {
 						>
 							{{ formatNumber(rateLimitStatus.currentHourCount) }} / {{ formatNumber(maxEventsPerHour) }}
 						</span>
-						<div
-							class="h-1.5 w-full max-w-72 overflow-hidden rounded-full bg-subtle"
-							role="meter"
-							aria-label="Events this hour"
-							:aria-valuenow="rateLimitStatus.currentHourCount"
-							aria-valuemin="0"
-							:aria-valuemax="maxEventsPerHour"
-						>
-							<div
-								class="h-full rounded-full"
-								:class="usagePercent >= 100 ? 'bg-level-error' : usagePercent >= 80 ? 'bg-level-warning' : 'bg-accent'"
-								:style="{ width: `${usagePercent}%` }"
-							/>
-						</div>
+						<UiMeter :value="rateLimitStatus.currentHourCount" :max="maxEventsPerHour" label="Events this hour" />
 						<UiTag v-if="rateLimitStatus.isLimited" class="text-level-error">Rate limited</UiTag>
 					</div>
 				</UiCard>
@@ -505,32 +519,61 @@ onMounted(() => {
 					</form>
 
 					<ul v-if="sourceMaps.length > 0" class="mt-4 overflow-hidden rounded-lg border border-border" aria-label="Uploaded source maps">
-						<li
+						<AppFileRow
 							v-for="sm in sourceMaps"
 							:key="sm.id"
-							class="flex items-center gap-3 border-b border-border px-3 py-2.5 last:border-b-0"
-							data-testid="sourcemap-row"
-						>
-							<div class="min-w-0 flex-1">
-								<div class="flex min-w-0 items-center gap-2">
-									<UiTag>{{ sm.release }}</UiTag>
-									<span class="min-w-0 truncate font-mono text-body-s text-fg" :title="sm.fileUrl">{{ sm.fileUrl }}</span>
-								</div>
-								<p class="mt-0.5 text-caption text-fg-subtle" data-numeric>
-									{{ formatSize(sm.size) }} · {{ formatDate(sm.createdAt) }}
-								</p>
-							</div>
-							<UiButton
-								v-if="canDeleteSourceMaps"
-								variant="ghost"
-								size="icon-sm"
-								:icon="Trash2"
-								:aria-label="`Delete source map ${sm.fileUrl}`"
-								@click="deleteSourceMap(sm)"
-							/>
-						</li>
+							:tag="sm.release"
+							:name="sm.fileUrl"
+							:meta="`${formatSize(sm.size)} · ${formatDate(sm.createdAt)}`"
+							:delete-label="canDeleteSourceMaps ? `Delete source map ${sm.fileUrl}` : undefined"
+							test-id="sourcemap-row"
+							@delete="deleteSourceMap(sm)"
+						/>
 					</ul>
 					<p v-else class="mt-4 text-body-s text-fg-subtle">No source maps uploaded yet.</p>
+				</UiCard>
+
+				<AppDebugFilesSettings :slug="slug" :can-manage="canManage" />
+
+				<UiCard
+					id="symbolication"
+					title="Symbolication"
+					meta="Crashes symbolicated per hour · 0 = off"
+					class="scroll-mt-20"
+					padded
+				>
+					<form class="flex flex-wrap items-end gap-2" @submit.prevent="saveSymbolication">
+						<UiFormField v-slot="f" label="Max symbolications per hour" class="w-full sm:w-52">
+							<UiInput
+								:id="f.id"
+								v-model.number="maxSymbolicationsPerHour"
+								type="number"
+								min="0"
+								step="50"
+								data-numeric
+							/>
+						</UiFormField>
+						<UiButton type="submit" variant="primary" :loading="savingSymbolication">Save</UiButton>
+					</form>
+					<div
+						v-if="maxSymbolicationsPerHour > 0"
+						class="mt-4 flex flex-wrap items-center gap-x-3 gap-y-2"
+						data-testid="symbolication-usage"
+					>
+						<span class="text-body-s text-fg-subtle">Current hour</span>
+						<span class="text-body-s font-medium text-fg" data-numeric>
+							{{ formatNumber(symbolicationsThisHour) }} / {{ formatNumber(maxSymbolicationsPerHour) }}
+						</span>
+						<UiMeter
+							:value="symbolicationsThisHour"
+							:max="maxSymbolicationsPerHour"
+							label="Symbolications this hour"
+						/>
+					</div>
+					<p class="mt-3 text-caption text-fg-subtle">
+						Over the budget, crashes are stored right away with their raw frames, tagged
+						<span class="font-mono">symbolication: skipped</span>. The same crash from many devices counts once (cache).
+					</p>
 				</UiCard>
 
 				<UiCard

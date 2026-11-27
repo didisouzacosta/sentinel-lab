@@ -69,7 +69,7 @@ export const PROMPTS: Prompt[] = [
 			name: 'upload_debug_files',
 			title: 'Upload dSYMs / ProGuard mappings to Sentinel',
 			description:
-				'Finds the debug files of the app in this workspace (iOS dSYMs, Android R8 mapping), uploads them to a Sentinel project and confirms, optionally setting up automatic uploads (Xcode build phase, GitHub Actions, Gradle).',
+				'Finds the debug files of the app in this workspace (iOS dSYMs, Android R8 mapping), uploads them to a Sentinel project and confirms, optionally setting up automatic uploads (Xcode Cloud, archive post-action, Xcode build phase, GitHub Actions, Gradle).',
 			arguments: [
 				{ name: 'project', description: 'Project slug.', required: true },
 				{
@@ -83,14 +83,14 @@ export const PROMPTS: Prompt[] = [
 			[
 				`Send this app's debug files to the Sentinel project "${project}" so its native crashes get symbolicated.`,
 				'',
-				`1. Call get_debug_file_upload for "${project}": it has the server, the sentry-cli environment, an Xcode build phase, GitHub Actions steps and the Gradle config, ready to paste.`,
+				`1. Call get_debug_file_upload for "${project}": it has the server, the sentry-cli environment, Xcode Cloud ci_scripts, an archive post-action, an Xcode build phase, GitHub Actions steps and the Gradle config, ready to paste.`,
 				issue_id
 					? `2. Call check_debug_files with issueId "${issue_id}" to list the debug ids the crash needs and which are missing.`
 					: '2. If the user mentions a crash, call check_debug_files with its issueId to see which debug ids are missing.',
 				"3. iOS: find the dSYMs (an .xcarchive's dSYMs folder, or DerivedData/…/Build/Products/Release-iphoneos/*.dSYM; `dwarfdump --uuid` prints their UUIDs). Android: app/build/outputs/mapping/<variant>/mapping.txt, plus the UUID the app embeds (sentry-debug-meta.properties) if any.",
 				'4. Upload with sentry-cli when it is installed (it handles folders and big files); otherwise use the curl command, or upload_debug_file for a single small file. The token must come from the environment ($SENTINEL_AUTH_TOKEN) or ~/.sentryclirc; never write it into the repository.',
 				'5. Confirm with check_debug_files (status "found").',
-				'6. If the user wants it automatic, add the Xcode build phase, the GitHub Actions step or the Gradle plugin config from step 1, and tell them which secret to create (SENTINEL_AUTH_TOKEN, an API token with the "write" scope).',
+				'6. If the user wants it automatic, wire it where the app is built: Xcode Cloud (ci_scripts/ next to the project, or the user says so) → xcodeCloud; archives made on this Mac → archivePostAction; GitHub Actions → githubActionsIos; Android → gradle. Tell them which secret to create themselves (SENTINEL_AUTH_TOKEN, an API token with the "write" scope) and where.',
 				'',
 				'Ask the user before changing build settings, CI workflows or secrets.',
 			].join('\n'),
