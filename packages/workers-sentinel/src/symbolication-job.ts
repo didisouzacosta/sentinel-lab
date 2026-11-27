@@ -61,16 +61,21 @@ type ProjectStub = { fetch(request: Request): Promise<Response> };
  * the project would accept the event now (quota, purge). Everything else
  * takes the direct path, which answers the SDK as before.
  */
+export type Admission =
+	| { park: true }
+	/** `budget` / `disabled`: the project's symbolication budget said no; the event is tagged `skipped`. */
+	| { park: false; reason?: 'budget' | 'disabled' };
+
 export async function shouldSymbolicate(
 	env: Env,
 	projectState: ProjectStub,
 	event: SentryEvent,
-): Promise<boolean> {
-	if (!symbolicationEnabled(env)) return false;
+): Promise<Admission> {
+	if (!symbolicationEnabled(env)) return { park: false };
 	const kinds = symbolicationKinds(event);
-	if (!kinds.native && !kinds.jvm) return false;
+	if (!kinds.native && !kinds.jvm) return { park: false };
 	const debugIds = eventDebugImages(event).map((image) => image.debugId);
-	if (debugIds.length === 0) return false;
+	if (debugIds.length === 0) return { park: false };
 	try {
 		const response = await projectState.fetch(
 			new Request('http://internal/symbolication/admit', {
@@ -79,11 +84,12 @@ export async function shouldSymbolicate(
 				body: JSON.stringify({ debugIds }),
 			}),
 		);
-		if (!response.ok) return false;
-		const { admit } = (await response.json()) as { admit?: boolean };
-		return admit === true;
+		if (!response.ok) return { park: false };
+		const { admit, reason } = (await response.json()) as { admit?: boolean; reason?: string };
+		if (admit === true) return { park: true };
+		return reason === 'budget' || reason === 'disabled' ? { park: false, reason } : { park: false };
 	} catch {
-		return false;
+		return { park: false };
 	}
 }
 

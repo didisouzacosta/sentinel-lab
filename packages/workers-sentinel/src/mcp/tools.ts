@@ -738,6 +738,13 @@ export const TOOLS: Tool[] = [
 						description: 'https URL; empty string removes it.',
 					},
 					max_events_per_hour: { type: 'integer', minimum: 0, maximum: 1000000 },
+					max_symbolications_per_hour: {
+						type: 'integer',
+						minimum: 0,
+						maximum: 1000000,
+						description:
+							'Crashes symbolicated per hour (default 500). Over it, crashes are stored unsymbolicated, tagged symbolication:skipped. 0 turns symbolication off.',
+					},
 					retention_days: { type: 'integer', minimum: 0, maximum: 3650 },
 				},
 				required: ['project'],
@@ -752,6 +759,8 @@ export const TOOLS: Tool[] = [
 			if (args.webhook_url !== undefined)
 				body.webhookUrl = args.webhook_url === '' ? null : args.webhook_url;
 			if (args.max_events_per_hour !== undefined) body.maxEventsPerHour = args.max_events_per_hour;
+			if (args.max_symbolications_per_hour !== undefined)
+				body.maxSymbolicationsPerHour = args.max_symbolications_per_hour;
 			if (args.retention_days !== undefined) body.retentionDays = args.retention_days;
 			if (Object.keys(body).length === 0)
 				return toolError('Nothing to change: pass at least one field.');

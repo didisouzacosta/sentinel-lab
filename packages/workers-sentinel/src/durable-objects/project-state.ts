@@ -46,6 +46,13 @@ const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 /** Debug ids one symbolication admission check looks at (lib/symbolicate.ts). */
 const SYMBOLICATION_ADMIT_MAX_IDS = 2000;
+
+/**
+ * Symbolications a project may start per hour unless configured otherwise
+ * (`maxSymbolicationsPerHour`; 0 turns symbolication off for the project).
+ * docs/plano-riscos-simbolizacao.md, phase 2.
+ */
+const DEFAULT_MAX_SYMBOLICATIONS_PER_HOUR = 500;
 /** GC alarm cadence floor: an alarm is always scheduled within an hour. */
 const ALARM_INTERVAL_MS = 60 * 60 * 1000;
 /** Orphaned blobs younger than this are never GC'd (in-flight protection). */
@@ -267,6 +274,11 @@ CREATE TABLE IF NOT EXISTS project_config (
 );
 
 CREATE TABLE IF NOT EXISTS rate_limit_counters (
+  bucket TEXT PRIMARY KEY,
+  count INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS symbolication_counters (
   bucket TEXT PRIMARY KEY,
   count INTEGER NOT NULL DEFAULT 0
 );
@@ -885,15 +897,46 @@ export class ProjectState extends DurableObject<Env> {
 		// the app's own may come late: scan them all, up to a generous cap,
 		// and stop at the first stored file.
 		const ids = Array.isArray(debugIds) ? debugIds.slice(0, SYMBOLICATION_ADMIT_MAX_IDS) : [];
+		let found = false;
 		for (const raw of ids) {
 			const debugId = normalizeDebugId(raw);
 			if (!debugId) continue;
 			const hit = this.sql
 				.exec('SELECT 1 FROM debug_files WHERE debug_id = ? LIMIT 1', debugId)
 				.toArray();
-			if (hit.length > 0) return this.jsonResponse({ admit: true });
+			if (hit.length > 0) {
+				found = true;
+				break;
+			}
 		}
-		return this.jsonResponse({ admit: false });
+		if (!found) return this.jsonResponse({ admit: false });
+
+		// Budget: counted here, on admission, so a burst cannot start more
+		// symbolications than the hour allows (DO requests run one at a time
+		// between awaits; nothing below awaits).
+		const limit = this.maxSymbolicationsPerHour();
+		const bucket = this.getHourBucket(new Date().toISOString());
+		const used = this.symbolicationsInBucket(bucket);
+		if (limit === 0 || used >= limit) {
+			if (limit > 0 && this.getConfigValue('symbolication_budget_logged') !== bucket) {
+				this.setConfigValue('symbolication_budget_logged', bucket);
+				console.warn(
+					JSON.stringify({
+						event: 'symbolication.budget_exceeded',
+						projectId: this.getConfigValue('project_id') ?? null,
+						limit,
+						hour: bucket,
+					}),
+				);
+			}
+			return this.jsonResponse({ admit: false, reason: limit === 0 ? 'disabled' : 'budget' });
+		}
+		this.sql.exec(
+			'INSERT INTO symbolication_counters (bucket, count) VALUES (?, 1) ON CONFLICT(bucket) DO UPDATE SET count = count + 1',
+			bucket,
+		);
+		this.sql.exec('DELETE FROM symbolication_counters WHERE bucket < ?', bucket);
+		return this.jsonResponse({ admit: true });
 	}
 
 	private async handleIngest(request: Request): Promise<Response> {
@@ -2837,6 +2880,19 @@ export class ProjectState extends DurableObject<Env> {
 		this.rateLimitCount = row.length > 0 ? (row[0].count as number) : 0;
 	}
 
+	private maxSymbolicationsPerHour(): number {
+		const raw = this.getConfigValue('max_symbolications_per_hour');
+		const value = raw === null || raw === undefined ? Number.NaN : Number.parseInt(raw, 10);
+		return Number.isInteger(value) && value >= 0 ? value : DEFAULT_MAX_SYMBOLICATIONS_PER_HOUR;
+	}
+
+	private symbolicationsInBucket(bucket: string): number {
+		const row = this.sql
+			.exec('SELECT count FROM symbolication_counters WHERE bucket = ?', bucket)
+			.toArray();
+		return row.length > 0 ? (row[0].count as number) : 0;
+	}
+
 	private checkRateLimit(): { allowed: boolean; retryAfter?: number } {
 		const maxPerHour = this.getConfigValue('max_events_per_hour');
 		if (!maxPerHour || maxPerHour === '0') {
@@ -2900,15 +2956,35 @@ export class ProjectState extends DurableObject<Env> {
 			config: {
 				maxEventsPerHour: Number.parseInt(maxEventsPerHour, 10),
 				maxAttachmentBytes,
+				maxSymbolicationsPerHour: this.maxSymbolicationsPerHour(),
 			},
 		});
 	}
 
 	private async handleUpdateConfig(request: Request): Promise<Response> {
-		const { maxEventsPerHour, maxAttachmentBytes } = (await request.json()) as {
-			maxEventsPerHour?: number;
-			maxAttachmentBytes?: number;
-		};
+		const { maxEventsPerHour, maxAttachmentBytes, maxSymbolicationsPerHour } =
+			(await request.json()) as {
+				maxEventsPerHour?: number;
+				maxAttachmentBytes?: number;
+				maxSymbolicationsPerHour?: number;
+			};
+		if (maxSymbolicationsPerHour !== undefined) {
+			if (
+				typeof maxSymbolicationsPerHour !== 'number' ||
+				!Number.isInteger(maxSymbolicationsPerHour) ||
+				maxSymbolicationsPerHour < 0 ||
+				maxSymbolicationsPerHour > 1_000_000
+			) {
+				return this.jsonResponse(
+					{
+						error: 'invalid_value',
+						message: 'maxSymbolicationsPerHour must be an integer from 0 to 1000000',
+					},
+					400,
+				);
+			}
+			this.setConfigValue('max_symbolications_per_hour', String(maxSymbolicationsPerHour));
+		}
 		if (maxEventsPerHour !== undefined) {
 			if (typeof maxEventsPerHour !== 'number' || maxEventsPerHour < 0) {
 				return this.jsonResponse(
@@ -3257,7 +3333,14 @@ export class ProjectState extends DurableObject<Env> {
 
 	private handleGetSettings(): Response {
 		const retentionDays = this.getRetentionDays();
-		return this.jsonResponse({ retentionDays, scrubHeaders: this.getScrubHeaders() });
+		return this.jsonResponse({
+			retentionDays,
+			scrubHeaders: this.getScrubHeaders(),
+			maxSymbolicationsPerHour: this.maxSymbolicationsPerHour(),
+			symbolicationsThisHour: this.symbolicationsInBucket(
+				this.getHourBucket(new Date().toISOString()),
+			),
+		});
 	}
 
 	/** Header names whose values are removed from stored events (case-insensitive). */
