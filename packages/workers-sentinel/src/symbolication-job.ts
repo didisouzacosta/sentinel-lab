@@ -2,7 +2,7 @@ import { createAttachmentStore } from './lib/attachment-store';
 import { eventDebugImages } from './lib/debug-files';
 import { setEventTag, symbolicationKinds } from './lib/symbolicate';
 import { buildWebhookPayload, sendWebhook } from './lib/webhook';
-import { symbolicateEvent } from './symbolicator';
+import { SymbolicatorRejected, symbolicateEvent } from './symbolicator';
 import type { Env, Project, SentryEvent } from './types';
 
 /**
@@ -57,8 +57,9 @@ type ProjectStub = { fetch(request: Request): Promise<Response> };
 
 /**
  * Whether an event should wait for symbolication: it carries debug images
- * Symbolicator can use and at least one of them has a stored debug file.
- * Events whose files are all missing skip the queue (nothing to gain).
+ * Symbolicator can use, at least one of them has a stored debug file, and
+ * the project would accept the event now (quota, purge). Everything else
+ * takes the direct path, which answers the SDK as before.
  */
 export async function shouldSymbolicate(
 	env: Env,
@@ -72,15 +73,15 @@ export async function shouldSymbolicate(
 	if (debugIds.length === 0) return false;
 	try {
 		const response = await projectState.fetch(
-			new Request('http://internal/debug-files/lookup', {
+			new Request('http://internal/symbolication/admit', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ debugIds }),
 			}),
 		);
 		if (!response.ok) return false;
-		const { found } = (await response.json()) as { found?: unknown[] };
-		return Array.isArray(found) && found.length > 0;
+		const { admit } = (await response.json()) as { admit?: boolean };
+		return admit === true;
 	} catch {
 		return false;
 	}
@@ -137,15 +138,34 @@ export async function processSymbolicateJob(
 	const bucket = env.DEBUG_FILES;
 	if (!bucket) return;
 	const object = await bucket.get(job.key);
-	if (!object) return; // already delivered
+	if (!object) return; // already delivered, or swept by a project purge
 	const parked = (await object.json()) as ParkedEvent;
-	const event = parked.event as unknown as Record<string, unknown>;
+	const store = createAttachmentStore(env, null);
+	const drop = async () => {
+		await store.deleteKeys(parked.uploadedKeys).catch(() => {});
+		await bucket.delete(job.key);
+	};
 
+	// A project deleted while its event waited must not get it back (nor
+	// cost container time): the purge may already have swept its state.
+	if (!(await projectExists(env, parked.project.id))) {
+		await drop();
+		return;
+	}
+
+	// The event exactly as received, for the fallbacks below.
+	const received = JSON.stringify(parked.event);
+	const event = parked.event as unknown as Record<string, unknown>;
+	let symbolicated = false;
 	try {
 		const outcome = await symbolicateEvent(env, parked.project.id, event);
-		setEventTag(event, 'symbolication', outcome.frames > 0 ? 'done' : 'missing');
+		symbolicated = outcome.frames > 0;
+		setEventTag(event, 'symbolication', symbolicated ? 'done' : 'missing');
 	} catch (error) {
-		if (attempt < SYMBOLICATE_LAST_ATTEMPT) throw error;
+		// Input Symbolicator rejects never gets better with retries.
+		if (!(error instanceof SymbolicatorRejected) && attempt < SYMBOLICATE_LAST_ATTEMPT) {
+			throw error;
+		}
 		console.error(
 			'Symbolication failed, storing the event as received:',
 			error instanceof Error ? error.message.slice(0, 120) : 'unknown',
@@ -153,33 +173,19 @@ export async function processSymbolicateJob(
 		setEventTag(event, 'symbolication', 'failed');
 	}
 
-	const projectState = env.PROJECT_STATE.get(env.PROJECT_STATE.idFromName(parked.project.id));
-	const response = await projectState.fetch(
-		new Request('http://internal/ingest-with-attachments', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({
-				event,
-				attachments: parked.attachments,
-				projectId: parked.project.id,
-			}),
-		}),
-	);
-	const store = createAttachmentStore(env, null);
+	let response = await ingest(env, parked, event);
+	if (symbolicated && !response.ok && !(await isFinalRejection(response))) {
+		// The symbolicated event is bigger (raw_stacktrace, inlined frames)
+		// and may not fit where the original does: store the original.
+		const original = JSON.parse(received) as Record<string, unknown>;
+		setEventTag(original, 'symbolication', 'failed');
+		response = await ingest(env, parked, original);
+	}
 
-	const purging =
-		response.status === 503 &&
-		(
-			(await response
-				.clone()
-				.json()
-				.catch(() => null)) as { error?: string } | null
-		)?.error === 'purge_pending';
-	if (response.status === 429 || purging) {
+	if (await isFinalRejection(response)) {
 		// Over quota or project being purged: the SDK already got its 200,
 		// so the event is dropped like any other rejected ingest.
-		await store.deleteKeys(parked.uploadedKeys).catch(() => {});
-		await bucket.delete(job.key);
+		await drop();
 		return;
 	}
 	if (!response.ok) {
@@ -212,4 +218,44 @@ export async function processSymbolicateJob(
 		waitUntil(sendWebhook(parked.project.webhookUrl, payload));
 	}
 	await bucket.delete(job.key);
+}
+
+function ingest(env: Env, parked: ParkedEvent, event: Record<string, unknown>): Promise<Response> {
+	const projectState = env.PROJECT_STATE.get(env.PROJECT_STATE.idFromName(parked.project.id));
+	return projectState.fetch(
+		new Request('http://internal/ingest-with-attachments', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				event,
+				attachments: parked.attachments,
+				projectId: parked.project.id,
+			}),
+		}),
+	);
+}
+
+/** 429 (quota) or 503 purge_pending: the event is dropped, not retried. */
+async function isFinalRejection(response: Response): Promise<boolean> {
+	if (response.status === 429) return true;
+	if (response.status !== 503) return false;
+	const body = (await response
+		.clone()
+		.json()
+		.catch(() => null)) as { error?: string } | null;
+	return body?.error === 'purge_pending';
+}
+
+async function projectExists(env: Env, projectId: string): Promise<boolean> {
+	const authState = env.AUTH_STATE.get(env.AUTH_STATE.idFromName('global'));
+	const response = await authState.fetch(
+		new Request('http://internal/project-exists', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ projectId }),
+		}),
+	);
+	if (!response.ok) throw new Error(`project lookup answered ${response.status}`);
+	const { exists } = (await response.json()) as { exists?: boolean };
+	return exists === true;
 }

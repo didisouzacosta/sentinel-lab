@@ -99,6 +99,13 @@ const POLL_TIMEOUT_SECONDS = 30;
 
 export class SymbolicatorError extends Error {}
 
+/**
+ * Symbolicator refused the request itself (4xx other than 408/429, e.g. 422
+ * for a field of the wrong shape). Retrying cannot help: the job stores the
+ * event as received right away.
+ */
+export class SymbolicatorRejected extends SymbolicatorError {}
+
 type Json = Record<string, unknown>;
 
 /** POST a request to the Symbolicator container and wait for its answer. */
@@ -121,7 +128,11 @@ async function callSymbolicator(
 	);
 	for (;;) {
 		if (!response.ok) {
-			throw new SymbolicatorError(`symbolicator answered ${response.status}`);
+			const status = response.status;
+			if (status >= 400 && status < 500 && status !== 408 && status !== 429) {
+				throw new SymbolicatorRejected(`symbolicator rejected the request (${status})`);
+			}
+			throw new SymbolicatorError(`symbolicator answered ${status}`);
 		}
 		const result = (await response.json()) as Json;
 		if (result.status !== 'pending') {

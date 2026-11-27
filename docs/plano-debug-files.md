@@ -46,6 +46,28 @@ Decisões já tomadas com o usuário: escopo = envio + simbolização; API próp
 - **Fila**: reaproveita `sentinel-lab-process` (nenhum recurso novo além do Container). Evento estacionado em `staging/{projectId}/event-{uuid}` (regra de 1 dia já existente), mensagem leva só o ponteiro. Falha do Symbolicator: nova tentativa a cada 60 s; da 4ª entrega em diante o evento é guardado sem simbolização (`symbolication:failed`).
 - **Fora desta fase**: frames nativos no painel (fase 5), reprocessar eventos antigos (fase 6), contexto de código-fonte (`apply_source_context`).
 
+### Análise de segurança e casos de borda (27/11/2026)
+
+Quem tem o DSN (público por definição) controla cada campo do evento. A sondagem do Symbolicator 26.11.0 real mostrou que um único campo fora do formato faz ele recusar a requisição inteira (422). Achados, todos com teste e corrigidos:
+
+| Achado | Efeito antes | Correção |
+|---|---|---|
+| Endereço inválido (`0x-1`, texto, > u64), `image_size` como texto/negativo, `code_file`/`function` não-texto, registradores inválidos | 422 → 3 tentativas inúteis (~3 min) e evento sem simbolização | só valores no formato aceito vão para o Symbolicator |
+| Frame JVM sem `function`/`module` (frames NDK), `lineno` negativo/fracionário/texto, exceção sem `module` | idem | frames/exceções fora do formato ficam como estão e não são enviados |
+| `addr_mode: rel:N` apontando para o índice do evento, não da lista filtrada | frame atribuído ao módulo errado | índice remapeado; relativo a imagem não enviada é pulado |
+| Módulo sem `image_addr` virava `0x0` | mapeamento errado de endereços | módulo sem endereço válido não é enviado |
+| 422 do Symbolicator era tratado como falha temporária | retries inúteis | 4xx (exceto 408/429) guarda o evento na hora |
+| ProjectState recusa o evento simbolizado (maior: `raw_stacktrace`, frames inline) | job repetia até esgotar e o **evento se perdia** | guarda o evento original |
+| Fila antes da cota | com a cota estourada, cada evento ainda gastava R2, fila e container | admissão (`/symbolication/admit`) checa cota e purge; senão 429/503 como antes |
+| Projeto apagado com evento na fila | container trabalhava e o evento podia recriar estado no DO de um projeto apagado | consumidor confere `/project-exists` e descarta |
+| Admissão olhava só os primeiros 200 debug IDs | crash iOS com centenas de imagens do sistema nunca era simbolizado | até 2000 IDs, para no primeiro encontrado |
+
+Verificado também: respostas do container que citam frames não enviados são ignoradas; o servidor de arquivos do container só responde GET em `/dif/{projectId}/` e não serve arquivo de outro projeto pelo id.
+
+**Riscos que ficam (aceitos por ora):**
+- **Isolamento depende do container.** Os arquivos de um projeto são lidos pelo caminho `/dif/{projectId}/` que o próprio Sentinel monta, sem credencial por projeto. Se um dSYM/mapping malicioso explorasse uma falha de parsing no Symbolicator (só membros com `write` enviam arquivos), o processo comprometido poderia pedir arquivos de outros projetos. Ele não tem internet, segredos nem acesso ao R2 direto. Mitigação possível no futuro: token HMAC por projeto na fonte.
+- **Custo com cota ilimitada.** Com `max_events_per_hour = 0` (padrão), quem conhece o DSN e um debug ID guardado (os dois estão no binário do app) pode gerar trabalho de container por evento, como já gera trabalho de ingestão. Defina uma cota por projeto em apps públicos.
+
 ## Arquitetura
 
 ```
