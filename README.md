@@ -312,7 +312,7 @@ The agent acts **as the token's owner**: with their role in each project (owner,
 
 Release builds of native apps report crashes as addresses (iOS) or obfuscated names (Android). The files that turn them back into code — **dSYMs** and **R8/ProGuard `mapping.txt`** — can be sent to Sentinel from the command line, CI, Xcode or an agent. Each crash's `debug_meta` names the files it needs; Sentinel tells you which are stored and which are missing.
 
-> **Status:** upload, storage and the missing-file check are live. Applying the files to stack frames (symbolication and deobfuscation) is the next step ([plan](docs/plano-debug-files.md)); until it lands, frames still show addresses and obfuscated names.
+> **Status:** upload, storage, the missing-file check and symbolication are live: crashes whose files are stored arrive with function names, files and lines (iOS) and with the real class, method and exception names (Android). The dashboard still shows frames the way it did; native frame details and reprocessing are the next steps ([plan](docs/plano-debug-files.md)).
 
 ### Server setup (once, by the operator)
 
@@ -326,6 +326,30 @@ npx wrangler queues create sentinel-lab-process
 ```
 
 Without the bucket binding the debug-file routes answer `503 debug_files_unconfigured`; without the queue every assembly runs inside the request.
+
+### Symbolication
+
+Symbolication runs [Symbolicator](https://github.com/getsentry/symbolicator) (FSL-1.1-MIT, fine for self-hosting) in a **Cloudflare Container** next to the Worker (`symbolicator/Dockerfile`, class `Symbolicator` in `src/symbolicator.ts`). It needs:
+
+- the **Workers Paid** plan (Containers);
+- **Docker** wherever `wrangler deploy` runs: it builds the image and pushes it to your account (GitHub's `ubuntu-latest` runners have it);
+- an API token that can deploy Containers, if you deploy from CI.
+
+No extra secret or R2 token: the container has no internet access, and the only address it can reach is `http://sentinel.internal`, which the Worker answers from the debug-files bucket (outbound interception). One instance serves every project, each request reads only its own project's files, and it sleeps after 10 minutes without work.
+
+How events flow:
+
+1. An event whose `debug_meta` names a stored dSYM or mapping is not stored right away: it waits in the queue (`sentinel-lab-process`) and the SDK gets its `200` with the event id at once.
+2. The queue consumer sends its frames to Symbolicator and merges the answer: functions, files and lines for native frames (inlined functions become extra frames); class, method and exception names for Android. The original frames stay in `raw_stacktrace`.
+3. The event is stored with the tag `symbolication` = `done`, `missing` (the files did not match any frame) or `failed`.
+
+Things to know:
+
+- **Nothing is lost.** If the container cannot answer, the job is retried every minute; after about 4 minutes the event is stored as received, tagged `symbolication:failed`.
+- **Grouping follows the real code.** Issues are grouped by the symbolicated frames, so a crash reported before its dSYM was uploaded and the same crash after the upload end up in different issues (older issues are not regrouped).
+- **Events with no stored files** skip the queue and are stored immediately, as before.
+- For queued events, quota (`429`) and purge answers are applied by the consumer, after the SDK already got its `200`.
+- Local `wrangler dev` (and CI) do not build the container (`dev.enable_containers: false` in `wrangler.jsonc`, plus `--var SYMBOLICATION:off` in `just dev-up` and the integration suite). To try it locally, run `wrangler dev` with a copy of the config where `enable_containers` is `true`, with Docker running.
 
 ### What you need
 
@@ -620,7 +644,7 @@ Planned features for future releases:
 
 - [x] Source map support for JavaScript errors
 - [x] Debug file uploads (dSYM, R8/ProGuard) via sentry-cli, API and MCP
-- [ ] Native symbolication and deobfuscation with those files
+- [x] Native symbolication and deobfuscation with those files (Symbolicator in a Cloudflare Container)
 - [ ] Release tracking and deployment correlation
 - [ ] Performance monitoring (transactions, spans)
 - [x] Webhook alerting notifications

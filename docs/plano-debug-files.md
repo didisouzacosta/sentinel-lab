@@ -16,14 +16,14 @@ Decisões já tomadas com o usuário: escopo = envio + simbolização; API próp
 
 | Fase | Estado |
 |---|---|
-| 0 — Spike | ✅ 25/11/2026: sentry-cli e protocolo verificados (abaixo). Symbolicator e Gradle ainda não rodados. |
+| 0 — Spike | ✅ 25/11/2026: sentry-cli e protocolo verificados (abaixo). Symbolicator verificado em 27/11/2026 (fase 4). Gradle ainda não rodado. |
 | 1 — Armazenamento e API própria | ✅ branch `lab/debug-files` |
 | 2 — sentry-cli | ✅ branch `lab/debug-files` (sem o upload legado multipart, ver abaixo) |
 | 3 — MCP | ✅ branch `lab/debug-files` |
-| 4 — Simbolização | pendente: precisa de Containers (Workers Paid), Docker no deploy e token R2 S3 |
+| 4 — Simbolização | ✅ 27/11/2026, branch `lab/symbolication`: Symbolicator 26.11.0 num Container, fila, fallback sem perda. Sem token R2 S3 (ver abaixo) |
 | 5–6 — Painel e reprocessamento | pendente |
 | 7 — SentinelKit | pendente (repositório `sentinel-ios`) |
-| 8 — Documentação | README "Debug files", AGENTS.md, guias iOS/Android, `lab/` atualizados para as fases 1–3 |
+| 8 — Documentação | README "Debug files", AGENTS.md, guias iOS/Android, `lab/` atualizados para as fases 1–4 |
 
 ### Resultados do spike (25/11/2026)
 
@@ -35,6 +35,16 @@ Decisões já tomadas com o usuário: escopo = envio + simbolização; API próp
 - O mesmo `mapping.txt` com UUIDs diferentes (builds diferentes) é um arquivo novo: a deduplicação por SHA-1 só vale para Mach-O (o UUID faz parte dos bytes).
 - O agente do Xcode guarda servidores MCP em `~/Library/Developer/Xcode/CodingAssistant/mcp-servers.json` (formato `mcpServers`); conexão HTTP ainda não testada pelo Xcode.
 - Upload legado multipart (`POST files/dsyms/`, zip): não implementado. Só seria usado por sentry-cli antigo; confirmar com o plugin Gradle (que embute o próprio sentry-cli) antes de decidir.
+
+### Resultados da fase 4 (27/11/2026)
+
+- **Fonte "sentry" em vez de S3.** O Symbolicator só baixa mapping ProGuard de uma fonte do tipo `sentry` (`get_search_target_id` devolve `None` para `Proguard`, então S3/HTTP com layout `unified` não servem). Cada requisição leva uma fonte `sentry` apontando para `http://sentinel.internal/dif/{projectId}/`, e o Worker responde por interceptação de saída do `@cloudflare/containers` (`outboundByHost`): `?debug_id=&code_id=` → `[{id, symbolType}]`, `?id=` → bytes do R2. Resultado: **sem token R2 S3**, sem segredo no container e **sem internet** no container (`enableInternet = false`); o nome interceptado resolve mesmo assim.
+- **Imagem**: `ghcr.io/getsentry/symbolicator:26.11.0` (o Docker Hub parou em 25.12.1). `standard-1`, uma instância, `sleepAfter` 10 min, `scope={projectId}` isola o cache.
+- **Ordem dos frames**: com `frame_order: caller_first` o `original_index` da resposta vem contado ao contrário; mandando `callee_first` (frames invertidos) ele bate com o índice enviado. No JVM, `index` é sempre o índice enviado.
+- **Armadilha**: `static outboundByHost = …` como campo de classe não registra o handler (o campo é definido sem passar pelo setter da biblioteca) e todo pedido do container volta 520. Atribuir depois da classe.
+- **Verificado de ponta a ponta** com `wrangler dev` + Docker + o container real: dSYM de `crash.c` → `main`/`middle`/`crash_here` com `crash.c:2–4`; mapping com linhas → `BoomException` e `MainActivity.crash:20`; evento guardado ~2 s depois do envio.
+- **Fila**: reaproveita `sentinel-lab-process` (nenhum recurso novo além do Container). Evento estacionado em `staging/{projectId}/event-{uuid}` (regra de 1 dia já existente), mensagem leva só o ponteiro. Falha do Symbolicator: nova tentativa a cada 60 s; da 4ª entrega em diante o evento é guardado sem simbolização (`symbolication:failed`).
+- **Fora desta fase**: frames nativos no painel (fase 5), reprocessar eventos antigos (fase 6), contexto de código-fonte (`apply_source_context`).
 
 ## Arquitetura
 

@@ -20,6 +20,12 @@ read -r -p "Digite 'apagar sentinel-lab' para confirmar: " ok
 #    usuários) e o container, se houver.
 npx wrangler delete --name sentinel-lab --force || echo "Worker sentinel-lab não encontrado (ok)."
 
+# 1a. Container do simbolizador: sai com o Worker; isto só garante.
+symbolicator=$(npx wrangler containers list 2>/dev/null | awk '/sentinel-lab-symbolicator/ {print $2}')
+if [[ -n "$symbolicator" ]]; then
+	npx wrangler containers delete "$symbolicator" || echo "Apague o container sentinel-lab-symbolicator no painel."
+fi
+
 # 1b. Access (depois do Worker, para o painel nunca ficar aberto sem proteção).
 if [[ -n "${CLOUDFLARE_API_TOKEN:-}" && -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]]; then
 	node "$LAB/access.mjs" delete
@@ -28,7 +34,7 @@ else
 	echo "ou apague 'Sentinel Lab · painel' e 'Sentinel Lab · administradores' no painel do Zero Trust."
 fi
 
-# 2. Fila futura.
+# 2. Fila de processamento.
 npx wrangler queues delete sentinel-lab-process 2>/dev/null || true
 
 # 3. Buckets R2: só apagam vazios. Se tiver objetos, aplica regra que expira tudo em 1 dia.

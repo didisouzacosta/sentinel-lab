@@ -63,5 +63,5 @@ Testes novos: `test/lab-sdk-compat.test.ts` e `test/lab-ingest-id-migration.test
 
 1. Fila de processamento antes do agrupamento; source maps no R2, resolvidos no servidor.
 2. ✅ Armazenamento de debug files no R2 + upload compatível com `sentry-cli`, API e MCP (README, seção "Debug files"; plano em `docs/plano-debug-files.md`).
-3. Container de simbolização (dSYM + ProGuard) e exibição de frames nativos no painel.
+3. ✅ Container de simbolização (dSYM + ProGuard): Symbolicator num Cloudflare Container, alimentado pela fila (README, "Debug files → Symbolication"). Falta a exibição de frames nativos no painel.
 4. Reprocessamento quando o debug file chega depois do crash.

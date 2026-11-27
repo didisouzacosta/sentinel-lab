@@ -16,6 +16,15 @@ export interface Env {
 	 */
 	PROCESS_QUEUE?: Queue<ProcessJob>;
 	/**
+	 * Symbolicator container (src/symbolicator.ts, class `Symbolicator`).
+	 * With it, PROCESS_QUEUE and DEBUG_FILES, events that carry debug images
+	 * with stored debug files are symbolicated before they are stored
+	 * (src/symbolication-job.ts). Without it they are stored as received.
+	 */
+	SYMBOLICATOR?: DurableObjectNamespace<import('./symbolicator').Symbolicator>;
+	/** `off` stores every event as received, even with SYMBOLICATOR bound (local dev, CI). */
+	SYMBOLICATION?: string;
+	/**
 	 * Test-only: when bound to `'enabled'` (vitest miniflare config), the
 	 * `X-Sentinel-Test-Fault` request header and the internal fault marker
 	 * plumbing become active. Never set in production — the mechanism is
@@ -57,14 +66,16 @@ export interface Env {
 }
 
 /** Messages on PROCESS_QUEUE (src/queue.ts). */
-export type ProcessJob = {
-	type: 'dif.assemble';
-	projectId: string;
-	checksum: string;
-	name: string;
-	debugId: string | null;
-	chunks: string[];
-};
+export type ProcessJob =
+	| {
+			type: 'dif.assemble';
+			projectId: string;
+			checksum: string;
+			name: string;
+			debugId: string | null;
+			chunks: string[];
+	  }
+	| import('./symbolication-job').SymbolicateJob;
 
 // User types
 export interface User {

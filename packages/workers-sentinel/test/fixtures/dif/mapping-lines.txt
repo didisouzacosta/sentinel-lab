@@ -1,0 +1,6 @@
+# compiler: R8
+# compiler_version: 8.5.35
+io.sentinel.sample.MainActivity -> a.a:
+    1:1:void onCreate(android.os.Bundle):10:10 -> a
+    2:2:void crash():20:20 -> b
+io.sentinel.sample.BoomException -> a.b:

@@ -1,0 +1,43 @@
+{
+	"status": "completed",
+	"exceptions": [
+		{
+			"type": "BoomException",
+			"module": "io.sentinel.sample"
+		}
+	],
+	"stacktraces": [
+		{
+			"exception": {
+				"type": "BoomException",
+				"module": "io.sentinel.sample"
+			},
+			"frames": [
+				{
+					"function": "run",
+					"module": "android.os.Handler",
+					"lineno": 5,
+					"index": 0
+				},
+				{
+					"function": "onCreate",
+					"filename": "MainActivity.java",
+					"module": "io.sentinel.sample.MainActivity",
+					"abs_path": "MainActivity.java",
+					"lineno": 10,
+					"index": 1
+				},
+				{
+					"function": "crash",
+					"filename": "MainActivity.java",
+					"module": "io.sentinel.sample.MainActivity",
+					"abs_path": "MainActivity.java",
+					"lineno": 20,
+					"index": 2
+				}
+			]
+		}
+	],
+	"classes": {},
+	"errors": []
+}
