@@ -45,6 +45,17 @@ describe('Slack messages for issues', () => {
 		expect(add.status).toBeLessThan(300);
 	});
 
+	// Every test posts to the same fake channel, and a delivery retry left by
+	// one test's project fires on real time (its Durable Object alarm), so it
+	// could land in a later test's assertions. Disconnecting drops the
+	// project's pending deliveries.
+	afterEach(async () => {
+		if (!project) return;
+		await authFetch(owner.token!, `${BASE}/api/projects/${project.slug}/integrations/slack`, {
+			method: 'DELETE',
+		}).catch(() => {});
+	});
+
 	async function connect(extra: Record<string, unknown> = {}) {
 		const response = await authFetch(
 			owner.token!,
@@ -255,10 +266,7 @@ describe('Slack messages for issues', () => {
 		expect(first.status).toBe(201);
 		const again = await authFetch(member.token!, link, { method: 'POST', body: '{}' });
 		expect(again.status).toBe(200);
-		// Only this issue's posts: every test shares the fake channel, and a
-		// delivery retry left by an earlier test's project can land here
-		// (its alarm fires on real time), which made this test flaky in CI.
-		expect(fakeSlack.posts().filter((post) => post.text.includes('Manual boom'))).toHaveLength(1);
+		expect(fakeSlack.posts()).toHaveLength(1);
 	});
 
 	it('waits out Slack rate limits without counting an attempt', async () => {
