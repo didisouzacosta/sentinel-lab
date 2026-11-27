@@ -1,17 +1,37 @@
 {
-	"name": "workers-sentinel",
+	"name": "workers-sentinel-app",
 	"version": "1.0.0",
 	"private": true,
+	"description": "Sentinel (rastreador de erros compatível com o Sentry) na Cloudflare, instalado pelo botão Deploy to Cloudflare.",
 	"scripts": {
 		"deploy": "wrangler deploy",
 		"dev": "wrangler dev",
 		"start": "wrangler dev"
 	},
 	"dependencies": {
-		"workers-sentinel": "^0.1.2"
+		"workers-sentinel": "https://github.com/didisouzacosta/sentinel-lab/releases/download/template/workers-sentinel.tgz"
 	},
 	"devDependencies": {
 		"typescript": "5.9.3",
-		"wrangler": "^4.53.0"
+		"wrangler": "^4.59.2"
+	},
+	"cloudflare": {
+		"bindings": {
+			"SETUP_TOKEN": {
+				"description": "Texto aleatório exigido no **primeiro cadastro**, que vira o admin. Gere com `openssl rand -hex 24` e guarde. Sem ele, ninguém consegue se cadastrar no endereço workers.dev."
+			},
+			"INTEGRATIONS_KEY": {
+				"description": "32 ou mais caracteres que cifram as credenciais das integrações (Slack, Kaneo). Gere com `openssl rand -hex 32`."
+			},
+			"ATTACHMENTS": {
+				"description": "Bucket R2 dos anexos dos eventos."
+			},
+			"DEBUG_FILES": {
+				"description": "Bucket R2 dos arquivos de depuração (dSYM, ProGuard/R8)."
+			},
+			"PROCESS_QUEUE": {
+				"description": "Fila dos trabalhos em segundo plano (montagem dos uploads do sentry-cli)."
+			}
+		}
 	}
 }
