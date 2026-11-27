@@ -84,6 +84,9 @@ A simbolização (fase 4 de [`plano-debug-files.md`](plano-debug-files.md)) e o 
 
 ## Decisões para o dono
 
+Aprovadas em 27/11/2026 como sugeridas: `max_instances` 10, orçamento padrão de 500 simbolizações por hora, projetos novos de iOS/Android com cota de 5000 eventos por hora, cache (fase 4) só depois de medir a fase 2.
+
+
 1. **`max_instances` da fase 1:** 10 cobre o lab com folga. Custo máximo teórico com todas acordadas o tempo todo: 10 × US$ 0,036/h, mas o `sleepAfter` de 3 min faz o uso real ficar perto do tempo de crash de cada projeto.
 2. **Orçamento padrão da fase 2:** 500 simbolizações por hora por projeto. Para um app pequeno, um crash por minuto o tempo todo cabe com folga.
 3. **Cota de eventos padrão:** projetos novos de iOS/Android já nascerem com `max_events_per_hour` (por exemplo, 5000)? Hoje nascem ilimitados.
