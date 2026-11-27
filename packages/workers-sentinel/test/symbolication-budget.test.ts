@@ -108,6 +108,7 @@ describe('Symbolication budget', () => {
 		expect(await parkedCount(project.id)).toBe(2);
 		expect(await storedTags(project, ids[0])).toBeNull(); // still waiting
 		expect(await storedTags(project, ids[2])).toContain('skipped');
+		expect(await storedTags(project, ids[2])).toContain('budget');
 		expect(await settings(project)).toMatchObject({
 			maxSymbolicationsPerHour: 2,
 			symbolicationsThisHour: 2,
@@ -121,6 +122,7 @@ describe('Symbolication budget', () => {
 		expect((await sendEvent(project, { ...nativeEvent(), event_id: id })).status).toBe(200);
 		expect(await parkedCount(project.id)).toBe(0);
 		expect(await storedTags(project, id)).toContain('skipped');
+		expect(await storedTags(project, id)).toContain('disabled');
 	});
 
 	it('does not count events that were never admitted', async () => {

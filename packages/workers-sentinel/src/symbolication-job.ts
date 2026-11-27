@@ -47,6 +47,15 @@ export const SYMBOLICATE_RETRY_DELAY_SECONDS = 60;
  */
 export const SYMBOLICATE_LAST_ATTEMPT = 4;
 
+/**
+ * Longest an event waits for symbolication. Past it (a backlog after a
+ * crash storm, with the consumer's max_concurrency), it is stored as
+ * received, tagged `symbolication: skipped` / `symbolication_reason:
+ * backlog`, so no event sits in the queue for long and the queue drains
+ * by itself. Well under the attachment GC's 1-hour grace.
+ */
+export const SYMBOLICATE_MAX_WAIT_MS = 10 * 60 * 1000;
+
 export function symbolicationEnabled(env: Env): boolean {
 	return Boolean(
 		env.SYMBOLICATION !== 'off' && env.SYMBOLICATOR && env.PROCESS_QUEUE && env.DEBUG_FILES,
@@ -163,20 +172,34 @@ export async function processSymbolicateJob(
 	const received = JSON.stringify(parked.event);
 	const event = parked.event as unknown as Record<string, unknown>;
 	let symbolicated = false;
-	try {
-		const outcome = await symbolicateEvent(env, parked.project.id, event);
-		symbolicated = outcome.frames > 0;
-		setEventTag(event, 'symbolication', symbolicated ? 'done' : 'missing');
-	} catch (error) {
-		// Input Symbolicator rejects never gets better with retries.
-		if (!(error instanceof SymbolicatorRejected) && attempt < SYMBOLICATE_LAST_ATTEMPT) {
-			throw error;
-		}
-		console.error(
-			'Symbolication failed, storing the event as received:',
-			error instanceof Error ? error.message.slice(0, 120) : 'unknown',
+	const waitedMs = Date.now() - Date.parse(parked.parkedAt);
+	if (!(waitedMs <= SYMBOLICATE_MAX_WAIT_MS)) {
+		// Too late to be worth it (or an unreadable timestamp): store as is.
+		setEventTag(event, 'symbolication', 'skipped');
+		setEventTag(event, 'symbolication_reason', 'backlog');
+		console.warn(
+			JSON.stringify({
+				event: 'symbolication.backlog_skip',
+				projectId: parked.project.id,
+				waitedSeconds: Number.isFinite(waitedMs) ? Math.round(waitedMs / 1000) : null,
+			}),
 		);
-		setEventTag(event, 'symbolication', 'failed');
+	} else {
+		try {
+			const outcome = await symbolicateEvent(env, parked.project.id, event);
+			symbolicated = outcome.frames > 0;
+			setEventTag(event, 'symbolication', symbolicated ? 'done' : 'missing');
+		} catch (error) {
+			// Input Symbolicator rejects never gets better with retries.
+			if (!(error instanceof SymbolicatorRejected) && attempt < SYMBOLICATE_LAST_ATTEMPT) {
+				throw error;
+			}
+			console.error(
+				'Symbolication failed, storing the event as received:',
+				error instanceof Error ? error.message.slice(0, 120) : 'unknown',
+			);
+			setEventTag(event, 'symbolication', 'failed');
+		}
 	}
 
 	let response = await ingest(env, parked, event);

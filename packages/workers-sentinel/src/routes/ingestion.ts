@@ -851,6 +851,11 @@ async function handleIngestion(c: Context<{ Bindings: Env }>): Promise<Response>
 				// Over the project's symbolication budget (or turned off):
 				// stored now, with frames as sent, and saying why.
 				setEventTag(event as unknown as Record<string, unknown>, 'symbolication', 'skipped');
+				setEventTag(
+					event as unknown as Record<string, unknown>,
+					'symbolication_reason',
+					admission.reason,
+				);
 			}
 			if (admission.park) {
 				try {

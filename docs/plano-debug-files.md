@@ -66,7 +66,7 @@ Verificado também: respostas do container que citam frames não enviados são i
 
 **Riscos que ficam (aceitos por ora; plano para fechar em [`plano-riscos-simbolizacao.md`](plano-riscos-simbolizacao.md)):**
 - **Isolamento depende do container.** _Fechado pela fase 1 do plano de riscos: uma instância por projeto, e o Worker só serve os arquivos de um projeto para a instância dele._ Os arquivos de um projeto são lidos pelo caminho `/dif/{projectId}/` que o próprio Sentinel monta, sem credencial por projeto. Se um dSYM/mapping malicioso explorasse uma falha de parsing no Symbolicator (só membros com `write` enviam arquivos), o processo comprometido poderia pedir arquivos de outros projetos. Ele não tem internet, segredos nem acesso ao R2 direto. Mitigação possível no futuro: token HMAC por projeto na fonte.
-- **Custo com cota ilimitada.** Com `max_events_per_hour = 0` (padrão), quem conhece o DSN e um debug ID guardado (os dois estão no binário do app) pode gerar trabalho de container por evento, como já gera trabalho de ingestão. Defina uma cota por projeto em apps públicos.
+- **Custo com cota ilimitada.** _Fechado pelas fases 2 e 3 do plano de riscos: orçamento de 500 simbolizações/h por projeto, cota de 5000 eventos/h para projetos móveis novos, no máximo 4 simbolizações ao mesmo tempo e espera máxima de 10 min._ Com `max_events_per_hour = 0` (padrão), quem conhece o DSN e um debug ID guardado (os dois estão no binário do app) pode gerar trabalho de container por evento, como já gera trabalho de ingestão. Defina uma cota por projeto em apps públicos.
 
 ## Arquitetura
 

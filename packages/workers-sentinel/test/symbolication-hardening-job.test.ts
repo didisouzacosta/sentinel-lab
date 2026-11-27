@@ -1,8 +1,9 @@
 import { env, SELF } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { handleQueue } from '../src/queue';
-import { SYMBOLICATE_LAST_ATTEMPT } from '../src/symbolication-job';
+import { SYMBOLICATE_LAST_ATTEMPT, SYMBOLICATE_MAX_WAIT_MS } from '../src/symbolication-job';
 import type { Env, ProcessJob } from '../src/types';
+import wranglerConfig from '../wrangler.jsonc?raw';
 import thinB64 from './fixtures/dif/crashdemo-arm64.dsym.b64?raw';
 import { nativeEvent } from './fixtures/symbolicator/events';
 import nativeResponseRaw from './fixtures/symbolicator/native-response.json?raw';
@@ -186,6 +187,33 @@ describe('Symbolication failure modes', () => {
 			}),
 		).toEqual({ acked: true, retried: false });
 		expect(tagsOf(await storedEvent(project.id, event.event_id))).toContain('failed');
+	});
+
+	it('stores an event that waited too long without calling the container', async () => {
+		const project = await newProjectWithDsym('Sym backlog');
+		const event = { ...nativeEvent(), event_id: 'd8'.repeat(16) };
+		expect((await sendEvent(project, event)).status).toBe(200);
+		const [key] = await parkedKeys(project.id);
+		// Rewrite the parked copy as if it had waited 11 minutes.
+		const parked = JSON.parse(await (await env.DEBUG_FILES!.get(key))!.text());
+		parked.parkedAt = new Date(Date.now() - SYMBOLICATE_MAX_WAIT_MS - 60_000).toISOString();
+		await env.DEBUG_FILES!.put(key, JSON.stringify(parked));
+
+		const calls: string[] = [];
+		const outcome = await runJob(project, key, 1, {
+			SYMBOLICATOR: fakeSymbolicator(ok, calls) as never,
+		});
+		expect(outcome).toEqual({ acked: true, retried: false });
+		expect(calls).toEqual([]);
+		const tags = tagsOf(await storedEvent(project.id, event.event_id));
+		expect(tags).toContain('skipped');
+		expect(tags).toContain('backlog');
+		expect(await parkedKeys(project.id)).toEqual([]);
+	});
+
+	it('caps concurrent symbolication jobs in the queue consumer', () => {
+		// wrangler.jsonc is read as text: the consumer must keep a concurrency cap.
+		expect(wranglerConfig).toMatch(/"max_concurrency":\s*4\b/);
 	});
 
 	it('stores the event as received when ProjectState refuses the symbolicated one', async () => {
