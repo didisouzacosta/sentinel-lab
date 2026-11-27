@@ -80,7 +80,7 @@ A simbolização (fase 4 de [`plano-debug-files.md`](plano-debug-files.md)) e o 
 - AGENTS.md: `getByName(projectId)`, a checagem do `containerId`, a contagem na admissão, os limites.
 - [`plano-debug-files.md`](plano-debug-files.md): trocar "Riscos que ficam" pelo link para este plano e o estado final.
 - `lab/cloudflare-resources.md`: instâncias por projeto, `max_instances` e `sleepAfter` novos.
-- **Opcional, fora do código (ação do dono):** regra de rate limiting do WAF da Cloudflare em `/api/*/envelope` por IP, como primeira barreira antes do Worker.
+- **Regra de WAF:** aplicada em 27/11/2026 pelo MCP da Cloudflare: 300 req/10 s por IP na ingestão do Sentinel (`/api/*/envelope`, `/api/*/store`). O plano Free da zona só permite uma regra, então ela substituiu a do OpenPanel, por decisão do dono (detalhes e como restaurar em `lab/cloudflare-resources.md`).
 
 ## Decisões para o dono
 
