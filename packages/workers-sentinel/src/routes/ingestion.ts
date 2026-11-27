@@ -27,6 +27,7 @@ import {
 	truncateFilenameSafe,
 } from '../lib/envelope-parser';
 import { isProjectIdForProject } from '../lib/project-access';
+import { setEventTag } from '../lib/symbolicate';
 import { buildWebhookPayload, sendWebhook } from '../lib/webhook';
 import { parkEvent, shouldSymbolicate, symbolicationEnabled } from '../symbolication-job';
 import type { DroppedAttachment, Env, Project, SentryEvent } from '../types';
@@ -845,7 +846,13 @@ async function handleIngestion(c: Context<{ Bindings: Env }>): Promise<Response>
 		directEvents = [];
 		for (const event of events) {
 			let parked = false;
-			if (await shouldSymbolicate(c.env, projectState, event)) {
+			const admission = await shouldSymbolicate(c.env, projectState, event);
+			if (!admission.park && admission.reason) {
+				// Over the project's symbolication budget (or turned off):
+				// stored now, with frames as sent, and saying why.
+				setEventTag(event as unknown as Record<string, unknown>, 'symbolication', 'skipped');
+			}
+			if (admission.park) {
 				try {
 					parkedIds.push(
 						await parkEvent(

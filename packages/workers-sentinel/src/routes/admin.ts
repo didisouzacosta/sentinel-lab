@@ -1,6 +1,7 @@
 import { type Context, Hono } from 'hono';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { readCappedJson } from '../lib/capped-json';
+import { applyNewProjectDefaults } from '../lib/project-defaults';
 import { purgeProjectState } from '../lib/project-purge';
 import { extractBearerToken } from '../middleware/auth';
 import type { AuthContext, Env } from '../types';
@@ -230,6 +231,7 @@ adminRoutes.post('/projects', async (c) => {
 	if (!response.ok || !data.project) {
 		return c.json(data, response.status as ContentfulStatusCode);
 	}
+	await applyNewProjectDefaults(c.env, data.project.id, body.platform);
 	// DSN built from the request host, mirroring the project read routes
 	const host = new URL(c.req.url).host;
 	const dsn = `https://${data.project.publicKey}@${host}/${data.project.ingestId ?? data.project.id}`;

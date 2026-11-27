@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { readCappedJson } from '../lib/capped-json';
+import { applyNewProjectDefaults } from '../lib/project-defaults';
 import { purgeProjectState } from '../lib/project-purge';
 import { auditVia, requireScope } from '../lib/token-scopes';
 import { buildWebhookPayload } from '../lib/webhook';
@@ -140,6 +141,7 @@ projectRoutes.post('/', async (c) => {
 	if (!response.ok || !data.project) {
 		return c.json(data, response.status as ContentfulStatusCode);
 	}
+	await applyNewProjectDefaults(c.env, data.project.id, platform);
 	return c.json({ ...data, dsn: dsnFor(c, data.project) }, 201);
 });
 
@@ -229,6 +231,7 @@ projectRoutes.patch('/:slug', async (c) => {
 	const body = await c.req.json<{
 		webhookUrl?: string | null;
 		maxEventsPerHour?: number;
+		maxSymbolicationsPerHour?: number;
 		retentionDays?: number;
 		scrubHeaders?: string[];
 		maxAttachmentBytes?: number;
@@ -241,6 +244,7 @@ projectRoutes.patch('/:slug', async (c) => {
 		body.platform === undefined &&
 		body.webhookUrl === undefined &&
 		body.maxEventsPerHour === undefined &&
+		body.maxSymbolicationsPerHour === undefined &&
 		body.retentionDays === undefined &&
 		body.scrubHeaders === undefined &&
 		body.maxAttachmentBytes === undefined
@@ -275,6 +279,7 @@ projectRoutes.patch('/:slug', async (c) => {
 	// in AuthState.
 	if (
 		body.maxEventsPerHour !== undefined ||
+		body.maxSymbolicationsPerHour !== undefined ||
 		body.retentionDays !== undefined ||
 		body.scrubHeaders !== undefined ||
 		body.maxAttachmentBytes !== undefined
@@ -319,8 +324,8 @@ projectRoutes.patch('/:slug', async (c) => {
 		Object.assign(result, data);
 	}
 
-	// Update rate limit config in ProjectState if provided
-	if (body.maxEventsPerHour !== undefined) {
+	// Update rate limit / symbolication budget config in ProjectState if provided
+	if (body.maxEventsPerHour !== undefined || body.maxSymbolicationsPerHour !== undefined) {
 		const projectStateId = c.env.PROJECT_STATE.idFromName(projectData.project.id);
 		const projectState = c.env.PROJECT_STATE.get(projectStateId);
 
@@ -328,7 +333,10 @@ projectRoutes.patch('/:slug', async (c) => {
 			new Request('http://internal/config/update', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ maxEventsPerHour: body.maxEventsPerHour }),
+				body: JSON.stringify({
+					maxEventsPerHour: body.maxEventsPerHour,
+					maxSymbolicationsPerHour: body.maxSymbolicationsPerHour,
+				}),
 			}),
 		);
 

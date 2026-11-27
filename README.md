@@ -341,7 +341,7 @@ How events flow:
 
 1. An event whose `debug_meta` names a stored dSYM or mapping is not stored right away: it waits in the queue (`sentinel-lab-process`) and the SDK gets its `200` with the event id at once.
 2. The queue consumer sends its frames to Symbolicator and merges the answer: functions, files and lines for native frames (inlined functions become extra frames); class, method and exception names for Android. The original frames stay in `raw_stacktrace`.
-3. The event is stored with the tag `symbolication` = `done`, `missing` (the files did not match any frame) or `failed`.
+3. The event is stored with the tag `symbolication` = `done`, `missing` (the files did not match any frame), `failed`, or `skipped` (over the project's symbolication budget, see below).
 
 Things to know:
 
@@ -349,6 +349,8 @@ Things to know:
 - **Malformed fields are left out, not fatal.** Symbolicator refuses a whole request when one field has the wrong shape, and events come from anyone holding the DSN. Sentinel forwards only well-formed addresses, names and line numbers; the frames it leaves out stay as they were.
 - **Grouping follows the real code.** Issues are grouped by the symbolicated frames, so a crash reported before its dSYM was uploaded and the same crash after the upload end up in different issues (older issues are not regrouped).
 - **Events with no stored files** skip the queue and are stored immediately, as before.
+- **Budget per project.** A project symbolicates at most 500 crashes per hour by default; past that, crashes are stored right away with their raw frames, tagged `symbolication:skipped`. Owners and admins change it with `PATCH /api/projects/:slug {"maxSymbolicationsPerHour": n}` (or the MCP tool `update_project`, `max_symbolications_per_hour`); `0` turns symbolication off. `GET /api/projects/:slug/settings` shows the limit and this hour's count.
+- **New iOS and Android projects start with an event quota** of 5000 events per hour (the DSN and debug ids ship inside the app, so anyone can send crashes). Set `maxEventsPerHour` to `0` for unlimited.
 - An event only waits in the queue when its project would accept it right now: over the hourly quota or being deleted, the SDK gets `429`/`503` as before. The quota is checked again when the event is stored, and an event whose project was deleted while it waited is dropped.
 - Local `wrangler dev` (and CI) do not build the container (`dev.enable_containers: false` in `wrangler.jsonc`, plus `--var SYMBOLICATION:off` in `just dev-up` and the integration suite). To try it locally, run `wrangler dev` with a copy of the config where `enable_containers` is `true`, with Docker running.
 
