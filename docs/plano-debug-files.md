@@ -64,7 +64,7 @@ Quem tem o DSN (público por definição) controla cada campo do evento. A sonda
 
 Verificado também: respostas do container que citam frames não enviados são ignoradas; o servidor de arquivos do container só responde GET em `/dif/{projectId}/` e não serve arquivo de outro projeto pelo id.
 
-**Riscos que ficam (aceitos por ora):**
+**Riscos que ficam (aceitos por ora; plano para fechar em [`plano-riscos-simbolizacao.md`](plano-riscos-simbolizacao.md)):**
 - **Isolamento depende do container.** Os arquivos de um projeto são lidos pelo caminho `/dif/{projectId}/` que o próprio Sentinel monta, sem credencial por projeto. Se um dSYM/mapping malicioso explorasse uma falha de parsing no Symbolicator (só membros com `write` enviam arquivos), o processo comprometido poderia pedir arquivos de outros projetos. Ele não tem internet, segredos nem acesso ao R2 direto. Mitigação possível no futuro: token HMAC por projeto na fonte.
 - **Custo com cota ilimitada.** Com `max_events_per_hour = 0` (padrão), quem conhece o DSN e um debug ID guardado (os dois estão no binário do app) pode gerar trabalho de container por evento, como já gera trabalho de ingestão. Defina uma cota por projeto em apps públicos.
 
